@@ -21,6 +21,8 @@ typedef struct DisplaySegment {
   uint16_t first_line;
   uint16_t dispcnt;
   uint16_t bgcnt[4];
+  // Color math: BLDCNT, BLDALPHA, BLDY.
+  uint16_t bld[3];
   // The scroll registers, in frames whose stream is BG2's transformation.
   uint16_t ofs[8];
 } DisplaySegment;

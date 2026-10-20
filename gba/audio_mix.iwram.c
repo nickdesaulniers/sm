@@ -35,9 +35,6 @@ ROM_CODE void Audio_ClearEcho(void) {
   echo_pos = 0;
 }
 
-static inline int Clamp16(int x) {
-  return x < -0x8000 ? -0x8000 : x > 0x7fff ? 0x7fff : x;
-}
 
 // As src/snes/dsp.c's dsp_handleEcho, on pairs of samples (see echo.S):
 // what comes out of the echo buffer, filtered, goes back in with the voices'

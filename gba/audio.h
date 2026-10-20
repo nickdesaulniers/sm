@@ -53,6 +53,9 @@ void Audio_Init(void);
 // Once a frame of the GBA's, from the timer 1 interrupt (irq.iwram.c,
 // irq_entry.S), with interrupts on: runs the driver and mixes ahead.
 void Audio_Background(void);
+// After Render_Present, in VBlank: Audio_Background can run now, rather
+// than later in the frame.
+void Audio_Kick(void);
 // While nonzero, the game is busy with the driver, and Audio_Background
 // waits for the next frame.
 extern volatile uint8_t g_audio_lock;

@@ -89,6 +89,7 @@ void gba_main(void) {
     uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
     uint32_t t4 = Cycles(), a4 = g_audio_cycles;
+    Audio_Kick();
     game_cycles += (t1 - t0) - (a1 - a0);
     render_cycles += (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
     if (++frames == 60) {

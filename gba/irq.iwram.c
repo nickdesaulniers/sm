@@ -11,6 +11,9 @@ static void SetSegment(const DisplayFrame *d, const DisplaySegment *s) {
   REG_DISPCNT = s->dispcnt;
   for (int i = 0; i < 4; i++)
     REG_BGCNT(i) = s->bgcnt[i];
+  REG_BLDCNT = s->bld[0];
+  REG_BLDALPHA = s->bld[1];
+  REG_BLDY = s->bld[2];
   if (d->stream_dest != 0x04000010) {
     volatile uint16_t *ofs = &REG_BGHOFS(0);
     for (int i = 0; i < 8; i++)
@@ -42,17 +45,33 @@ void Display_Start(void) {
   ScheduleSegment(d);
 }
 
-// When in the frame the sound's work runs: after the VBlank interrupt, in
-// cycles, by when Render_Present is done with VRAM, as a rule.
-enum { kAudioDelay = 40 * 1232 };
+// When in the frame the sound's work runs: once Render_Present is done
+// with VBlank (Audio_Kick), or if it's busy, this long after VBlank begins,
+// in 64s of cycles (60 lines).
+enum { kAudioDelay = 60 * 1232 / 64 };
 volatile uint8_t g_audio_background_running IWRAM_BSS;
+static volatile bool audio_kicked IWRAM_BSS;
+
+static void StartAudioTimer(int delay) {
+  REG_TMCNT_H(1) = 0;
+  REG_TMCNT_L(1) = 0x10000 - delay;
+  REG_TMCNT_H(1) = 0xc1;  // enabled, with its interrupt, counting 64 cycles
+}
+
+void Audio_Kick(void) {
+  REG_IME = 0;
+  if (!audio_kicked) {
+    audio_kicked = true;
+    StartAudioTimer(1);
+  }
+  REG_IME = 1;
+}
 
 static void VBlank(void) {
   g_vblank_count++;
   Audio_VBlank();
-  REG_TMCNT_H(1) = 0;
-  REG_TMCNT_L(1) = 0x10000 - kAudioDelay;
-  REG_TMCNT_H(1) = 0xc0;  // enabled, with its interrupt
+  audio_kicked = false;
+  StartAudioTimer(kAudioDelay);
   // Every frame, as a frame of the game can take more than one of the
   // GBA's.
   Display_Start();
@@ -89,6 +108,7 @@ bool IrqHandler(void) {
   bool audio = false;
   if (flags & kIrqTimer1) {
     REG_TMCNT_H(1) = 0;
+    audio_kicked = true;
     audio = !g_audio_background_running && !g_audio_lock;
     g_audio_background_running |= audio;
   }

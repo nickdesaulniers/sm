@@ -109,6 +109,7 @@ static struct {
   uint8_t bg3_slot_sc[2];
   int blank_tile;
   int brightness;
+  uint32_t fixed_math;
   bool mode7, bg3_palettes;
 } conv = {.blank_tile = -1, .brightness = -1};
 
@@ -174,6 +175,7 @@ static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   l->ctl.bgcnt[0] = l->ctl.bgcnt[1] = l->ctl.bgcnt[3] = 0;
   // 1024x1024, wrapping around unless the SNES's field is "large".
   l->ctl.bgcnt[2] = 3 | kSbMode7 << 8 | 3 << 14 | (r->m7sel & 0x80 ? 0 : 1 << 13);
+  l->ctl.bld[0] = l->ctl.bld[1] = l->ctl.bld[2] = 0;
   for (int i = 0; i < 8; i++)
     l->ctl.ofs[i] = 0;
   // The SNES's screen pixel (sx, sy) shows the map's pixel
@@ -196,6 +198,51 @@ static void StepLineMode7(LineRegs *l) {
   l->stream[3] += (int16_t)(l->stream[1] >> 16);
 }
 
+// The GBA layers (BLDCNT's bits) of the SNES's layers in |snes| (CGADSUB's
+// or TM's bits: BG1-BG4, OBJ, backdrop).
+static uint16_t BlendLayers(uint8_t snes) {
+  return (snes & 1 ? 6 : 0) | (snes & 2 ? 8 : 0) | (snes & 4 ? 1 : 0) | (snes & 0x30);
+}
+
+// The SNES's color math, as the GBA's blending can do it, for a line with
+// the tiled layers. In place of the SNES's sub screen added to the main
+// screen, which the GBA can't do, its layers that aren't on the main
+// screen show above the others, blended with the layer below them: the
+// sum's the same. (The game's rooms add BG3 that way, for rain, fog, water
+// and the like.) The fixed color, added or subtracted, is in the palette
+// (UpdatePalette), the same for all the frame's lines. Without windows yet,
+// color math "inside the window" is nowhere, and "outside", everywhere. Not
+// done: the sub screen subtracted.
+static void ColorMath(DisplaySegment *c, const PpuRegs *r) {
+  c->bld[0] = c->bld[1] = c->bld[2] = 0;
+  uint8_t math = r->cgadsub & 0x3f;
+  int region = (r->cgwsel >> 4) & 3;
+  if (!math || region == 1 || region == 3 || frame_mode7 || (r->inidisp & 0x80))
+    return;
+  bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
+  if (r->cgwsel & 2) {
+    uint8_t sub = r->ts & ~r->tm & 7;
+    if (!sub || subtract)
+      return;
+    // The sub screen's layers on top.
+    if (sub & 1) {
+      c->dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
+      c->bgcnt[1] &= ~3;
+      c->bgcnt[2] &= ~3;
+    }
+    if (sub & 2) {
+      c->dispcnt |= kDispcntBg0 << 3;
+      c->bgcnt[3] &= ~3;
+    }
+    if (sub & 4) {
+      c->dispcnt |= kDispcntBg0;
+      c->bgcnt[0] &= ~3;
+    }
+    c->bld[0] = BlendLayers(sub) | BlendLayers(math & ~sub) << 8 | 1 << 6;
+    c->bld[1] = half ? 8 | 8 << 8 : 16 | 16 << 8;
+  }
+}
+
 static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   if ((r->bgmode & 7) == 7) {
     BuildLineMode7(l, r, s);
@@ -216,6 +263,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
+  ColorMath(&l->ctl, r);
   int dy = s - g;
   uint16_t ofs[8];
   ofs[0] = r->hofs[2] + kXOffset;
@@ -238,7 +286,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
 static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
   const uint16_t *x = &a->dispcnt, *y = &b->dispcnt;
-  for (int i = 0; i < 13; i++) {
+  for (int i = 0; i < 16; i++) {
     if (x[i] != y[i])
       return false;
   }
@@ -328,34 +376,85 @@ void Render_CaptureFrame(void) {
   LogLayoutChange(LINE_REGS(SnesLine(kGbaLines / 2)));
 }
 
-ROM_CODE static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
+// The color math with the fixed color that line |m| does, which the
+// palette does in its place (see ColorMath): its CGADSUB and the color, or
+// 0 for none.
+static uint32_t FixedMath(const PpuRegs *m) {
+  int region = (m->cgwsel >> 4) & 3;
+  if ((m->cgwsel & 2) || !(m->cgadsub & 0x3f) || region == 1 || region == 3)
+    return 0;
+  uint32_t color = m->coldata[0] | m->coldata[1] << 5 | m->coldata[2] << 10;
+  if (!color && !(m->cgadsub & 0x40))
+    return 0;
+  return m->cgadsub | color << 8;
+}
+
+ROM_CODE static int Bright(int v, int brightness) {
+  return brightness == 15 ? v : brightness ? (v * (brightness + 1)) >> 4 : 0;
+}
+
+// |n| colors from |src| to |dst|, by |t|'s channels, unless they're as they
+// were (|same|).
+static void Recolor(volatile uint16_t *dst, const uint16_t *src, int n, const uint8_t (*t)[32],
+                    bool same) {
+  if (same) {
+    for (int i = 0; i < n; i++)
+      dst[i] = src[i];
+    return;
+  }
+  for (int i = 0; i < n; i++) {
+    uint16_t c = src[i];
+    dst[i] = t[0][c & 31] | t[1][(c >> 5) & 31] << 5 | t[2][(c >> 10) & 31] << 10;
+  }
+}
+
+// The palette, at the brightness of line |r|, with line |m|'s color math
+// with the fixed color.
+ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_palettes) {
   SnesHw *h = &g_snes_hw;
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
-  if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes)
+  uint32_t math = FixedMath(m);
+  if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes &&
+      math == conv.fixed_math)
     return;
   h->cgram_dirty = false;
   conv.brightness = b;
   conv.bg3_palettes = bg3_palettes;
-  uint16_t pal[256];
-  if (b == 15) {
-    memcpy(pal, g_cgram, sizeof(pal));
-  } else {
-    uint8_t scale[32];
-    for (int i = 0; i < 32; i++)
-      scale[i] = b ? (i * (b + 1)) >> 4 : 0;
-    for (int i = 0; i < 256; i++) {
-      uint16_t c = g_cgram[i];
-      pal[i] = scale[c & 31] | scale[(c >> 5) & 31] << 5 | scale[(c >> 10) & 31] << 10;
+  conv.fixed_math = math;
+  // Each channel's value, by what it was, at the brightness, and with the
+  // color math too. (Tables, as the palette often changes every frame.)
+  static uint8_t plain[3][32], with[3][32];
+  static int tables_b = -1;
+  static uint32_t tables_math;
+  if (b != tables_b || math != tables_math) {
+    tables_b = b;
+    tables_math = math;
+    for (int c = 0; c < 3; c++) {
+      int f = (math >> (8 + 5 * c)) & 31;
+      for (int i = 0; i < 32; i++) {
+        int v = math & 0x80 ? (i > f ? i - f : 0) : (i + f < 31 ? i + f : 31);
+        plain[c][i] = Bright(i, b);
+        with[c][i] = Bright(math & 0x40 ? v >> 1 : v, b);
+      }
     }
   }
-  DmaCopy32(GBA_BG_PALETTE, pal, 256);
-  DmaCopy32(GBA_OBJ_PALETTE, pal + 128, 256);
-  // BG3's 2bpp palettes of 4 colors in GBA palettes 8-15. (Mode 7's
-  // background has all 256 colors: frames with both are a compromise.)
-  for (int p = 0; p < 8 && bg3_palettes; p++) {
-    for (int k = 0; k < 4; k++)
-      GBA_BG_PALETTE[128 + p * 16 + k] = pal[p * 4 + k];
-  }
+  // The backgrounds', the sprites', and BG3's 2bpp palettes of 4 colors in
+  // GBA palettes 8-15 (Mode 7's background has all 256 colors: frames with
+  // both are a compromise); with the color math on the layers it's on (the
+  // sprites': in palettes 4-7). By tables on the stack, in IWRAM.
+  uint8_t tables[2][3][32];
+  memcpy(tables[0], plain, sizeof(plain));
+  memcpy(tables[1], with, sizeof(with));
+  const uint8_t(*same)[32] = tables[0];
+  const uint8_t(*bd)[32] = tables[(math & 0x20) != 0], (*bg12)[32] = tables[(math & 3) != 0];
+  const uint8_t(*o)[32] = tables[(math & 0x10) != 0], (*b3)[32] = tables[(math & 4) != 0];
+  bool full = b == 15;
+  Recolor(GBA_BG_PALETTE, g_cgram, 1, bd, full && bd == same);
+  Recolor(GBA_BG_PALETTE + 1, g_cgram + 1, 127, bg12, full && bg12 == same);
+  Recolor(GBA_OBJ_PALETTE, g_cgram + 128, 64, same, full);
+  Recolor(GBA_OBJ_PALETTE + 64, g_cgram + 192, 64, o, full && o == same);
+  for (int p = 0; p < 8 && bg3_palettes; p++)
+    Recolor(GBA_BG_PALETTE + 128 + p * 16, g_cgram + p * 4, 4, b3, full && b3 == same);
 }
 
 static bool TileIsBlank(const uint16_t *t) {
@@ -595,7 +694,7 @@ void Render_Present(void) {
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
   }
-  UpdatePalette(LINE_REGS(SnesLine(0)), text);
+  UpdatePalette(LINE_REGS(SnesLine(0)), LINE_REGS(SnesLine(kGbaLines / 2)), text);
   conv.mode7 = mode7;
   int blank_before = conv.blank_tile;
   if (mode7)
@@ -605,10 +704,12 @@ void Render_Present(void) {
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
   UpdateOam();
 
-  // From now on, the VBlank interrupt sets up this frame's registers.
+  // From now on, the VBlank interrupt sets up this frame's registers: from
+  // now, if it's still VBlank. (Not partway down the screen.)
   REG_IME = 0;
   g_display = &frames[back];
-  Display_Start();
+  if (REG_VCOUNT >= kGbaLines)
+    Display_Start();
   REG_IME = 1;
   back ^= 1;
 }
