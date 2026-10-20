@@ -30,6 +30,8 @@ SECTIONS {
 
     .text : {
         *(EXCLUDE_FILE(*.iwram.c.o*) .text .text.*)
+        /* ROM_CODE (gba_hw.h): from *.iwram.c files, but not hot. */
+        *(.romtext .romtext.*)
     } > rom
     .rodata : { *(.rodata .rodata.*) } > rom
 

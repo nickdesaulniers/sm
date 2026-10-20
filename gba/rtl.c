@@ -86,15 +86,6 @@ uint16 SnesModulus(uint16 a, uint8 b) {
   return (b == 0) ? a : a % b;
 }
 
-// No sound yet.
-void RtlApuWrite(uint32 adr, uint8 val) {
-  (void)adr, (void)val;
-}
-
-void RtlApuUpload(const uint8 *p) {
-  (void)p;
-}
-
 // The GBA's SRAM is 8 bits wide: a byte at a time.
 void RtlWriteSram(void) {
   for (int i = 0; i < 0x2000; i++)

@@ -27,10 +27,13 @@
 // (counted like SHOTS) to PREFIX.ewram, PREFIX.iwram, .io, .pal, .vram and
 // .oam: for tools/snesref.c, and for looking into.
 //
+// With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
+//
 // Build with tools/mgba/build.sh, against mGBA 0.10.
 #include <mgba/flags.h>
 #include <mgba/core/config.h>
 #include <mgba/core/core.h>
+#include <mgba/core/blip_buf.h>
 #include <mgba/core/log.h>
 #include <mgba/core/timing.h>
 #include <mgba/internal/arm/arm.h>
@@ -189,6 +192,39 @@ static void dump_memory(struct mCore* core, const char* prefix) {
     }
 }
 
+static FILE* audio_out;
+static uint32_t audio_bytes;
+
+static void write_wav_header(FILE* f, uint32_t bytes) {
+    uint32_t rate = 32768;
+    fseek(f, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, f);
+    uint32_t v = 36 + bytes;
+    fwrite(&v, 4, 1, f);
+    fwrite("WAVEfmt ", 1, 8, f);
+    uint32_t fmt[4] = {16, 1 | 2 << 16, rate, rate * 4};
+    fwrite(fmt, 4, 4, f);
+    uint16_t align[2] = {4, 16};
+    fwrite(align, 2, 2, f);
+    fwrite("data", 1, 4, f);
+    fwrite(&bytes, 4, 1, f);
+}
+
+static void record_audio(struct mCore* core) {
+    blip_t* left = core->getAudioChannel(core, 0);
+    blip_t* right = core->getAudioChannel(core, 1);
+    int available = blip_samples_avail(left);
+    static short buf[2 * 8192];
+    while (available > 0) {
+        int n = available > 8192 ? 8192 : available;
+        blip_read_samples(left, buf, n, 1);
+        blip_read_samples(right, buf + 1, n, 1);
+        fwrite(buf, 4, n, audio_out);
+        audio_bytes += 4 * n;
+        available -= n;
+    }
+}
+
 static void put32(unsigned char* p, uint32_t v) {
     p[0] = v >> 24, p[1] = v >> 16, p[2] = v >> 8, p[3] = v;
 }
@@ -261,6 +297,13 @@ int main(int argc, char** argv) {
     struct Keys pre = parse_schedule(getenv("PRE_KEYS"));
     struct Keys keys = parse_schedule(getenv("KEYS"));
     after_text = getenv("AFTER");
+    if (getenv("AUDIO")) {
+        audio_out = fopen(getenv("AUDIO"), "wb");
+        write_wav_header(audio_out, 0);
+        core->setAudioBufferSize(core, 8192);
+        blip_set_rates(core->getAudioChannel(core, 0), core->frequency(core), 32768);
+        blip_set_rates(core->getAudioChannel(core, 1), core->frequency(core), 32768);
+    }
     int profile_n = getenv("PROFILE") ? atoi(getenv("PROFILE")) : 0;
     int profile_from = getenv("PROFILE_FROM") ? atoi(getenv("PROFILE_FROM")) : 1;
     unsigned long long profile_total = 0;
@@ -290,6 +333,8 @@ int main(int argc, char** argv) {
             profile_total += profile_frame(core);
         else
             core->runFrame(core);
+        if (audio_out)
+            record_audio(core);
         if (profile_n && t == profile_from + profile_n - 1 && profile_total) {
             qsort(syms, nsyms, sizeof *syms, by_cycles);
             printf("profile: %llu cycles over %d frames\n", profile_total, profile_n);
@@ -315,6 +360,10 @@ int main(int argc, char** argv) {
             const char* comma = strchr(s, ',');
             s = comma ? comma + 1 : s + strlen(s);
         }
+    }
+    if (audio_out) {
+        write_wav_header(audio_out, audio_bytes);
+        fclose(audio_out);
     }
     core->deinit(core);
     return 0;

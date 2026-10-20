@@ -1,4 +1,5 @@
 // The interrupt handler, which the BIOS calls in ARM state.
+#include "audio.h"
 #include "display.h"
 #include "gba_hw.h"
 
@@ -43,6 +44,7 @@ void Display_Start(void) {
 
 static void VBlank(void) {
   g_vblank_count++;
+  Audio_VBlank();
   // Every frame, as a frame of the game can take more than one of the
   // GBA's.
   Display_Start();

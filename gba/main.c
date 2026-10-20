@@ -1,6 +1,7 @@
 // The GBA cartridge's main loop: a frame of the game, then its picture.
 #include <stdio.h>
 
+#include "audio.h"
 #include "convert.h"
 #include "gba_hw.h"
 #include "input.h"
@@ -45,6 +46,7 @@ void gba_main(void) {
   SnesHw_Reset();
   Convert_Init();
   Render_Init();
+  Audio_Init();
 
   REG_IRQ_VECTOR = (uintptr_t)IrqHandler;
   REG_IE = kIrqVBlank | kIrqVCount;
@@ -54,13 +56,12 @@ void gba_main(void) {
   coroutine_state_0 = 1;
   bug_fix_counter = 1;
 
-  // Per 60 frames: CPU cycles per frame of the game, and of render.c's
-  // work on it (not counting the wait for VBlank).
-  uint32_t frames = 0, game_cycles = 0, render_cycles = 0;
+  // Per 60 frames: CPU cycles per frame of the game, its sound, and
+  // render.c's work on its picture (not counting the wait for VBlank).
+  uint32_t frames = 0, game_cycles = 0, audio_cycles = 0, render_cycles = 0;
   uint32_t vblanks = g_vblank_count;
   for (;;) {
     g_snes_hw.joy1 = Input_ReadJoypad();
-    uint32_t t0 = Cycles();
     uint16_t state = game_state;
 #if SM_SKIP_INTRO
     // For testing: a new game's intro goes straight to its end, which fades
@@ -74,25 +75,30 @@ void gba_main(void) {
       loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
 #endif
 #endif
+    uint32_t t0 = Cycles();
     RunOneFrameOfGame();
     if (game_state != state)
       printf("sm: game state %u\n", (unsigned)game_state);
     uint32_t t1 = Cycles();
-    Render_CaptureFrame();
+    Audio_Frame();
     uint32_t t2 = Cycles();
-    VBlankIntrWait();
+    Render_CaptureFrame();
     uint32_t t3 = Cycles();
-    Render_Present();
+    VBlankIntrWait();
     uint32_t t4 = Cycles();
+    Render_Present();
+    uint32_t t5 = Cycles();
     game_cycles += t1 - t0;
-    render_cycles += (t2 - t1) + (t4 - t3);
+    audio_cycles += t2 - t1;
+    render_cycles += (t3 - t2) + (t5 - t4);
     if (++frames == 60) {
       uint32_t v = g_vblank_count;
-      printf("sm: 60 frames in %u vblanks; game %u, render %u cycles/frame; state %u; stack %u\n",
-             (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)(render_cycles / 60),
-             (unsigned)game_state, StackUsed());
+      printf("sm: 60 frames in %u vblanks; cycles/frame: game %u, audio %u, render %u; "
+             "state %u; stack %u\n",
+             (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)(audio_cycles / 60),
+             (unsigned)(render_cycles / 60), (unsigned)game_state, StackUsed());
       vblanks = v;
-      frames = game_cycles = render_cycles = 0;
+      frames = game_cycles = audio_cycles = render_cycles = 0;
     }
   }
 }

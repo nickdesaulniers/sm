@@ -68,6 +68,7 @@ add_library(sm_game STATIC
     ${game_dir}/sm_b2.c
     ${game_dir}/sm_b3.c
     ${game_dir}/sm_b4.c
+    ${game_dir}/spc_player.c
 )
 # The decompiled code is warning-heavy; keep the build log readable.
 target_compile_options(sm_game PRIVATE -w)
@@ -76,6 +77,8 @@ target_include_directories(sm_game PUBLIC ${game_dir})
 add_executable(sm_gba
     crt0.S
     header.c
+    audio.c
+    audio_mix.iwram.c
     input.c
     main.c
     rtl.c
@@ -90,6 +93,10 @@ set_target_properties(sm_gba PROPERTIES
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
 )
 option(SM_SKIP_INTRO "For testing: skip a new game's intro, to Ceres" OFF)
+option(SM_AUDIO_LOG "For tools/spcref.c: log what the game asks of the sound driver" OFF)
+if(SM_AUDIO_LOG)
+    target_compile_definitions(sm_gba PRIVATE SM_AUDIO_LOG=1)
+endif()
 option(SM_START_ZEBES "With SM_SKIP_INTRO: start on Zebes, as after escaping Ceres" OFF)
 if(SM_SKIP_INTRO)
     target_compile_definitions(sm_gba PRIVATE SM_SKIP_INTRO=1)

@@ -163,11 +163,14 @@ typedef struct SpcPlayer {
   SfxChan sfx_chans_3[2];
   uint8 last_written_edl;
   uint8 input_ports[4];
+#if !SM_GBA
   uint8 ram[65536]; // rest of ram
+#endif
 } SpcPlayer;
 
 SpcPlayer *SpcPlayer_Create();
 void SpcPlayer_GenerateSamples(SpcPlayer *p);
+void SpcPlayer_Tick(SpcPlayer *p, uint8 ticks);
 void SpcPlayer_Initialize(SpcPlayer *p);
 void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data);
 void SpcPlayer_CopyVariablesFromRam(SpcPlayer *p);

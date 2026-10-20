@@ -20,7 +20,7 @@ static bool hdma_dirty IWRAM_BSS;
 
 static uint32_t wram_port_addr;
 
-void SnesHw_Reset(void) {
+ROM_CODE void SnesHw_Reset(void) {
   memset(&g_snes_hw, 0, sizeof(g_snes_hw));
   g_snes_hw.vram_inc = 1;
   for (int i = 0; i < 8; i++) {
@@ -467,7 +467,7 @@ void WriteReg(uint16 reg, uint8 value) {
   }
 }
 
-uint8 ReadReg(uint16 reg) {
+ROM_CODE uint8 ReadReg(uint16 reg) {
   SnesHw *h = &g_snes_hw;
   if (reg >= 0x2100 && reg < 0x2200)
     return ReadBBus(reg & 0xff);
@@ -486,7 +486,7 @@ uint8 ReadReg(uint16 reg) {
   }
 }
 
-uint16 ReadRegWord(uint16 reg) {
+ROM_CODE uint16 ReadRegWord(uint16 reg) {
   uint16 lo = ReadReg(reg);
   return lo | (ReadReg(reg + 1) << 8);
 }
@@ -502,6 +502,8 @@ typedef struct HdmaChannel {
   SnesDmaChannel *c;
   uint8_t bytes;    // per line
   bool indirect;
+  // Writes whole words to scroll registers (see WriteScroll).
+  bool scroll;
   uint8_t regs[4];  // the B-bus registers they go to, in order
   // Pointers to the table's bank and the indirect data's: see BankPtr.
   const uint8_t *table, *data;
@@ -538,7 +540,11 @@ static void HdmaDecode(void) {
     d->indirect = c->dmap & 0x40;
     for (int j = 0; j < 4; j++)
       d->regs[j] = c->bbad + kBbadOffsets[mode][j];
+    // Modes 2 and 3 write each register twice: the scroll registers' two
+    // halves, as most of the game's HDMA does.
+    d->scroll = (mode == 2 || mode == 3) && c->bbad >= 0x0d && d->regs[3] <= 0x14;
     d->table = BankPtr(c->a1b, &d->table_ram);
+
     d->data = BankPtr(c->dasb, &d->data_ram);
   }
 }
@@ -571,6 +577,27 @@ void SnesHw_HdmaInit(void) {
   HdmaDecode();
 }
 
+// Writes a scroll register's two bytes, low then high, as WriteBBus would.
+static inline void WriteScroll(uint8_t adr, uint8_t lo, uint8_t hi) {
+  SnesHw *h = &g_snes_hw;
+  PpuRegs *r = &h->r;
+  uint16_t value = hi << 8 | lo;
+  if (adr & 1) {
+    if (adr == 0x0d)
+      r->m7hofs = value & 0x1fff;
+    r->hofs[(adr - 0xd) >> 1] = value & 0x3ff;
+    h->bghofs_latch = hi;
+  } else {
+    if (adr == 0x0e)
+      r->m7vofs = value & 0x1fff;
+    r->vofs[(adr - 0xe) >> 1] = value & 0x3ff;
+  }
+  if (adr <= 0x0e)
+    h->m7_latch = hi;
+  h->bgofs_latch = hi;
+  h->regs_dirty = true;
+}
+
 void SnesHw_HdmaRunLine(void) {
   if (hdma_dirty)
     HdmaDecode();
@@ -578,7 +605,19 @@ void SnesHw_HdmaRunLine(void) {
   for (int k = 0; k < hdma_count; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
-    if (c->hdma_do_transfer) {
+    if (c->hdma_do_transfer && d->scroll) {
+      for (int j = 0; j < d->bytes; j += 2) {
+        uint8_t lo, hi;
+        if (d->indirect) {
+          lo = ReadBank(d->data, d->data_ram, c->dasb, c->das++);
+          hi = ReadBank(d->data, d->data_ram, c->dasb, c->das++);
+        } else {
+          lo = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+          hi = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+        }
+        WriteScroll(d->regs[j], lo, hi);
+      }
+    } else if (c->hdma_do_transfer) {
       for (int j = 0; j < d->bytes; j++) {
         uint8_t v = d->indirect ? ReadBank(d->data, d->data_ram, c->dasb, c->das++)
                                 : ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);

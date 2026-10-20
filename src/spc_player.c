@@ -9,6 +9,20 @@
 #include "snes/dsp_regs.h"
 #include "tracing.h"
 
+#if SM_GBA
+// The GBA has no room for the APU's 64 KB of RAM. All the player reads
+// from it was uploaded from the ROM, so it reads that (gba/audio.c), and it
+// drives the GBA's mixer rather than an emulated DSP.
+uint8 SpcRam_Read(uint16 addr);
+void SpcRam_Upload(const uint8 *data);
+void Audio_DspWrite(uint8 reg, uint8 value);
+#define SPC_RAM(addr) SpcRam_Read(addr)
+#else
+#define SPC_RAM(addr) p->ram[addr]
+#endif
+// Two bytes, little-endian (|addr| is evaluated twice).
+#define SPC_RAM16(addr) (SPC_RAM(addr) | SPC_RAM((addr) + 1) << 8)
+
 void Sfx1_HandleCmdFromSnes(SpcPlayer *p);
 void Sfx2_HandleCmdFromSnes(SpcPlayer *p);
 void Sfx3_HandleCmdFromSnes(SpcPlayer *p);
@@ -375,8 +389,12 @@ static void Dsp_Write(SpcPlayer *p, uint8_t reg, uint8 value) {
       hist->count++;
     }
   }
+#if SM_GBA
+  Audio_DspWrite(reg, value);
+#else
   if (p->dsp)
     dsp_write(p->dsp, reg, value);
+#endif
 }
 
 static void Not_Implemented(void) {
@@ -423,7 +441,7 @@ static void WriteVolumeToDsp(SpcPlayer *p, Channel *c, uint16 volume) {
     uint8 t;
     if (j >= 21) {
       // Undefined behavior
-      t = p->ram[j + 0x1E1D] + ((p->ram[j + 0x1E1D + 1] - p->ram[j + 0x1E1D]) * (uint8)volume >> 8);
+      t = SPC_RAM(j + 0x1E1D) + ((SPC_RAM(j + 0x1E1D + 1) - SPC_RAM(j + 0x1E1D)) * (uint8)volume >> 8);
     } else {
       t = kVolumeTable[j] + ((kVolumeTable[j + 1] - kVolumeTable[j]) * (uint8)volume >> 8);
     }
@@ -491,7 +509,9 @@ static void Music_ResetChan(SpcPlayer *p) {
 static void Channel_SetInstrument_NoSetId(SpcPlayer *p, Channel *c, uint8 instrument) {
   if (instrument & 0x80)
     instrument = instrument + 54 + p->percussion_base_id;
-  const uint8 *ip = p->ram + instrument * 6 + 0x6c00;
+  uint8 ip[6];
+  for (int i = 0; i < 6; i++)
+    ip[i] = SPC_RAM(instrument * 6 + 0x6c00 + i);
   if (p->is_chan_on & p->cur_chan_bit)
     return;
   uint8 reg = c->index * 16;
@@ -520,19 +540,19 @@ static void ComputePitchAdd(Channel *c, uint8 pitch) {
 }
 
 static void PitchSlideToNote_Check(SpcPlayer *p, Channel *c) {
-  if (c->pitch_slide_length || p->ram[c->pattern_order_ptr_for_chan] != 0xf9)
+  if (c->pitch_slide_length || SPC_RAM(c->pattern_order_ptr_for_chan) != 0xf9)
     return;
   c->pattern_order_ptr_for_chan++;
-  c->pitch_slide_delay_left = p->ram[c->pattern_order_ptr_for_chan++];
-  c->pitch_slide_length = p->ram[c->pattern_order_ptr_for_chan++];
-  ComputePitchAdd(c, p->ram[c->pattern_order_ptr_for_chan++] + p->global_transposition + c->channel_transposition);
+  c->pitch_slide_delay_left = SPC_RAM(c->pattern_order_ptr_for_chan++);
+  c->pitch_slide_length = SPC_RAM(c->pattern_order_ptr_for_chan++);
+  ComputePitchAdd(c, SPC_RAM(c->pattern_order_ptr_for_chan++) + p->global_transposition + c->channel_transposition);
 }
 
 static const uint8 kEffectByteLength[31] = {
   1, 1, 2, 3, 0, 1, 2, 1, 2, 1, 1, 3, 0, 1, 2, 3, 1, 3, 3, 0, 1, 3, 0, 3, 3, 3, 1, 2, 0, 0, 0};
 
 static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
-  uint8 arg = kEffectByteLength[effect - 0xe0] ? p->ram[c->pattern_order_ptr_for_chan++] : 0;
+  uint8 arg = kEffectByteLength[effect - 0xe0] ? SPC_RAM(c->pattern_order_ptr_for_chan++) : 0;
 
   switch (effect) {
   case 0xe0:
@@ -544,13 +564,13 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xe2:
     c->pan_num_ticks = arg;
-    c->pan_target_value = p->ram[c->pattern_order_ptr_for_chan++];
+    c->pan_target_value = SPC_RAM(c->pattern_order_ptr_for_chan++);
     c->pan_add_per_tick = SpcDivHelper(c->pan_target_value - (c->pan_value >> 8), arg);
     break;
   case 0xe3: // vibrato on
     c->vibrato_delay_ticks = arg;
-    c->vibrato_rate = p->ram[c->pattern_order_ptr_for_chan++];
-    c->vibrato_depth_target = c->vib_depth = p->ram[c->pattern_order_ptr_for_chan++];
+    c->vibrato_rate = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    c->vibrato_depth_target = c->vib_depth = SPC_RAM(c->pattern_order_ptr_for_chan++);
     c->vibrato_fade_num_ticks = 0;
     break;
   case 0xe4: // vibrato off
@@ -562,7 +582,7 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xe6:
     p->master_volume_fade_ticks = arg;
-    p->master_volume_fade_target = p->ram[c->pattern_order_ptr_for_chan++];
+    p->master_volume_fade_target = SPC_RAM(c->pattern_order_ptr_for_chan++);
     p->master_volume_fade_add_per_tick = SpcDivHelper(p->master_volume_fade_target - (p->master_volume >> 8), arg);
     break;
   case 0xe7:
@@ -570,7 +590,7 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xe8:
     p->tempo_fade_num_ticks = arg;
-    p->tempo_fade_final = p->ram[c->pattern_order_ptr_for_chan++];
+    p->tempo_fade_final = SPC_RAM(c->pattern_order_ptr_for_chan++);
     p->tempo_fade_add = SpcDivHelper(p->tempo_fade_final - (p->tempo >> 8), arg);
     break;
   case 0xe9:
@@ -581,8 +601,8 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xeb:
     c->tremolo_delay_ticks = arg;
-    c->tremolo_rate = p->ram[c->pattern_order_ptr_for_chan++];
-    c->tremolo_depth = p->ram[c->pattern_order_ptr_for_chan++];
+    c->tremolo_rate = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    c->tremolo_depth = SPC_RAM(c->pattern_order_ptr_for_chan++);
     break;
   case 0xec:
     c->tremolo_depth = 0;
@@ -592,12 +612,12 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xee:
     c->volume_fade_ticks = arg;
-    c->volume_fade_target = p->ram[c->pattern_order_ptr_for_chan++];
+    c->volume_fade_target = SPC_RAM(c->pattern_order_ptr_for_chan++);
     c->volume_fade_addpertick = SpcDivHelper(c->volume_fade_target - (c->channel_volume >> 8), arg);
     break;
   case 0xef:
-    c->pattern_start_ptr = p->ram[c->pattern_order_ptr_for_chan++] << 8 | arg;
-    c->subroutine_num_loops = p->ram[c->pattern_order_ptr_for_chan++];
+    c->pattern_start_ptr = SPC_RAM(c->pattern_order_ptr_for_chan++) << 8 | arg;
+    c->subroutine_num_loops = SPC_RAM(c->pattern_order_ptr_for_chan++);
     c->saved_pattern_ptr = c->pattern_order_ptr_for_chan;
     c->pattern_order_ptr_for_chan = c->pattern_start_ptr;
     break;
@@ -609,8 +629,8 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
   case 0xf2:
     c->pitch_envelope_direction = (effect == 0xf1);
     c->pitch_envelope_delay = arg;
-    c->pitch_envelope_num_ticks = p->ram[c->pattern_order_ptr_for_chan++];
-    c->pitch_envelope_slide_value = p->ram[c->pattern_order_ptr_for_chan++];
+    c->pitch_envelope_num_ticks = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    c->pitch_envelope_slide_value = SPC_RAM(c->pattern_order_ptr_for_chan++);
     break;
   case 0xf3:
     c->pitch_envelope_num_ticks = 0;
@@ -620,8 +640,8 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
     break;
   case 0xf5:
     p->reg_EON = arg;
-    p->echo_volume_left = p->ram[c->pattern_order_ptr_for_chan++] << 8;
-    p->echo_volume_right = p->ram[c->pattern_order_ptr_for_chan++] << 8;
+    p->echo_volume_left = SPC_RAM(c->pattern_order_ptr_for_chan++) << 8;
+    p->echo_volume_right = SPC_RAM(c->pattern_order_ptr_for_chan++) << 8;
     p->reg_FLG &= ~0x20;
     break;
   case 0xf6:  // echo off
@@ -637,23 +657,23 @@ static void HandleEffect(SpcPlayer *p, Channel *c, uint8 effect) {
       52, 51, 0, -39, -27, 1, -4, -21,
     };
     SetupEchoParameter_EDL(p, arg);
-    p->reg_EFB = p->ram[c->pattern_order_ptr_for_chan++];
-    const int8_t *ep = kEchoFirParameters + p->ram[c->pattern_order_ptr_for_chan++] * 8;
+    p->reg_EFB = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    const int8_t *ep = kEchoFirParameters + SPC_RAM(c->pattern_order_ptr_for_chan++) * 8;
     for (int i = 0; i < 8; i++)
       Dsp_Write(p, FIR0 + i * 16, *ep++);
     break;
   }
   case 0xf8:
     p->echo_volume_fade_ticks = arg;
-    p->echo_volume_fade_target_left = p->ram[c->pattern_order_ptr_for_chan++];
-    p->echo_volume_fade_target_right = p->ram[c->pattern_order_ptr_for_chan++];
+    p->echo_volume_fade_target_left = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    p->echo_volume_fade_target_right = SPC_RAM(c->pattern_order_ptr_for_chan++);
     p->echo_volume_fade_add_left = SpcDivHelper(p->echo_volume_fade_target_left - (p->echo_volume_left >> 8), arg);
     p->echo_volume_fade_add_right = SpcDivHelper(p->echo_volume_fade_target_right - (p->echo_volume_right >> 8), arg);
     break;
   case 0xf9:
     c->pitch_slide_delay_left = arg;
-    c->pitch_slide_length = p->ram[c->pattern_order_ptr_for_chan++];
-    ComputePitchAdd(c, p->ram[c->pattern_order_ptr_for_chan++] + p->global_transposition + c->channel_transposition);
+    c->pitch_slide_length = SPC_RAM(c->pattern_order_ptr_for_chan++);
+    ComputePitchAdd(c, SPC_RAM(c->pattern_order_ptr_for_chan++) + p->global_transposition + c->channel_transposition);
     break;
   case 0xfa:
     p->percussion_base_id = arg;
@@ -682,18 +702,18 @@ static bool WantWriteKof(SpcPlayer *p, Channel *c) {
   int ptr = c->pattern_order_ptr_for_chan;
 
   for (;;) {
-    uint8 cmd = p->ram[ptr++];
+    uint8 cmd = SPC_RAM(ptr++);
     if (cmd == 0) {
       if (loops == 0)
         return true;
       ptr = (--loops == 0) ? c->saved_pattern_ptr : c->pattern_start_ptr;
     } else {
       while (!(cmd & 0x80))
-        cmd = p->ram[ptr++];
+        cmd = SPC_RAM(ptr++);
       if (cmd == 0xc8)
         return false;
       if (cmd == 0xef) {
-        ptr = p->ram[ptr + 0] | p->ram[ptr + 1] << 8;
+        ptr = SPC_RAM(ptr + 0) | SPC_RAM(ptr + 1) << 8;
       } else if (cmd >= 0xe0) {
         ptr += kEffectByteLength[cmd - 0xe0];
       } else {
@@ -855,7 +875,7 @@ static void Music_HandleCmdFromSnes(SpcPlayer *p) {
   } else {
     if (a != 0xf1 && a != 255 && a != p->port_to_snes[0]) start_playing_sound: {
       p->port_to_snes[0] = a;
-      p->music_ptr_toplevel = WORD(p->ram[0x5820 + (a - 1) * 2]);
+      p->music_ptr_toplevel = SPC_RAM16(0x5820 + (a - 1) * 2);
       p->counter_sf0c = 2;
       p->key_OFF |= ~p->is_chan_on;
       return;
@@ -869,7 +889,7 @@ static void Music_HandleCmdFromSnes(SpcPlayer *p) {
       return;
     }
     for (;;) next_phrase: {
-      t = WORD(p->ram[p->music_ptr_toplevel]);
+      t = SPC_RAM16(p->music_ptr_toplevel);
       p->music_ptr_toplevel += 2;
       if ((t >> 8) != 0)
         break;
@@ -884,14 +904,14 @@ static void Music_HandleCmdFromSnes(SpcPlayer *p) {
       } else {
         if (sign8(--p->block_count))
           p->block_count = t;
-        t = WORD(p->ram[p->music_ptr_toplevel]);
+        t = SPC_RAM16(p->music_ptr_toplevel);
         p->music_ptr_toplevel += 2;
         if (p->block_count != 0)
           p->music_ptr_toplevel = t;
       }
     }
     for (int i = 0; i < 8; i++)
-      p->channel[i].pattern_order_ptr_for_chan = WORD(p->ram[t]), t += 2;
+      p->channel[i].pattern_order_ptr_for_chan = SPC_RAM16(t), t += 2;
 
     c = p->channel, p->cur_chan_bit = 1;
     do {
@@ -910,7 +930,7 @@ label_a:
         continue;
       if (!--c->note_ticks_left) {
         for (;;) {
-          uint8 cmd = p->ram[c->pattern_order_ptr_for_chan++];
+          uint8 cmd = SPC_RAM(c->pattern_order_ptr_for_chan++);
           if (cmd == 0) {
             if (!c->subroutine_num_loops)
               goto next_phrase;
@@ -921,11 +941,11 @@ label_a:
             static const uint8 kNoteVol[16] = { 25, 50, 76, 101, 114, 127, 140, 152, 165, 178, 191, 203, 216, 229, 242, 252 };
             static const uint8 kNoteGateOffPct[8] = { 50, 101, 127, 152, 178, 203, 229, 252 };
             c->note_length = cmd;
-            cmd = p->ram[c->pattern_order_ptr_for_chan++];
+            cmd = SPC_RAM(c->pattern_order_ptr_for_chan++);
             if (!(cmd & 0x80)) {
               c->note_gate_off_fixedpt = kNoteGateOffPct[cmd >> 4 & 7];
               c->channel_volume_master = kNoteVol[cmd & 0xf];
-              cmd = p->ram[c->pattern_order_ptr_for_chan++];
+              cmd = SPC_RAM(c->pattern_order_ptr_for_chan++);
             }
           }
           if (cmd >= 0xe0) {
@@ -1052,6 +1072,7 @@ static void Spc_Loop_Part2(SpcPlayer *p, uint8 ticks) {
 }
 
 static void Vector_Reset_Spc(SpcPlayer *p) {
+#if !SM_GBA
   dsp_reset(p->dsp);
 
   memset(&p->ram[0x500], 0, 0x1000);
@@ -1060,6 +1081,7 @@ static void Vector_Reset_Spc(SpcPlayer *p) {
 
   memset(&p->ram[0x391], 0, 0x6f);
   memset(&p->ram[0x440], 0, 0x7f);
+#endif
 
   SpcPlayer_CopyVariablesFromRam(p);
 
@@ -1301,7 +1323,7 @@ void Sfx3_HandleCmdFromSnes(SpcPlayer *p) {
 }
 
 uint8 SfxChan_GetByte(SpcPlayer *p, SfxChan *s) {
-  return p->ram[s->ptr + s->ptr_idx++];
+  return SPC_RAM(s->ptr + s->ptr_idx++);
 }
 
 void Sfx_RunChan(SpcPlayer *p, SfxRegs *sr, SfxChan *s) {
@@ -1410,7 +1432,7 @@ void Sfx1_Process(SpcPlayer *p) {
     Sfx1_Init(p);
     for (int i = 0; i < 4; i++) {
       SfxChan *s = &p->sfx_chans_1[i];
-      s->ptr = WORD(p->ram[p->sfx1.cur_ptr + i * 2]);
+      s->ptr = SPC_RAM16(p->sfx1.cur_ptr + i * 2);
       s->voice_index_mult8 = s->voice_index * 8;
       s->ptr_idx = 0;
       s->instr_timer = 1;
@@ -1425,7 +1447,7 @@ void Sfx2_Process(SpcPlayer *p) {
     Sfx2_Init(p);
     for (int i = 0; i < 2; i++) {
       SfxChan *s = &p->sfx_chans_2[i];
-      s->ptr = WORD(p->ram[p->sfx2.cur_ptr + i * 2]);
+      s->ptr = SPC_RAM16(p->sfx2.cur_ptr + i * 2);
       s->voice_index_mult8 = s->voice_index * 8;
       s->ptr_idx = 0;
       s->instr_timer = 1;
@@ -1440,7 +1462,7 @@ void Sfx3_Process(SpcPlayer *p) {
     Sfx3_Init(p);
     for (int i = 0; i < 2; i++) {
       SfxChan *s = &p->sfx_chans_3[i];
-      s->ptr = WORD(p->ram[p->sfx3.cur_ptr + i * 2]);
+      s->ptr = SPC_RAM16(p->sfx3.cur_ptr + i * 2);
       s->voice_index_mult8 = s->voice_index * 8;
       s->ptr_idx = 0;
       s->instr_timer = 1;
@@ -1513,7 +1535,9 @@ void Sfx3_Init(SpcPlayer *p) {
 SpcPlayer *SpcPlayer_Create(void) {
   SpcPlayer *p = (SpcPlayer *)malloc(sizeof(SpcPlayer));
   memset(p, 0, sizeof(SpcPlayer));
+#if !SM_GBA
   p->dsp = dsp_init(p->ram);
+#endif
   p->reg_write_history = 0;
   return p;
 }
@@ -1523,6 +1547,7 @@ void SpcPlayer_Initialize(SpcPlayer *p) {
   Spc_Loop_Part1(p);
 }
 
+#if !SM_GBA
 void SpcPlayer_CopyVariablesToRam(SpcPlayer *p) {
   Channel *c = p->channel;
   for (int i = 0; i < 8; i++, c++) {
@@ -1533,19 +1558,32 @@ void SpcPlayer_CopyVariablesToRam(SpcPlayer *p) {
     memcpy(&p->ram[m->org_off], (uint8 *)p + m->off, m->size);
 }
 
+#endif
+
 void SpcPlayer_CopyVariablesFromRam(SpcPlayer *p) {
   Channel *c = p->channel;
   for (int i = 0; i < 8; i++, c++) {
-    for (const MemMap *m = &kChannel_Maps[0]; m != &kChannel_Maps[countof(kChannel_Maps)]; m++)
-      memcpy((uint8 *)c + m->off, &p->ram[(m->org_off & 0x7fff) + i * 2], m->org_off & 0x8000 ? 2 : 1);
+    for (const MemMap *m = &kChannel_Maps[0]; m != &kChannel_Maps[countof(kChannel_Maps)]; m++) {
+      for (int j = 0; j < (m->org_off & 0x8000 ? 2 : 1); j++)
+        ((uint8 *)c)[m->off + j] = SPC_RAM((m->org_off & 0x7fff) + i * 2 + j);
+    }
   }
-  for (const MemMapSized *m = &kSpcPlayer_Maps[0]; m != &kSpcPlayer_Maps[countof(kSpcPlayer_Maps)]; m++)
-    memcpy((uint8 *)p + m->off, &p->ram[m->org_off], m->size);
+  for (const MemMapSized *m = &kSpcPlayer_Maps[0]; m != &kSpcPlayer_Maps[countof(kSpcPlayer_Maps)]; m++) {
+    for (int j = 0; j < m->size; j++)
+      ((uint8 *)p)[m->off + j] = SPC_RAM(m->org_off + j);
+  }
 
   for (int i = 0; i < 8; i++)
     p->channel[i].index = i;
 }
 
+// |ticks| of the driver's timer: 64 of the DSP's samples each, at 32 kHz.
+void SpcPlayer_Tick(SpcPlayer *p, uint8 ticks) {
+  Spc_Loop_Part2(p, ticks);
+  Spc_Loop_Part1(p);
+}
+
+#if !SM_GBA
 void SpcPlayer_GenerateSamples(SpcPlayer *p) {
   assert(p->timer_cycles <= 64);
 
@@ -1573,11 +1611,16 @@ void SpcPlayer_GenerateSamples(SpcPlayer *p) {
   }
 }
 
+#endif
+
 void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data) {
   Dsp_Write(p, EVOLL, 0);
   Dsp_Write(p, EVOLR, 0);
   Dsp_Write(p, KOF, 0xff);
 
+#if SM_GBA
+  SpcRam_Upload(data);
+#else
   for (;;) {
     int numbytes = *(uint16 *)(data);
     if (numbytes == 0)
@@ -1588,9 +1631,10 @@ void SpcPlayer_Upload(SpcPlayer *p, const uint8_t *data) {
       p->ram[target++ & 0xffff] = *data++;
     } while (--numbytes);
   }
+#endif
   p->port_to_snes[0] = 0;
   p->input_ports[0] = p->input_ports[1] = p->input_ports[2] = p->input_ports[3] = 255;
-  p->music_ptr_toplevel = WORD(p->ram[0x581e]);
+  p->music_ptr_toplevel = SPC_RAM16(0x581e);
   p->counter_sf0c = 2;
   p->key_OFF |= ~p->is_chan_on;
 }

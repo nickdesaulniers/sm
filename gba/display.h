@@ -16,6 +16,7 @@ enum {
   kGbaLines = 160,
 };
 
+// SameSegment (render.iwram.c) compares all after first_line.
 typedef struct DisplaySegment {
   uint16_t first_line;
   uint16_t dispcnt;

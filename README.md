@@ -29,10 +29,14 @@ python3 tools/make_cartridge.py sm-engine.gba sm.smc sm.gba
 ```
 
 GitHub builds the engine for each push (`.github/workflows/gba.yml`), and for a
-tag named `v*`, publishes a release of it with `make_cartridge.py`. The game runs natively, not in an emulator;
-`gba/` replaces the PC's platform layer. The SNES's 256x224 picture is shown
-1:1, cropped to the GBA's 240x160 around Samus. No sound yet, and it runs
-slower than full speed.
+tag named `v*`, publishes a release of it with `make_cartridge.py`.
+
+The game runs natively, not in an emulator: `gba/` replaces the PC's
+platform layer, at 60 frames per second in most places. In gameplay, the
+SNES's 256x224 picture is shown 1:1, cropped to the GBA's 240x160 around
+Samus; elsewhere (the title, menus, the pause screen), all of it, squashed.
+The sound plays, but without the SNES's echo yet, and with the GBA's 8-bit
+hiss.
 
 Controls in gameplay work as in Metroid: Zero Mission and Fusion (the GBA
 has no X and Y buttons):

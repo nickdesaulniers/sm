@@ -13,3 +13,5 @@ SDL2.dll
 /build-gba/
 /build-test/
 /build-zebes/
+/build-alog/
+/build-zalog/

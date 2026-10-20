@@ -120,7 +120,7 @@ static int SnesLine(int g) {
   return g < kGbaHudLines ? g + kHudBlankLines : g + kHudBlankLines + y_offset;
 }
 
-void Render_Init(void) {
+ROM_CODE void Render_Init(void) {
   // Rows 3 and 7 of each 8 go: fonts keep their tops and bottoms.
   for (int s = 0, g = -kSquashTop; g < kGbaLines; s++) {
     if ((s & 3) == 3)
@@ -137,7 +137,7 @@ void Render_Init(void) {
 }
 
 // Logs the SNES's screen layout when it changes, as what's supported grows.
-static void LogLayoutChange(const PpuRegs *r) {
+ROM_CODE static void LogLayoutChange(const PpuRegs *r) {
   static uint32_t last[2];
   uint32_t now[2] = {
     r->bgmode | r->bgsc[0] << 8 | r->bgsc[1] << 16 | (uint32_t)r->bgsc[2] << 24,
@@ -235,9 +235,14 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
     l->stream[0] = l->stream[1] = 0x100;  // BG2's identity, for what it's worth
 }
 
+// But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
 static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
-  return a->dispcnt == b->dispcnt && !memcmp(a->bgcnt, b->bgcnt, sizeof(a->bgcnt)) &&
-         !memcmp(a->ofs, b->ofs, sizeof(a->ofs));
+  const uint16_t *x = &a->dispcnt, *y = &b->dispcnt;
+  for (int i = 0; i < 13; i++) {
+    if (x[i] != y[i])
+      return false;
+  }
+  return true;
 }
 
 static void UpdateYOffset(void) {
@@ -323,7 +328,7 @@ void Render_CaptureFrame(void) {
   LogLayoutChange(LINE_REGS(SnesLine(kGbaLines / 2)));
 }
 
-static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
+ROM_CODE static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
   SnesHw *h = &g_snes_hw;
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
   if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes)
@@ -375,7 +380,7 @@ static bool ChunkDirty(const uint32_t *dirty, uint32_t chunk) {
        bits_; bits_ >>= 1, k++)                                                            \
     if (bits_ & 1)
 
-static void UpdateTilesMode7(const uint32_t *dirty) {
+ROM_CODE static void UpdateTilesMode7(const uint32_t *dirty) {
   // Each word of the first 32 KB is a map entry (low byte) and a pixel
   // (high byte).
   volatile uint16_t *tiles = GBA_VRAM, *map = VRAM_SB(kSbMode7);
@@ -523,7 +528,7 @@ static const uint8_t kObjHeight[12] = {8, 16, 32, 64, 0, 0, 0, 0, 0, 0, 32, 64};
 
 // Squashed sprites' transformations, in OAM: no flip, horizontal, vertical,
 // and both. Lines are 3/4 as many.
-static void SetSquashMatrices(void) {
+ROM_CODE static void SetSquashMatrices(void) {
   for (int m = 0; m < 4; m++) {
     int16_t p[4] = {m & 1 ? -256 : 256, 0, 0, m & 2 ? -341 : 341};
     for (int i = 0; i < 4; i++)
