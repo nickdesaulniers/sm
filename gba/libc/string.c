@@ -17,20 +17,11 @@
 // For word-at-a-time access to memory of any type.
 typedef uint32_t __attribute__((may_alias)) Word;
 
-void *memmove(void *dst, const void *src, size_t n);
-
 // A word at a time when the two are equally aligned: the ARM7TDMI takes
 // about as long per word as per byte, more so from 16-bit-wide memory.
-//
-// As memmove when they overlap, the destination after the source: the
-// game copies so (LoadLevelDataAndOtherThings, the room's BTS), and the
-// PC's C library, which the PC build was checked against the SNES with,
-// copies as memmove does.
 NO_BUILTIN void *memcpy(void *__restrict dst, const void *__restrict src, size_t n) {
   unsigned char *d = dst;
   const unsigned char *s = src;
-  if (d > s && d < s + n)
-    return memmove(dst, src, n);
   if ((((uintptr_t)d ^ (uintptr_t)s) & 3) == 0) {
     for (; n && ((uintptr_t)d & 3); --n)
       *d++ = *s++;
@@ -51,21 +42,6 @@ NO_BUILTIN void *memcpy(void *__restrict dst, const void *__restrict src, size_t
   }
   while (n--)
     *d++ = *s++;
-  return dst;
-}
-
-NO_BUILTIN void *memmove(void *dst, const void *src, size_t n) {
-  unsigned char *d = dst;
-  const unsigned char *s = src;
-  if (d < s) {
-    while (n--)
-      *d++ = *s++;
-  } else {
-    d += n;
-    s += n;
-    while (n--)
-      *--d = *--s;
-  }
   return dst;
 }
 
@@ -93,6 +69,44 @@ NO_BUILTIN void *memset(void *dst, int value, size_t n) {
 
 // The rest of the C library is seldom used: in ROM.
 #pragma clang section text = ""
+
+// Words too, as memcpy: the game moves rooms' data so, kilobytes of it
+// (as the rooms load).
+NO_BUILTIN void *memmove(void *dst, const void *src, size_t n) {
+  unsigned char *d = dst;
+  const unsigned char *s = src;
+  int aligned = (((uintptr_t)d ^ (uintptr_t)s) & 3) == 0;
+  if (d < s) {
+    if (aligned) {
+      for (; n && ((uintptr_t)d & 3); --n)
+        *d++ = *s++;
+      Word *dw = (Word *)d;
+      const Word *sw = (const Word *)s;
+      for (; n >= 4; n -= 4)
+        *dw++ = *sw++;
+      d = (unsigned char *)dw;
+      s = (const unsigned char *)sw;
+    }
+    while (n--)
+      *d++ = *s++;
+  } else {
+    d += n;
+    s += n;
+    if (aligned) {
+      for (; n && ((uintptr_t)d & 3); --n)
+        *--d = *--s;
+      Word *dw = (Word *)d;
+      const Word *sw = (const Word *)s;
+      for (; n >= 4; n -= 4)
+        *--dw = *--sw;
+      d = (unsigned char *)dw;
+      s = (const unsigned char *)sw;
+    }
+    while (n--)
+      *--d = *--s;
+  }
+  return dst;
+}
 
 NO_BUILTIN int memcmp(const void *a, const void *b, size_t n) {
   const unsigned char *x = a, *y = b;

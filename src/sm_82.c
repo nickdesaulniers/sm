@@ -4211,8 +4211,8 @@ void LoadLevelDataAndOtherThings(void) {  // 0x82E7D3
   DecompressToMem(Load24(&room_compr_level_data_ptr), (uint8 *)&ram7F_start);
 
   uint16 size = ram7F_start;
-  memcpy(custom_background, (uint8 *)level_data + size + (size >> 1), size);
-  memcpy(BTS, (uint8 *)level_data + size, size >> 1);
+  memmove(custom_background, (uint8 *)level_data + size + (size >> 1), size);
+  memmove(BTS, (uint8 *)level_data + size, size >> 1);
 
   if (area_index == 6) {
     DecompressToMem(Load24(&tileset_tile_table_pointer), g_ram + 0xa000);
@@ -4392,8 +4392,8 @@ void LoadLevelScrollAndCre(void) {  // 0x82EA73
   DecompressToMem(Load24(&room_compr_level_data_ptr), (uint8 *)&ram7F_start);
 
   uint16 size = ram7F_start;
-  memcpy(custom_background, (uint8*)level_data + size + (size >> 1), size);
-  memcpy(BTS, (uint8 *)level_data + size, size >> 1);
+  memmove(custom_background, (uint8*)level_data + size + (size >> 1), size);
+  memmove(BTS, (uint8 *)level_data + size, size >> 1);
 
   if (area_index == 6) {
     DecompressToMem(Load24(&tileset_tile_table_pointer), g_ram + 0xa000);
