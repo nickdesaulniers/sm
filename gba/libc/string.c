@@ -17,11 +17,20 @@
 // For word-at-a-time access to memory of any type.
 typedef uint32_t __attribute__((may_alias)) Word;
 
+void *memmove(void *dst, const void *src, size_t n);
+
 // A word at a time when the two are equally aligned: the ARM7TDMI takes
 // about as long per word as per byte, more so from 16-bit-wide memory.
+//
+// As memmove when they overlap, the destination after the source: the
+// game copies so (LoadLevelDataAndOtherThings, the room's BTS), and the
+// PC's C library, which the PC build was checked against the SNES with,
+// copies as memmove does.
 NO_BUILTIN void *memcpy(void *__restrict dst, const void *__restrict src, size_t n) {
   unsigned char *d = dst;
   const unsigned char *s = src;
+  if (d > s && d < s + n)
+    return memmove(dst, src, n);
   if ((((uintptr_t)d ^ (uintptr_t)s) & 3) == 0) {
     for (; n && ((uintptr_t)d & 3); --n)
       *d++ = *s++;

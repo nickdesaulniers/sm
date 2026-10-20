@@ -85,9 +85,47 @@ void gba_main(void) {
       samus_power_bombs = samus_max_power_bombs = 10;
     }
 #endif
+#if SM_TRACE
+    // For tools/hostrun.c, which replays the joypad on the PC build.
+    static uint32_t trace_frame;
+    static uint16_t trace_joy = 0xffff;
+    if (g_snes_hw.joy1 != trace_joy)
+      printf("joy: %u %04x\n", (unsigned)trace_frame, g_snes_hw.joy1);
+    trace_joy = g_snes_hw.joy1;
+#endif
     // (Less the sound's, which interrupts them: see Audio_Background.)
     uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();
+#if SM_TRACE
+    {
+      uint32_t hash = 0;
+      // Of the room's data in RAM, which is the same on the PC, unlike
+      // some of the other RAM: the sound driver's ports, for one.
+      for (int i = 0x10000; i < 0x20000; i += 64)
+        hash = (hash * 31) ^ *(uint32_t *)&g_ram[i];
+      printf("t: %u %08x %d.%04x %d.%04x\n", (unsigned)trace_frame, (unsigned)hash, samus_x_pos,
+             samus_x_subpos, samus_y_pos, samus_y_subpos);
+#ifdef SM_TRACE_DUMP
+      // The game's variables after a frame, to diff, and a hash of each KB
+      // of its RAM.
+      if (trace_frame == SM_TRACE_DUMP - 1)
+        for (int i = 0; i < 0x20000; i += 0x400) {
+          uint32_t h = 0;
+          for (int j = 0; j < 0x400; j += 4)
+            h = (h * 31) ^ *(uint32_t *)&g_ram[i + j];
+          printf("k: %05x %08x\n", i, (unsigned)h);
+        }
+      if (trace_frame >= SM_TRACE_DUMP - 2 && trace_frame <= SM_TRACE_DUMP)
+        for (int i = 0; i < 0x2000; i += 32) {
+          printf("m: %u %04x", (unsigned)trace_frame, i);
+          for (int j = 0; j < 32; j++)
+            printf(" %02x", g_ram[i + j]);
+          printf("\n");
+        }
+#endif
+      trace_frame++;
+    }
+#endif
     if (game_state != state)
       printf("sm: game state %u\n", (unsigned)game_state);
     uint32_t t1 = Cycles(), a1 = g_audio_cycles;
