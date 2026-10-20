@@ -17,3 +17,4 @@ SDL2.dll
 /build-zalog/
 /build-items/
 /build-trace/
+/build-ctrace/

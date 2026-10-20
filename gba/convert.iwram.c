@@ -48,25 +48,33 @@ static inline uint32_t MapEntry(uint32_t e, uint32_t pal_add) {
   return (e & 0x3ff) | ((e >> 4) & 0xc00) | (((e & 0x1c00) << 2) + pal_add);
 }
 
-void Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add) {
-  for (int i = 0; i < count; i++)
+// Returns how many of the entries have the priority bit.
+int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add) {
+  uint32_t hi = 0;
+  for (int i = 0; i < count; i++) {
     dst[i] = MapEntry(src[i], pal_add);
+    hi += src[i] & 0x2000;
+  }
+  return hi >> 13;
 }
 
 // Splits a map in two by the priority bit: tiles in front of the
 // priority 2 sprites, and those behind, with |blank| (a transparent tile)
-// in the other.
-void Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
-                      int count, uint32_t blank) {
+// in the other. Returns how many are in front.
+int Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
+                     int count, uint32_t blank) {
+  int n = 0;
   for (int i = 0; i < count; i++) {
     uint32_t e = src[i];
     uint32_t g = MapEntry(e, 0);
     if (e & 0x2000) {
       hi[i] = g;
       lo[i] = blank;
+      n++;
     } else {
       hi[i] = blank;
       lo[i] = g;
     }
   }
+  return n;
 }

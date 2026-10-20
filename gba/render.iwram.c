@@ -10,7 +10,12 @@
 //   GBA BG3: SNES BG2, priority 2
 // and SNES sprites at priority 3, 2, 1, 0 become GBA priority 1, 2, 3, 3.
 // The GBA draws a sprite in front of a background of the same priority, so
-// this keeps SNES Mode 1's order (BG2's priority tiles aside).
+// this keeps SNES Mode 1's order (BG2's priority tiles aside). In a frame
+// where BG2 shows more priority tiles than BG1 (split_bg2), it's BG2 that's
+// split, and BG1's priority tiles go behind sprites of priority 2:
+//   GBA BG1: SNES BG2's priority tiles, priority 1
+//   GBA BG2: SNES BG1, priority 2
+//   GBA BG3: SNES BG2's other tiles, priority 2
 //
 // GBA VRAM:
 //   0x0000-0x7FFF  BG1/BG2 tiles (the SNES's 1024 at BG1's base)
@@ -19,6 +24,7 @@
 //   0xC000-0xCFFF  BG1 priority tiles' map (24-25)
 //   0xD000-0xDFFF  BG1 other tiles' map (26-27)
 //   0xE000-0xEFFF  BG2 map (28-29)
+//                  (with split_bg2: GBA BG1's, BG2's and BG3's, as above)
 //   0xF000-0xFFFF  BG3 map, slot 1 (30-31): the HUD and the effects layer
 //                  are different maps.
 // In Mode 7, the SNES's one background is the GBA's affine BG2 in Mode 1,
@@ -111,6 +117,17 @@ static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
 // with any goes in front.
 static uint8_t bg3_hi[2][128];
 static int bg3_hi_total[2];
+// Likewise for BG1's and BG2's maps (by screen, 64 chunks each), as last
+// converted; and whether to split BG2, not BG1, into the GBA's BG1 and BG3
+// (see the top): Ceres's Ridley room has its walls and door in BG2's
+// priority tiles, in front of a BG1 of all one tile (but for the escape's
+// timer).
+static uint8_t bg12_hi[2][128];
+// Their sums by column of chunks: by screen, the left and right halves.
+static uint16_t bg12_hi_cols[2][4];
+static bool split_bg2;
+// The GBA layers of BG1 and BG2, as split_bg2 has them.
+static uint8_t bg12_layers[2] = {6, 8};
 
 // What render.c last converted, to see when it has to start over.
 static struct {
@@ -120,7 +137,7 @@ static struct {
   int blank_tile;
   int brightness;
   uint32_t fixed_math;
-  bool mode7, bg3_palettes;
+  bool mode7, bg3_palettes, split_bg2;
 } conv = {.blank_tile = -1, .brightness = -1};
 
 static int SnesLine(int g) {
@@ -212,7 +229,8 @@ static void StepLineMode7(LineRegs *l) {
 // The GBA layers (BLDCNT's bits) of the SNES's layers in |snes| (CGADSUB's
 // or TM's bits: BG1-BG4, OBJ, backdrop).
 static uint16_t BlendLayers(uint8_t snes) {
-  return (snes & 1 ? 6 : 0) | (snes & 2 ? 8 : 0) | (snes & 4 ? 1 : 0) | (snes & 0x30);
+  return (snes & 1 ? bg12_layers[0] : 0) | (snes & 2 ? bg12_layers[1] : 0) | (snes & 4 ? 1 : 0) |
+         (snes & 0x30);
 }
 
 // The SNES's color math, as the GBA's blending can do it, for a line with
@@ -298,18 +316,11 @@ static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
       return windowed | kFixedInWindows;
     }
     // The sub screen's layers on top.
-    if (sub & 1) {
-      c->dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
-      c->bgcnt[1] &= ~3;
-      c->bgcnt[2] &= ~3;
-    }
-    if (sub & 2) {
-      c->dispcnt |= kDispcntBg0 << 3;
-      c->bgcnt[3] &= ~3;
-    }
-    if (sub & 4) {
-      c->dispcnt |= kDispcntBg0;
-      c->bgcnt[0] &= ~3;
+    uint16_t on_top = BlendLayers(sub);
+    c->dispcnt |= on_top << 8;
+    for (int i = 0; i < 4; i++) {
+      if (on_top & (1 << i))
+        c->bgcnt[i] &= ~3;
     }
     c->bld[0] = BlendLayers(sub) | BlendLayers(math & ~sub) << 8 | 1 << 6;
     c->bld[1] = half ? 8 | 8 << 8 : 16 | 16 << 8;
@@ -384,7 +395,7 @@ static void Windows(LineRegs *l, const PpuRegs *r, uint8_t sub) {
   uint32_t key[3] = {
     r->wsel[0] | r->wsel[1] << 8 | r->wsel[2] << 16 | (uint32_t)r->wbglog << 24,
     r->wobjlog | r->tmw << 8 | r->tsw << 16 | (uint32_t)(r->cgwsel & 0xf0) << 24,
-    sub | blending << 8,
+    sub | blending << 8 | split_bg2 << 9,
   };
   if (key[0] != last_key[0] || key[1] != last_key[1] || key[2] != last_key[2]) {
     last_key[0] = key[0];
@@ -413,8 +424,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   uint16_t dispcnt = frame_mode7 ? kDispcntMode1 : kDispcntMode0;
   if (!(r->inidisp & 0x80)) {
     // With Mode 7 lines in the frame, BG1 and BG2's VRAM holds Mode 7's.
-    if ((r->tm & 1) && !frame_mode7) dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
-    if ((r->tm & 2) && !frame_mode7) dispcnt |= kDispcntBg0 << 3;
+    if (!frame_mode7) dispcnt |= BlendLayers(r->tm & 3) << 8;
     if (r->tm & 4) dispcnt |= kDispcntBg0;
     if (r->tm & 16) dispcnt |= kDispcntObj;
   }
@@ -422,7 +432,9 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   int bg3_sb = Bg3Slot(r->bgsc[2]) ? kSbBg3Slot1 : kSbBg3Slot0;
   int bg3_front = (r->bgmode & 8) && bg3_hi_total[Bg3Slot(r->bgsc[2])];
   l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
-  l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
+  // The SNES background split into GBA BG1 and BG2 or BG3.
+  int split = split_bg2;
+  l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
   l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
   Windows(l, r, ColorMath(&l->ctl, r));
@@ -430,8 +442,10 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   uint16_t ofs[8];
   ofs[0] = r->hofs[2] + kXOffset;
   ofs[1] = r->vofs[2] + dy;
-  ofs[2] = ofs[4] = r->hofs[0] + kXOffset;
-  ofs[3] = ofs[5] = r->vofs[0] + dy;
+  ofs[2] = r->hofs[split] + kXOffset;
+  ofs[3] = r->vofs[split] + dy;
+  ofs[4] = r->hofs[0] + kXOffset;
+  ofs[5] = r->vofs[0] + dy;
   ofs[6] = r->hofs[1] + kXOffset;
   ofs[7] = r->vofs[1] + dy;
   // The scrolling is the stream, but in frames with Mode 7, whose stream
@@ -469,6 +483,41 @@ static void UpdateYOffset(void) {
   y_offset += d > 4 ? 4 : d < -4 ? -4 : d;
 }
 
+// Runs the statement after it for each chunk k (declared here) of the 64
+// in the map screen at addr (1024 words, aligned) that changed, or all.
+#define FOR_EACH_DIRTY_CHUNK(dirty, addr, all, k)                                          \
+  for (int w_ = 0; w_ < 2; w_++)                                                           \
+    for (uint32_t bits_ = (all) ? ~0u : (dirty)[((addr) >> 9) + w_], k;                    \
+         bits_ && ((k = w_ * 32 + __builtin_ctz(bits_)), 1); bits_ &= bits_ - 1)
+
+static void SetSplit(bool split) {
+  split_bg2 = split;
+  bg12_layers[0] = split ? 4 : 6;
+  bg12_layers[1] = split ? 10 : 8;
+}
+
+// Chooses split_bg2 from BG1's and BG2's priority tiles (as the frame
+// before converted their maps) and the line |r|'s scrolling.
+ROM_CODE static void ChooseSplit(const PpuRegs *r) {
+  int shown[2];
+  for (int bg = 0; bg < 2; bg++) {
+    uint8_t sc = r->bgsc[bg];
+    int screens = (sc & 3) ? 2 : 1;
+    // The columns the GBA shows, 128 pixels wide, two to a screen (in all
+    // the rows, and both screens of a map two screens high).
+    int wide = sc & 1, n = 0;
+    int first = (r->hofs[bg] + kXOffset) >> 7, last = (r->hofs[bg] + kXOffset + 239) >> 7;
+    for (int j = first; j <= last; j++) {
+      int col = j & (wide ? 3 : 1);
+      n += bg12_hi_cols[bg][col];
+      if (!wide && screens == 2)
+        n += bg12_hi_cols[bg][2 + col];
+    }
+    shown[bg] = n;
+  }
+  SetSplit(shown[1] > shown[0] && (r->tm & 2));
+}
+
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh);
 
@@ -501,6 +550,10 @@ void Render_CaptureFrame(void) {
     else if (text_line < 0 || g == kGbaLines / 2)
       text_line = SnesLine(g);
   }
+  if (text_line >= 0 && !frame_mode7)
+    ChooseSplit(LINE_REGS(text_line));
+  else
+    SetSplit(false);
 
   // Lines with the same registers as the one before (and the same
   // vertical offset) have the same GBA registers, but for Mode 7's
@@ -648,16 +701,6 @@ static bool ChunkDirty(const uint32_t *dirty, uint32_t chunk) {
   return (dirty[chunk >> 5] >> (chunk & 31)) & 1;
 }
 
-// Runs the statement after it for each chunk k (declared here) of the 64
-// in the map screen at addr (1024 words, aligned) that changed, or all.
-#define FOR_EACH_DIRTY_CHUNK(dirty, addr, all, k)                                          \
-  for (uint64_t bits_ = (all) ? ~0ull                                                      \
-                              : (uint64_t)(dirty)[((addr) >> 9) + 1] << 32 |              \
-                                    (dirty)[(addr) >> 9],                                  \
-                k = 0;                                                                     \
-       bits_; bits_ >>= 1, k++)                                                            \
-    if (bits_ & 1)
-
 ROM_CODE static void UpdateTilesMode7(const uint32_t *dirty) {
   // Each word of the first 32 KB is a map entry (low byte) and a pixel
   // (high byte).
@@ -748,24 +791,43 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
   conv.blank_tile = blank;
 }
 
-static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, bool bg12) {
-  for (int bg = 0; bg < 2 && bg12; bg++) {
+// (In ROM: what it calls does the work.)
+ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool force_split) {
+  bool split_changed = split_bg2 != conv.split_bg2;
+  conv.split_bg2 = split_bg2;
+  for (int bg = 0; bg < 2; bg++) {
     uint8_t sc = r->bgsc[bg];
-    bool changed = sc != conv.bgsc[bg] || (bg == 0 && force_bg1);
+    bool split = bg == split_bg2;
+    bool changed = sc != conv.bgsc[bg] || (split && force_split) || split_changed;
+    if (sc != conv.bgsc[bg]) {
+      memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
+      memset(bg12_hi_cols[bg], 0, sizeof(bg12_hi_cols[bg]));
+    }
     conv.bgsc[bg] = sc;
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
+      uint8_t *counts = &bg12_hi[bg][k * 64];
+      uint16_t *cols = &bg12_hi_cols[bg][k * 2];
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
         uint32_t o = c * 16;
-        if (bg == 0)
-          Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o, VRAM_SB(kSbBg1Lo + k) + o,
-                           &g_vram[addr + o], 16, conv.blank_tile);
+        int hi;
+        if (split)
+          hi = Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o,
+                                VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, &g_vram[addr + o], 16,
+                                conv.blank_tile);
         else
-          Convert_Map(VRAM_SB(kSbBg2 + k) + o, &g_vram[addr + o], 16, 0);
+          hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, &g_vram[addr + o], 16, 0);
+        cols[c & 1] += hi - counts[c];
+        counts[c] = hi;
       }
     }
   }
+}
+
+static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split, bool bg12) {
+  if (bg12)
+    UpdateMaps12(r, dirty, force_split);
   for (int slot = 0; slot < 2; slot++) {
     uint8_t sc = bg3_slot_sc[slot];
     if (sc == 0xff)
@@ -779,12 +841,8 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, 
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
         uint32_t o = c * 16;
-        Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o], 16,
-                    8 << 12);
-        int hi = 0;
-        for (int i = 0; i < 16; i++)
-          hi += (g_vram[addr + o + i] >> 13) & 1;
-        bg3_hi[slot][k * 64 + c] = hi;
+        bg3_hi[slot][k * 64 + c] = Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o,
+                                               &g_vram[addr + o], 16, 8 << 12);
       }
     }
     int total = 0;

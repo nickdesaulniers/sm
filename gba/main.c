@@ -103,8 +103,8 @@ void gba_main(void) {
       // some of the other RAM: the sound driver's ports, for one.
       for (int i = 0x10000; i < 0x20000; i += 64)
         hash = (hash * 31) ^ *(uint32_t *)&g_ram[i];
-      printf("t: %u %08x %d.%04x %d.%04x\n", (unsigned)trace_frame, (unsigned)hash, samus_x_pos,
-             samus_x_subpos, samus_y_pos, samus_y_subpos);
+      printf("t: %u %08x %04x %d.%04x %d.%04x\n", (unsigned)trace_frame, (unsigned)hash, room_ptr,
+             samus_x_pos, samus_x_subpos, samus_y_pos, samus_y_subpos);
 #ifdef SM_TRACE_DUMP
       // The game's variables after a frame, to diff, and a hash of each KB
       // of its RAM.

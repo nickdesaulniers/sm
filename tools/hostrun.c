@@ -6,11 +6,12 @@
 // TRACE is the log of a cartridge built with -DSM_TRACE=ON (from smrun):
 // its "joy: FRAME VALUE" lines are the joypad (JOY1), frame by frame. With
 // the same skipping of the intro as gba/main.c (-DSM_SKIP_INTRO=ON
-// -DSM_START_ZEBES=ON), this runs FRAMES frames of the PC's C code (mine),
-// or of it and the original, emulated, compared every frame (both, the
-// default: a mismatch prints "Verify failure!"), and prints the same "t:"
-// lines as the GBA's, to diff: the frame, a hash of the room's data in RAM,
-// and Samus's position. With DUMP=FRAME (and the cartridge built with
+// -DSM_START_ZEBES=ON; with CERES=1, without SM_START_ZEBES), this runs
+// FRAMES frames of the PC's C code (mine), or of it and the original,
+// emulated, compared every frame (both, the default: a mismatch prints
+// "Verify failure!"), and prints the same "t:" lines as the GBA's, to
+// diff: the frame, a hash of the room's data in RAM, the room, and Samus's
+// position. With DUMP=FRAME (and the cartridge built with
 // -DCMAKE_C_FLAGS=-DSM_TRACE_DUMP=FRAME), both print the game's variables
 // (RAM's first 8 KB, "m:" lines) for the frames up to it, and a hash of
 // each KB of RAM ("k:" lines) for the one before.
@@ -91,10 +92,11 @@ int main(int argc, char **argv) {
   coroutine_state_0 = 1;
   bug_fix_counter = 1;
   uint16 intro_frames = 0;
+  bool ceres = getenv("CERES") != NULL;
   for (int fr = 0; fr < frames; fr++) {
     if (game_state == 30 && ++intro_frames == 60)
       cinematic_function = (uint16)0x8BC0C5;  // CinematicFunction_Intro_Func72
-    if (game_state == 31 && loading_game_state == 0x1f)
+    if (!ceres && game_state == 31 && loading_game_state == 0x1f)
       loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
     // JOY1's bits, B first, are the emulated joypad's from bit 0.
     int input = 0;
@@ -105,8 +107,8 @@ int main(int argc, char **argv) {
     uint32 hash = 0;
     for (int i = 0x10000; i < 0x20000; i += 64)
       hash = (hash * 31) ^ *(uint32 *)&g_ram[i];
-    printf("t: %u %08x %d.%04x %d.%04x\n", fr, hash, samus_x_pos, samus_x_subpos, samus_y_pos,
-           samus_y_subpos);
+    printf("t: %u %08x %04x %d.%04x %d.%04x\n", fr, hash, room_ptr, samus_x_pos, samus_x_subpos,
+           samus_y_pos, samus_y_subpos);
     // With DUMP=FRAME, the game's variables then, as SM_TRACE_DUMP does.
     static int dump = -1;
     if (dump < 0)
