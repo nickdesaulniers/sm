@@ -37,6 +37,16 @@ typedef uint64_t uint64;
 typedef int64_t int64;
 #endif
 
+// Hot code: on the GBA, ARM code in IWRAM (see gba/gba.ld), which runs about
+// twice as fast as Thumb code from the cartridge, for the few functions that
+// take the most time. IWRAM is small. Such functions mustn't divide (see
+// cmake/compiler-rt.cmake).
+#if SM_GBA
+#define GBA_IWRAM_CODE __attribute__((target("arm"), section(".iwram.text")))
+#else
+#define GBA_IWRAM_CODE
+#endif
+
 // For g_ram: lets clang access variables at constant even offsets into it
 // with halfword loads on the GBA.
 #if SM_GBA

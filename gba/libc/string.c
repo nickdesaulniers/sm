@@ -3,12 +3,16 @@
 // recognized loops), so these must exist.
 //
 // Built -fno-builtin, and the functions carry no_builtin too, so that the
-// optimizer doesn't turn these loops back into calls to themselves.
+// optimizer doesn't turn these loops back into calls to themselves; and
+// noinline, for one copy of each in IWRAM, not one per __aeabi_ alias.
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-#define NO_BUILTIN __attribute__((no_builtin))
+#define NO_BUILTIN __attribute__((no_builtin, noinline))
+
+// In IWRAM, as ARM code (see CMakeLists.txt): the game copies a lot.
+#pragma clang section text = ".iwram.text.libc"
 
 // For word-at-a-time access to memory of any type.
 typedef uint32_t __attribute__((may_alias)) Word;

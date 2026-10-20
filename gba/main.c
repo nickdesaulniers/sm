@@ -18,7 +18,24 @@ static void VBlankIntrWait(void) {
   __asm__ volatile("swi 0x05" ::: "r0", "r1", "r2", "r3", "memory");
 }
 
+// The stack's low-water mark, to see that gba.ld reserves enough: the stack
+// is painted at the start, and the paint left shows how deep it went.
+extern char __sp_sys[], __stack_size[];
+static void PaintStack(void) {
+  volatile uint32_t *p = (volatile uint32_t *)(__sp_sys - (uintptr_t)__stack_size);
+  uint32_t here = (uintptr_t)&p - 64;
+  for (; (uintptr_t)p < here; p++)
+    *p = 0xDEADBEEF;
+}
+static unsigned StackUsed(void) {
+  const uint32_t *p = (const uint32_t *)(__sp_sys - (uintptr_t)__stack_size);
+  while (*p == 0xDEADBEEF)
+    p++;
+  return (uintptr_t)__sp_sys - (uintptr_t)p;
+}
+
 void gba_main(void) {
+  PaintStack();
   // Cartridge ROM: 3/1 wait states, prefetch. SRAM: 8.
   REG_WAITCNT = 0x4317;
   REG_TMCNT_H(3) = 0x84;  // cascade, enabled
@@ -71,9 +88,9 @@ void gba_main(void) {
     render_cycles += (t2 - t1) + (t4 - t3);
     if (++frames == 60) {
       uint32_t v = g_vblank_count;
-      printf("sm: 60 frames in %u vblanks; game %u, render %u cycles/frame; state %u\n",
+      printf("sm: 60 frames in %u vblanks; game %u, render %u cycles/frame; state %u; stack %u\n",
              (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)(render_cycles / 60),
-             (unsigned)game_state);
+             (unsigned)game_state, StackUsed());
       vblanks = v;
       frames = game_cycles = render_cycles = 0;
     }

@@ -28,7 +28,7 @@ typedef struct PpuRegs {
   uint8_t setini;
 } PpuRegs;
 
-typedef struct DmaChannel {
+typedef struct SnesDmaChannel {
   uint8_t dmap, bbad;
   uint16_t a1t;
   uint8_t a1b;
@@ -39,7 +39,7 @@ typedef struct DmaChannel {
   uint8_t unused;
   bool hdma_do_transfer;
   bool hdma_terminated;
-} DmaChannel;
+} SnesDmaChannel;
 
 enum {
   kVramWords = 0x8000,
@@ -70,7 +70,7 @@ typedef struct SnesHw {
   uint16_t rddiv, rdmpy;
   uint16_t joy1;
 
-  DmaChannel dma[8];
+  SnesDmaChannel dma[8];
 
   // What changed since render.c last looked (and g_vram_dirty).
   bool cgram_dirty, oam_dirty, regs_dirty;

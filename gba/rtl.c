@@ -12,15 +12,11 @@
 uint8 g_ram[0x20000] RAM_ALIGNED;
 static uint8 sram[0x2000];
 uint8 *g_sram = sram;
-const uint8 *g_rom;
 bool g_use_my_apu_code = true;
 bool g_debug_flag;
 int snes_frame_counter;
 
-extern const uint8 snes_rom[];
-
 void RtlInit(void) {
-  g_rom = snes_rom;
   for (int i = 0; i < 0x2000; i++)
     sram[i] = GBA_SRAM[i];
 }
@@ -45,12 +41,6 @@ void Call(uint32 addr) {
 
 void DebugGameOverMenu(void) {
   printf("DebugGameOverMenu: not decompiled\n");
-}
-
-const uint8 *RomPtr(uint32_t addr) {
-  if (!(addr & 0x8000))
-    printf("RomPtr: invalid access 0x%x\n", (unsigned)addr);
-  return RomFixedPtr(addr);
 }
 
 void MemCpy(void *dst, const void *src, int size) {

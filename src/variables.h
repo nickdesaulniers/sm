@@ -13,6 +13,17 @@ static inline void AddToHiLo(uint16 *hi, uint16 *lo, uint32 v) {
   *hi = t >> 16;
 }
 
+#if SM_GBA
+// For ARM code (GBA_IWRAM_CODE), which can't inline Thumb functions.
+#define AddToHiLo(hi, lo, v)                         \
+  do {                                               \
+    uint16 *hi_ = (hi), *lo_ = (lo);                 \
+    uint32 t_ = *lo_ + (*hi_ << 16) + (uint32)(v);   \
+    *lo_ = t_;                                       \
+    *hi_ = t_ >> 16;                                 \
+  } while (0)
+#endif
+
 static inline void SetHiLo(uint16 *hi, uint16 *lo, uint32 t) {
   *lo = t;
   *hi = t >> 16;

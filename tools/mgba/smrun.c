@@ -17,9 +17,15 @@
 //
 // With PROFILE=N SYMS=FILE, it runs the N frames from frame PROFILE_FROM
 // (default 1, counted like SHOTS) an instruction at a time, and prints
-// where their cycles went, by function: SYMS is `llvm-nm -n sm.elf`. With
-// PCS=LO:HI (hex) too, it also prints the cycles of each instruction with an
+// where their cycles went, by function (the PROFILE_TOP most, default
+// 50): SYMS is `llvm-nm -n sm.elf`. With
+// PCS=LO:HI (hex) too, it also prints the cycles and count of each
+// instruction with an
 // address in [LO, HI), to see where in a function they go.
+//
+// With DUMP=FRAME:PREFIX, it writes the GBA's memory after that frame
+// (counted like SHOTS) to PREFIX.ewram, PREFIX.iwram, .io, .pal, .vram and
+// .oam: for tools/snesref.c, and for looking into.
 //
 // Build with tools/mgba/build.sh, against mGBA 0.10.
 #include <mgba/flags.h>
@@ -102,7 +108,7 @@ struct Sym {
     unsigned long long cycles;
 };
 static uint32_t pcs_lo, pcs_hi;
-static unsigned long long* pcs_cycles;
+static unsigned long long *pcs_cycles, *pcs_count;
 static struct Sym* syms;
 static int nsyms;
 
@@ -158,10 +164,29 @@ static unsigned long long profile_frame(struct mCore* core) {
         uint64_t now = mTimingGlobalTime(core->timing);
         find_sym(pc)->cycles += now - last;
         if (pcs_cycles && pc >= pcs_lo && pc < pcs_hi)
-            pcs_cycles[(pc - pcs_lo) / 2] += now - last;
+            pcs_cycles[(pc - pcs_lo) / 2] += now - last, pcs_count[(pc - pcs_lo) / 2]++;
         last = now;
     }
     return last - start;
+}
+
+static void dump_memory(struct mCore* core, const char* prefix) {
+    static const struct { const char* ext; uint32_t base, size; } kRegions[] = {
+        {"ewram", 0x02000000, 0x40000},
+        {"iwram", 0x03000000, 0x8000},
+        {"io", 0x04000000, 0x400},
+        {"pal", 0x05000000, 0x400},
+        {"vram", 0x06000000, 0x18000},
+        {"oam", 0x07000000, 0x400},
+    };
+    for (unsigned r = 0; r < sizeof kRegions / sizeof *kRegions; r++) {
+        char path[512];
+        snprintf(path, sizeof path, "%s.%s", prefix, kRegions[r].ext);
+        FILE* f = fopen(path, "wb");
+        for (uint32_t a = 0; a < kRegions[r].size; a++)
+            fputc(core->rawRead8(core, kRegions[r].base + a, -1), f);
+        fclose(f);
+    }
 }
 
 static void put32(unsigned char* p, uint32_t v) {
@@ -246,6 +271,7 @@ int main(int argc, char** argv) {
         const char* colon = strchr(getenv("PCS"), ':');
         pcs_hi = colon ? strtoul(colon + 1, NULL, 16) : pcs_lo;
         pcs_cycles = calloc((pcs_hi - pcs_lo) / 2 + 1, sizeof *pcs_cycles);
+        pcs_count = calloc((pcs_hi - pcs_lo) / 2 + 1, sizeof *pcs_count);
     }
     int frames = atoi(argv[2]);
     const char* shots = argc > 3 ? argv[3] : "";
@@ -267,15 +293,19 @@ int main(int argc, char** argv) {
         if (profile_n && t == profile_from + profile_n - 1 && profile_total) {
             qsort(syms, nsyms, sizeof *syms, by_cycles);
             printf("profile: %llu cycles over %d frames\n", profile_total, profile_n);
-            for (int k = 0; k < 50 && syms[k].cycles; k++)
+            for (int k = 0; k < (getenv("PROFILE_TOP") ? atoi(getenv("PROFILE_TOP")) : 50) && syms[k].cycles; k++)
                 printf("%5.1f%% %10llu  %s\n", 100.0 * syms[k].cycles / profile_total, syms[k].cycles,
                        syms[k].name);
             for (uint32_t a = pcs_lo; pcs_cycles && a < pcs_hi; a += 2) {
                 if (pcs_cycles[(a - pcs_lo) / 2])
-                    printf("pc %08x %10llu\n", a, pcs_cycles[(a - pcs_lo) / 2]);
+                    printf("pc %08x %10llu %8llu\n", a, pcs_cycles[(a - pcs_lo) / 2],
+                           pcs_count[(a - pcs_lo) / 2]);
             }
             break;
         }
+        const char* dump = getenv("DUMP");
+        if (dump && t > 0 && atoi(dump) == t && strchr(dump, ':'))
+            dump_memory(core, strchr(dump, ':') + 1);
         for (const char* s = shots; *s && t > 0;) {
             if (atoi(s) == t) {
                 char path[512];

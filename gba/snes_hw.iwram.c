@@ -15,6 +15,8 @@ uint16_t g_cgram[256];
 uint8_t g_oam[544];
 uint16_t g_vram[kVramWords];
 uint32_t g_vram_dirty[kVramChunks / 32];
+// The game wrote HDMAEN: HDMA's decoded channels are out of date.
+static bool hdma_dirty IWRAM_BSS;
 
 static uint32_t wram_port_addr;
 
@@ -22,7 +24,7 @@ void SnesHw_Reset(void) {
   memset(&g_snes_hw, 0, sizeof(g_snes_hw));
   g_snes_hw.vram_inc = 1;
   for (int i = 0; i < 8; i++) {
-    DmaChannel *c = &g_snes_hw.dma[i];
+    SnesDmaChannel *c = &g_snes_hw.dma[i];
     c->dmap = 0xff;
     c->bbad = 0xff;
     c->a1t = 0xffff;
@@ -267,10 +269,23 @@ static const uint8_t *ABusSpan(uint8_t bank, uint16_t a, uint32_t count) {
   return NULL;
 }
 
+// Copies |bytes| (even) with the GBA's DMA when both are halfword-aligned:
+// the cartridge then reads sequentially, which is several times faster
+// than a load at a time.
+static void CopyBytes(void *dst, const uint8_t *src, uint32_t bytes) {
+  if (!(((uintptr_t)dst | (uintptr_t)src) & 1)) {
+    REG_DMASAD(3) = (uintptr_t)src;
+    REG_DMADAD(3) = (uintptr_t)dst;
+    REG_DMACNT(3) = (bytes >> 1) | kDma16 | kDmaEnable;
+  } else {
+    memcpy(dst, src, bytes);
+  }
+}
+
 // DMA from the A bus to the PPU's memories without going through WriteBBus
 // a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
 // the game does almost all its DMA. Returns false for anything else.
-static bool FastDma(DmaChannel *c, uint32_t count) {
+static bool FastDma(SnesDmaChannel *c, uint32_t count) {
   SnesHw *h = &g_snes_hw;
   // B to A, or a fixed or decrementing A address.
   if (c->dmap & 0x98)
@@ -283,7 +298,7 @@ static bool FastDma(DmaChannel *c, uint32_t count) {
   if (c->bbad == 0x22 && (mode == 0 || mode == 2) && !h->cgram_high && !(count & 1) &&
       h->cgram_ptr + count / 2 <= 256) {
     // Whole colors (the unused top bit doesn't matter to the GBA).
-    memcpy(&g_cgram[h->cgram_ptr], src, count);
+    CopyBytes(&g_cgram[h->cgram_ptr], src, count);
     h->cgram_ptr += count / 2;
     h->cgram_dirty = true;
   } else if (c->bbad == 0x04 && (mode == 0 || mode == 2) && !(h->oam_addr & 1) &&
@@ -292,8 +307,8 @@ static bool FastDma(DmaChannel *c, uint32_t count) {
     uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
     if (low > count)
       low = count;
-    memcpy(&g_oam[h->oam_addr], src, low);
-    memcpy(&g_oam[h->oam_addr + low], src + low, count - low);
+    CopyBytes(&g_oam[h->oam_addr], src, low);
+    CopyBytes(&g_oam[h->oam_addr + low], src + low, count - low);
     h->oam_addr = (h->oam_addr + count) & 0x3ff;
     h->oam_dirty = true;
   } else if (c->bbad == 0x22 && (mode == 0 || mode == 2)) {
@@ -320,13 +335,18 @@ static bool FastDma(DmaChannel *c, uint32_t count) {
   } else if (c->bbad == 0x18 && mode == 1 && no_remap && inc_on_high && !(count & 1)) {
     uint16_t p = h->vram_ptr, inc = h->vram_inc;
     if (inc == 1) {
-      for (uint32_t i = 0; i < count; i += 2, p++) {
-        g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
-        if (!(p & 15))
-          MarkVramDirty(p);
+      // In up to two pieces, as VRAM wraps around.
+      uint32_t words = count / 2;
+      while (words) {
+        uint32_t n = 0x8000 - (p & 0x7fff);
+        n = n < words ? n : words;
+        CopyBytes(&g_vram[p & 0x7fff], src, n * 2);
+        for (uint32_t q = p & ~15; q < (uint32_t)p + n; q += 16)
+          MarkVramDirty(q);
+        src += n * 2;
+        p += n;
+        words -= n;
       }
-      MarkVramDirty(h->vram_ptr);
-      MarkVramDirty(p - 1);
     } else {
       for (uint32_t i = 0; i < count; i += 2, p += inc) {
         g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
@@ -359,7 +379,7 @@ static void RunDma(uint8_t channels) {
   for (int i = 0; i < 8; i++) {
     if (!(channels & (1 << i)))
       continue;
-    DmaChannel *c = &g_snes_hw.dma[i];
+    SnesDmaChannel *c = &g_snes_hw.dma[i];
     uint32_t count = c->das ? c->das : 0x10000;
     if (!FastDma(c, count)) {
       uint8_t mode = c->dmap & 7;
@@ -379,7 +399,7 @@ static void RunDma(uint8_t channels) {
 }
 
 static void WriteDmaReg(uint16_t reg, uint8_t val) {
-  DmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
+  SnesDmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
   switch (reg & 0xf) {
   case 0x0: c->dmap = val; break;
   case 0x1: c->bbad = val; break;
@@ -397,7 +417,7 @@ static void WriteDmaReg(uint16_t reg, uint8_t val) {
 }
 
 static uint8_t ReadDmaReg(uint16_t reg) {
-  DmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
+  SnesDmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
   switch (reg & 0xf) {
   case 0x0: return c->dmap;
   case 0x1: return c->bbad;
@@ -440,7 +460,10 @@ void WriteReg(uint16 reg, uint8 value) {
   case VTIMEL: h->vtime = (h->vtime & 0x100) | value; break;
   case VTIMEH: h->vtime = (h->vtime & 0xff) | ((value & 1) << 8); break;
   case MDMAEN: RunDma(value); break;
-  case HDMAEN: h->hdmaen = value; break;
+  case HDMAEN:
+    h->hdmaen = value;
+    hdma_dirty = true;
+    break;
   }
 }
 
@@ -473,52 +496,104 @@ void WriteRegWord(uint16 reg, uint16 value) {
   WriteReg(reg + 1, value >> 8);
 }
 
-void SnesHw_HdmaInit(void) {
+// The channels HDMA is running, decoded once a frame (and if the game
+// writes HDMAEN partway down the screen), in channel order.
+typedef struct HdmaChannel {
+  SnesDmaChannel *c;
+  uint8_t bytes;    // per line
+  bool indirect;
+  uint8_t regs[4];  // the B-bus registers they go to, in order
+  // Pointers to the table's bank and the indirect data's: see BankPtr.
+  const uint8_t *table, *data;
+  bool table_ram, data_ram;
+} HdmaChannel;
+
+static HdmaChannel hdma[8] IWRAM_BSS;
+static int hdma_count IWRAM_BSS;
+
+// A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
+// of a bank of RAM (*ram), or the upper half of a LoROM bank's.
+static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
+  *ram = bank == 0x7e || bank == 0x7f;
+  if (*ram)
+    return &g_ram[(bank & 1) << 16];
+  return (const uint8_t *)((uintptr_t)RomFixedPtr(bank << 16 | 0x8000) - 0x8000);
+}
+
+static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_t addr) {
+  return (ram || addr >= 0x8000) ? p[addr] : SnesHw_ReadA(bank << 16 | addr);
+}
+
+static void HdmaDecode(void) {
+  hdma_count = 0;
+  hdma_dirty = false;
   for (int i = 0; i < 8; i++) {
-    DmaChannel *c = &g_snes_hw.dma[i];
-    c->hdma_terminated = false;
-    c->hdma_do_transfer = false;
-    if (!(g_snes_hw.hdmaen & (1 << i)))
+    SnesDmaChannel *c = &g_snes_hw.dma[i];
+    if (!(g_snes_hw.hdmaen & (1 << i)) || c->hdma_terminated)
       continue;
-    c->a2a = c->a1t;
-    c->ntrl = SnesHw_ReadA((c->a1b << 16) | c->a2a++);
-    if (c->ntrl == 0) {
-      c->hdma_terminated = true;
-      continue;
-    }
-    if (c->dmap & 0x40) {
-      c->das = SnesHw_ReadA((c->a1b << 16) | c->a2a++);
-      c->das |= SnesHw_ReadA((c->a1b << 16) | c->a2a++) << 8;
-    }
-    c->hdma_do_transfer = true;
+    HdmaChannel *d = &hdma[hdma_count++];
+    uint8_t mode = c->dmap & 7;
+    d->c = c;
+    d->bytes = kTransferLength[mode];
+    d->indirect = c->dmap & 0x40;
+    for (int j = 0; j < 4; j++)
+      d->regs[j] = c->bbad + kBbadOffsets[mode][j];
+    d->table = BankPtr(c->a1b, &d->table_ram);
+    d->data = BankPtr(c->dasb, &d->data_ram);
   }
 }
 
-void SnesHw_HdmaRunLine(void) {
+// Reads a channel's next table entry: its line count, and the address of
+// its data if indirect.
+static void HdmaNextEntry(HdmaChannel *d) {
+  SnesDmaChannel *c = d->c;
+  c->ntrl = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+  if (d->indirect) {
+    c->das = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+    c->das |= ReadBank(d->table, d->table_ram, c->a1b, c->a2a++) << 8;
+  }
+  c->hdma_terminated = c->ntrl == 0;
+  c->hdma_do_transfer = true;
+}
+
+void SnesHw_HdmaInit(void) {
   for (int i = 0; i < 8; i++) {
-    DmaChannel *c = &g_snes_hw.dma[i];
-    if (!(g_snes_hw.hdmaen & (1 << i)) || c->hdma_terminated)
-      continue;
-    uint8_t mode = c->dmap & 7;
+    SnesDmaChannel *c = &g_snes_hw.dma[i];
+    c->hdma_terminated = false;
+    c->hdma_do_transfer = false;
+  }
+  HdmaDecode();
+  for (int k = 0; k < hdma_count; k++) {
+    hdma[k].c->a2a = hdma[k].c->a1t;
+    HdmaNextEntry(&hdma[k]);
+  }
+  // Without the ones whose table is empty.
+  HdmaDecode();
+}
+
+void SnesHw_HdmaRunLine(void) {
+  if (hdma_dirty)
+    HdmaDecode();
+  bool terminated = false;
+  for (int k = 0; k < hdma_count; k++) {
+    HdmaChannel *d = &hdma[k];
+    SnesDmaChannel *c = d->c;
     if (c->hdma_do_transfer) {
-      for (int j = 0; j < kTransferLength[mode]; j++) {
-        uint32_t a = (c->dmap & 0x40) ? (c->dasb << 16) | c->das++ : (c->a1b << 16) | c->a2a++;
-        WriteBBus(c->bbad + kBbadOffsets[mode][j], SnesHw_ReadA(a));
+      for (int j = 0; j < d->bytes; j++) {
+        uint8_t v = d->indirect ? ReadBank(d->data, d->data_ram, c->dasb, c->das++)
+                                : ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+        WriteBBus(d->regs[j], v);
       }
     }
     c->ntrl--;
     c->hdma_do_transfer = c->ntrl & 0x80;
-    if ((c->ntrl & 0x7f) == 0) {
-      c->ntrl = SnesHw_ReadA((c->a1b << 16) | c->a2a++);
-      if (c->dmap & 0x40) {
-        c->das = SnesHw_ReadA((c->a1b << 16) | c->a2a++);
-        c->das |= SnesHw_ReadA((c->a1b << 16) | c->a2a++) << 8;
-      }
-      if (c->ntrl == 0)
-        c->hdma_terminated = true;
-      c->hdma_do_transfer = true;
+    if (!(c->ntrl & 0x7f)) {
+      HdmaNextEntry(d);
+      terminated |= c->hdma_terminated;
     }
   }
+  if (terminated)
+    HdmaDecode();
 }
 
 void Vector_IRQ(void);
@@ -527,10 +602,8 @@ void Vector_IRQ(void);
 // channel, the lines left in a table entry that doesn't repeat, after its
 // first. Up to |max|.
 static int HdmaQuietLines(int max) {
-  for (int i = 0; i < 8 && max; i++) {
-    DmaChannel *c = &g_snes_hw.dma[i];
-    if (!(g_snes_hw.hdmaen & (1 << i)) || c->hdma_terminated)
-      continue;
+  for (int k = 0; k < hdma_count && max; k++) {
+    SnesDmaChannel *c = hdma[k].c;
     int quiet = (c->hdma_do_transfer || (c->ntrl & 0x80)) ? 0 : (c->ntrl & 0x7f) - 1;
     if (quiet < max)
       max = quiet;
@@ -539,10 +612,8 @@ static int HdmaQuietLines(int max) {
 }
 
 static void HdmaSkipLines(int lines) {
-  for (int i = 0; i < 8; i++) {
-    if ((g_snes_hw.hdmaen & (1 << i)) && !g_snes_hw.dma[i].hdma_terminated)
-      g_snes_hw.dma[i].ntrl -= lines;
-  }
+  for (int k = 0; k < hdma_count; k++)
+    hdma[k].c->ntrl -= lines;
 }
 
 static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
@@ -559,26 +630,28 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state) {
   SnesHw_HdmaInit();
   int n = 0;
   h->regs_dirty = true;
-  for (int v = 0; v < kSnesLines; v++) {
+  // A line shows the registers as HDMA and the IRQ at the end of the line
+  // before it left them (as src/snes/snes.c draws a frame).
+  for (int v = 0; v < kSnesLines;) {
+    bool irq = (h->nmitimen & 0x30) && h->vtime < kSnesLines;
+    // Lines where HDMA only counts down, before the IRQ's, if any.
+    int quiet = HdmaQuietLines((irq && h->vtime >= v ? h->vtime : kSnesLines) - v);
+    if (quiet) {
+      HdmaSkipLines(quiet);
+    } else {
+      SnesHw_HdmaRunLine();
+      if (irq && v == h->vtime)
+        Vector_IRQ();
+      quiet = 1;
+    }
     // HDMA often writes registers with the values they have.
     if (h->regs_dirty) {
       h->regs_dirty = false;
       if (!n || !SameRegs(&states[n - 1], &h->r))
         states[n++] = h->r;
     }
-    line_state[v] = n - 1;
-    bool irq = (h->nmitimen & 0x30) && h->vtime < kSnesLines;
-    // Lines with nothing for HDMA to do, before the IRQ at the end of its
-    // line, have this line's registers.
-    int quiet = HdmaQuietLines((irq && h->vtime >= v ? h->vtime : kSnesLines - 1) - v);
-    if (quiet) {
-      HdmaSkipLines(quiet);
-      for (int end = v + quiet; v < end; v++)
-        line_state[v + 1] = n - 1;
-    }
-    SnesHw_HdmaRunLine();
-    if (irq && v == h->vtime)
-      Vector_IRQ();
+    for (int end = v + quiet; v < end; v++)
+      line_state[v] = n - 1;
   }
   return n;
 }

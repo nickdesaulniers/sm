@@ -81,12 +81,26 @@ static DisplayFrame frames[2];
 static int back;
 
 static bool hud;
+// Outside gameplay (the title, menus, the pause screen), the SNES screen
+// squashed into the GBA's: 6 of each 8 lines, so that the same two rows of
+// each row of tiles go, and text stays legible (the SNES's 224 lines make
+// 168, less 4 at the top and bottom). kSquashLine[g] is the SNES line on
+// GBA line g, and sprites are scaled to match.
+enum { kSquashTop = 4 };
+static bool squash;
+static uint8_t kSquashLine[kGbaLines];
 // Whether lines on show use Mode 7, and one that uses another mode, or -1.
 static bool frame_mode7;
 static int text_line;
 static int y_offset = kMaxYOffset / 2;
 // SNES BG3 maps in GBA map slots 0 and 1, by BG3SC.
 static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
+// How many of each slot's entries, by chunk of 16, have the priority bit.
+// The GBA has no background to spare for BG3's priority tiles (in front of
+// everything, with BGMODE's bit 3) and the others (at the back): a slot
+// with any goes in front.
+static uint8_t bg3_hi[2][128];
+static int bg3_hi_total[2];
 
 // What render.c last converted, to see when it has to start over.
 static struct {
@@ -99,12 +113,22 @@ static struct {
 } conv = {.blank_tile = -1, .brightness = -1};
 
 static int SnesLine(int g) {
+  if (squash)
+    return kSquashLine[g];
   if (!hud)
     return g + y_offset;
   return g < kGbaHudLines ? g + kHudBlankLines : g + kHudBlankLines + y_offset;
 }
 
 void Render_Init(void) {
+  // Rows 3 and 7 of each 8 go: fonts keep their tops and bottoms.
+  for (int s = 0, g = -kSquashTop; g < kGbaLines; s++) {
+    if ((s & 3) == 3)
+      continue;
+    if (g >= 0)
+      kSquashLine[g] = s;
+    g++;
+  }
   REG_DISPCNT = kDispcntForcedBlank;
   DmaFill32(GBA_VRAM, 0, 0x18000);
   for (int i = 0; i < 128; i++)
@@ -187,7 +211,8 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   }
   l->ctl.dispcnt = dispcnt;
   int bg3_sb = Bg3Slot(r->bgsc[2]) ? kSbBg3Slot1 : kSbBg3Slot0;
-  l->ctl.bgcnt[0] = ((r->bgmode & 8) ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
+  int bg3_front = (r->bgmode & 8) && bg3_hi_total[Bg3Slot(r->bgsc[2])];
+  l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
   l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
@@ -232,7 +257,8 @@ static void UpdateYOffset(void) {
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state);
 
-  hud = LINE_REGS(8)->tm == 4 && LINE_REGS(kHudLines + 8)->tm != 4;
+  squash = game_state < 7 || game_state > 11;
+  hud = !squash && LINE_REGS(8)->tm == 4 && LINE_REGS(kHudLines + 8)->tm != 4;
   UpdateYOffset();
 
   // The BG3 maps the lines use, in slots.
@@ -463,6 +489,8 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, 
       continue;
     bool changed = sc != conv.bg3_slot_sc[slot];
     conv.bg3_slot_sc[slot] = sc;
+    if (changed)
+      memset(bg3_hi[slot], 0, sizeof(bg3_hi[slot]));
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
@@ -470,8 +498,16 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, 
         uint32_t o = c * 16;
         Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o], 16,
                     8 << 12);
+        int hi = 0;
+        for (int i = 0; i < 16; i++)
+          hi += (g_vram[addr + o + i] >> 13) & 1;
+        bg3_hi[slot][k * 64 + c] = hi;
       }
     }
+    int total = 0;
+    for (int i = 0; i < 128; i++)
+      total += bg3_hi[slot][i];
+    bg3_hi_total[slot] = total;
   }
 }
 
@@ -482,14 +518,31 @@ static const uint8_t kObjShapes[8][2] = {
 };
 static const uint8_t kObjPriority[4] = {3, 3, 2, 1};
 
+// The GBA's sprite heights, by kObjShapes's codes.
+static const uint8_t kObjHeight[12] = {8, 16, 32, 64, 0, 0, 0, 0, 0, 0, 32, 64};
+
+// Squashed sprites' transformations, in OAM: no flip, horizontal, vertical,
+// and both. Lines are 3/4 as many.
+static void SetSquashMatrices(void) {
+  for (int m = 0; m < 4; m++) {
+    int16_t p[4] = {m & 1 ? -256 : 256, 0, 0, m & 2 ? -341 : 341};
+    for (int i = 0; i < 4; i++)
+      GBA_OAM[(m * 4 + i) * 4 + 3] = p[i];
+  }
+}
+
 static void UpdateOam(void) {
   SnesHw *h = &g_snes_hw;
   static int last_y_off = -1;
+  static bool last_squash;
   int y_off = hud ? kHudBlankLines + y_offset : y_offset;
-  if (!h->oam_dirty && y_off == last_y_off)
+  if (!h->oam_dirty && y_off == last_y_off && squash == last_squash)
     return;
   h->oam_dirty = false;
   last_y_off = y_off;
+  if (squash && !last_squash)
+    SetSquashMatrices();
+  last_squash = squash;
   const uint8_t *shapes = kObjShapes[h->obsel >> 5];
   for (int i = 0; i < 128; i++) {
     const uint8_t *e = &g_oam[i * 4];
@@ -500,12 +553,20 @@ static void UpdateOam(void) {
     int tile_index = e[2];
     int tile = (attr & 1) * 512 + (tile_index >> 4) * 32 + (tile_index & 15);
     volatile uint16_t *o = &GBA_OAM[i * 4];
-    o[0] = ((e[1] - y_off) & 0xff) | (shape >> 2) << 14;
-    o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
+    if (squash) {
+      // Its middle where the SNES's would be, squashed: sprites below line
+      // 224 are partly above the screen.
+      int height = kObjHeight[shape], y = e[1] >= kSnesLines ? e[1] - 256 : e[1];
+      int middle = (((y + height / 2) * 3) >> 2) - kSquashTop;
+      o[0] = ((middle - height / 2) & 0xff) | 1 << 8 | (shape >> 2) << 14;
+      o[1] = ((x - kXOffset) & 0x1ff) | (attr >> 6) << 9 | (shape & 3) << 14;
+    } else {
+      o[0] = ((e[1] - y_off) & 0xff) | (shape >> 2) << 14;
+      o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
+    }
     o[2] = tile | kObjPriority[(attr >> 4) & 3] << 10 | ((attr >> 1) & 7) << 12;
   }
 }
-
 
 void Render_Present(void) {
   bool mode7 = frame_mode7, text = text_line >= 0;
@@ -539,5 +600,6 @@ void Render_Present(void) {
   REG_IME = 1;
   back ^= 1;
 }
+
 
 

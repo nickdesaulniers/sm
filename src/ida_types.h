@@ -2551,6 +2551,10 @@ enum Consts_B7 {
 };
 
 static inline OamEnt *gOamEnt(int v) { return (OamEnt *)&g_ram[0x370 + v]; }
+#if SM_GBA
+// For ARM code (GBA_IWRAM_CODE), which can't inline Thumb functions.
+#define gOamEnt(v) ((OamEnt *)&g_ram[0x370 + (v)])
+#endif
 static inline VramWriteEntry *gVramWriteEntry(int a) { return (VramWriteEntry *)&g_ram[0xd0 + a]; }
 struct DoorDef; static inline DoorDef *get_DoorDef(uint16 a) { return (DoorDef *)RomPtr(0x830000 | a); }
 struct RoomDefHeader; static inline RoomDefHeader *get_RoomDefHeader(uint16 a) { return (RoomDefHeader *)RomPtr(0x8F0000 | a); }

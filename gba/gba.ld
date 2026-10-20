@@ -15,8 +15,9 @@ MEMORY {
 /* Top of IWRAM: 0x03007FA0-0x03007FFF belongs to the BIOS. */
 __sp_irq = 0x03007FA0;
 __sp_sys = 0x03007F00;
-/* Space reserved below __sp_sys for the System-mode stack. */
-__stack_size = 4096;
+/* Space reserved below __sp_sys for the System-mode stack: the game used
+   968 bytes at most, measured on Zebes (main.c logs it). */
+__stack_size = 2048;
 
 SECTIONS {
     .crt0 : {

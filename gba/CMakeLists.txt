@@ -9,6 +9,7 @@ add_library(gba_libc STATIC
 # -fno-builtin keeps clang from turning these implementations into calls
 # to themselves (they also carry no_builtin).
 target_compile_options(gba_libc PRIVATE -fno-builtin)
+set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS "-marm")
 
 # compiler-rt builtins for operations ARMv4T has no instructions for:
 # division, 64-bit multiply, shifts and division.
