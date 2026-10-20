@@ -24,17 +24,18 @@ Run `build-gba/sm.gba` in mGBA. The game runs natively, not in an emulator;
 1:1, cropped to the GBA's 240x160 around Samus. No sound yet, and it runs
 slower than full speed.
 
-Controls in gameplay (the GBA has no X and Y buttons):
+Controls in gameplay work as in Metroid: Zero Mission and Fusion (the GBA
+has no X and Y buttons):
 
-| GBA    | Action                                          | SNES       |
-|--------|-------------------------------------------------|------------|
-| A      | Jump                                            | A          |
-| B      | Shoot                                           | X          |
-| R      | Aim diagonally up (with Down held: down)        | R (L)      |
-| L      | Switch item                                     | Select     |
-| Select | Cancel item                                     | Y          |
-| Start  | Pause                                           | Start      |
-| -      | Run: always on                                  | B (held)   |
+| GBA          | Action                                                    |
+|--------------|-----------------------------------------------------------|
+| A            | Jump                                                      |
+| B            | Shoot                                                     |
+| R (hold)     | Ready missiles, or what Select picked; power bombs in morph ball |
+| L (hold)     | Aim diagonally up (with Down held: down)                  |
+| Select       | Pick what R readies: missiles, super missiles, grapple beam, X-ray scope |
+| Start        | Pause                                                     |
+| -            | Run: always on                                            |
 
 In menus and on the pause screen, the buttons are the SNES's buttons of the
 same names (B to go back).

@@ -76,6 +76,7 @@ add_executable(sm_gba
     crt0.S
     header.c
     snes_rom.S
+    input.c
     main.c
     rtl.c
     snes_hw.c
@@ -88,6 +89,11 @@ set_target_properties(sm_gba PROPERTIES
     SUFFIX .elf
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
 )
+option(SM_SKIP_INTRO "For testing: skip a new game's intro, to Ceres" OFF)
+if(SM_SKIP_INTRO)
+    target_compile_definitions(sm_gba PRIVATE SM_SKIP_INTRO=1)
+endif()
+
 target_compile_options(sm_gba PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas)
 set_source_files_properties(snes_rom.S PROPERTIES
     COMPILE_DEFINITIONS "SM_ROM_PATH=\"${SM_ROM}\""

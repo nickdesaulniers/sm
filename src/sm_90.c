@@ -4045,6 +4045,34 @@ static Func_U8 *const kRunSwitchedToHudHandler[6] = {  // 0x90C4B5
   SwitchToHudHandler_Grapple,
   SwitchToHudHandler_Xray,
 };
+#if SM_GBA
+// The GBA has no X and Y buttons, so its controls pick the item directly,
+// as in the GBA Metroids: see gba/input.c.
+uint16 GbaWantedHudItem(void);
+
+void HandleSwitchingHudSelection(void) {
+  uint16 r18 = hud_item_index;
+  uint16 want = GbaWantedHudItem();
+  samus_auto_cancel_hud_item_index = 0;
+  if (want != hud_item_index) {
+    hud_item_index = want;
+    if (kRunSwitchedToHudHandler[want]() & 1) {
+      // Not available after all: back to the beam.
+      hud_item_index = 0;
+      if (r18 != 0)
+        kRunSwitchedToHudHandler[0]();
+    }
+  }
+  if (hud_item_index == r18) {
+    uint16 v1 = hud_item_changed_this_frame + 1;
+    if (!sign16(hud_item_changed_this_frame - 2))
+      v1 = 2;
+    hud_item_changed_this_frame = v1;
+  } else {
+    hud_item_changed_this_frame = 1;
+  }
+}
+#else
 void HandleSwitchingHudSelection(void) {
   uint16 v0;
   uint16 r22 = 0;
@@ -4085,6 +4113,7 @@ LABEL_13:
     hud_item_changed_this_frame = 1;
   }
 }
+#endif
 
 uint8 SwitchToHudHandler_Nothing(void) {  // 0x90C545
   flare_counter = 0;

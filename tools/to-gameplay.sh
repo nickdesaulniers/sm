@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs the cartridge through the title screen and a new game's intro to
-# Ceres, then holds KEYS (counted from the start of gameplay) and saves
+# Ceres (much faster with a build configured -DSM_SKIP_INTRO=ON), then holds KEYS (counted from the start of gameplay) and saves
 # SHOTS (frames, counted likewise) as OUT_PREFIX<frame>.png:
 #
 #     KEYS=... tools/to-gameplay.sh SMRUN ROM FRAMES SHOTS OUT_PREFIX
