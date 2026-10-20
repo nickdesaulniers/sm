@@ -17,25 +17,49 @@ static void VBlankIntrWait(void) {
   __asm__ volatile("swi 0x05" ::: "r0", "r1", "r2", "r3", "memory");
 }
 
-// The GBA's buttons as the SNES's joypad: JOY1H << 8 | JOY1L.
+enum {
+  kSnesB = 0x8000, kSnesY = 0x4000, kSnesSelect = 0x2000, kSnesStart = 0x1000,
+  kSnesUp = 0x0800, kSnesDown = 0x0400, kSnesLeft = 0x0200, kSnesRight = 0x0100,
+  kSnesA = 0x0080, kSnesX = 0x0040, kSnesL = 0x0020, kSnesR = 0x0010,
+};
+
+// The GBA's buttons as the SNES's joypad (JOY1H << 8 | JOY1L). The GBA has
+// no X and Y, so in gameplay, with the game's default controls, much as in
+// Metroid: Zero Mission:
+//   A       jump (SNES A)
+//   B       shoot (SNES X)
+//   R       aim diagonally: up, or down with Down held (SNES R, L)
+//   L       switch item (SNES Select)
+//   Select  cancel item (SNES Y)
+//   Start   pause
+// and Samus always runs (SNES B held). Elsewhere, menus and the pause
+// screen included, the buttons are the SNES's buttons of the same names.
 static uint16_t ReadJoypad(void) {
-  static const struct { uint16_t gba, snes; } kMap[] = {
-    {kKeyA, 0x0080},      // A
-    {kKeyB, 0x8000},      // B
-    {kKeySelect, 0x2000}, // Select
-    {kKeyStart, 0x1000},  // Start
-    {kKeyUp, 0x0800},
-    {kKeyDown, 0x0400},
-    {kKeyLeft, 0x0200},
-    {kKeyRight, 0x0100},
-    {kKeyR, 0x0010},      // R
-    {kKeyL, 0x0020},      // L
-  };
   uint16_t keys = ~REG_KEYINPUT & 0x3ff;
   uint16_t joy = 0;
-  for (unsigned i = 0; i < sizeof(kMap) / sizeof(kMap[0]); i++) {
-    if (keys & kMap[i].gba)
-      joy |= kMap[i].snes;
+  if (keys & kKeyUp) joy |= kSnesUp;
+  if (keys & kKeyDown) joy |= kSnesDown;
+  if (keys & kKeyLeft) joy |= kSnesLeft;
+  if (keys & kKeyRight) joy |= kSnesRight;
+  if (keys & kKeyStart) joy |= kSnesStart;
+  if (keys & kKeyA) joy |= kSnesA;
+  bool gameplay = game_state >= 7 && game_state <= 11;
+  if (!gameplay) {
+    if (keys & kKeyB) joy |= kSnesB;
+    if (keys & kKeySelect) joy |= kSnesSelect;
+    if (keys & kKeyL) joy |= kSnesL;
+    if (keys & kKeyR) joy |= kSnesR;
+    return joy;
+  }
+  joy |= kSnesB;
+  if (keys & kKeyB) joy |= kSnesX;
+  if (keys & kKeyL) joy |= kSnesSelect;
+  if (keys & kKeySelect) joy |= kSnesY;
+  if (keys & kKeyR) {
+    if (keys & kKeyDown)
+      joy = (joy & ~kSnesDown) | kSnesL;
+    else
+      joy = (joy & ~kSnesUp) | kSnesR;
   }
   return joy;
 }
@@ -66,7 +90,10 @@ void gba_main(void) {
   for (;;) {
     g_snes_hw.joy1 = ReadJoypad();
     uint32_t t0 = Cycles();
+    uint16_t state = game_state;
     RunOneFrameOfGame();
+    if (game_state != state)
+      printf("sm: game state %u\n", (unsigned)game_state);
     uint32_t t1 = Cycles();
     Render_CaptureFrame();
     uint32_t t2 = Cycles();

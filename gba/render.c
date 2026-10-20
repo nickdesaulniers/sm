@@ -19,7 +19,9 @@
 //   0xF000-0xFFFF  BG3 map, slot 1 (30-31): the HUD and the effects layer
 //                  are different maps.
 // In Mode 7, the SNES's one background is the GBA's affine BG2 in Mode 1,
-// tiles at 0x0000 and its 128x128 map at 0x4000.
+// tiles at 0x0000 and its 128x128 map at 0x4000, in place of BG1 and BG2.
+// A frame can have both: Ceres has Mode 7 under a Mode 1 HUD, which is BG3
+// on GBA BG0 as usual.
 // Sprite tiles keep the SNES's layout of 16 to a row, in the left half of
 // the GBA's rows of 32 (2D mapping), with a copy in the right half, so that
 // sprites whose tiles wrap around a row come out right.
@@ -39,11 +41,13 @@ void Vector_IRQ(void);
 enum {
   kSnesLines = 224,
   kGbaLines = 160,
-  // Lines at the top of the SNES screen with the HUD, shown on the GBA
-  // as they are; the rest of the GBA screen shows part of the SNES's
-  // gameplay area, following Samus.
+  // Lines at the top of the SNES screen with the HUD, the first 8 of
+  // them blank, shown on the GBA as they are (but for those); the rest of
+  // the GBA screen shows part of the SNES's gameplay area, following Samus.
   kHudLines = 32,
-  kMaxYOffset = kSnesLines - kGbaLines,
+  kHudBlankLines = 8,
+  kGbaHudLines = kHudLines - kHudBlankLines,
+  kMaxYOffset = kSnesLines - kHudBlankLines - kGbaLines,
   // The SNES's 256 pixel lines lose 8 pixels at each end.
   kXOffset = 8,
 
@@ -77,6 +81,9 @@ static LineIo line_io[2][kGbaLines + 1];
 static int io_back;
 
 static bool hud;
+// Whether lines on show use Mode 7, and one that uses another mode, or -1.
+static bool frame_mode7;
+static int text_line;
 static int y_offset = kMaxYOffset / 2;
 // SNES BG3 maps in GBA map slots 0 and 1, by BG3SC.
 static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
@@ -88,11 +95,13 @@ static struct {
   uint8_t bg3_slot_sc[2];
   int blank_tile;
   int brightness;
-  bool mode7;
+  bool mode7, bg3_palettes;
 } conv = {.blank_tile = -1, .brightness = -1};
 
 static int SnesLine(int g) {
-  return (hud && g < kHudLines) ? g : g + y_offset;
+  if (!hud)
+    return g + y_offset;
+  return g < kGbaHudLines ? g + kHudBlankLines : g + kHudBlankLines + y_offset;
 }
 
 void Render_Init(void) {
@@ -166,10 +175,11 @@ static void BuildLineIo(LineIo *io, const PpuRegs *r, int s, int g) {
     BuildLineIoMode7(io, r, s);
     return;
   }
-  uint16_t dispcnt = kDispcntMode0;
+  uint16_t dispcnt = frame_mode7 ? kDispcntMode1 : kDispcntMode0;
   if (!(r->inidisp & 0x80)) {
-    if (r->tm & 1) dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
-    if (r->tm & 2) dispcnt |= kDispcntBg0 << 3;
+    // With Mode 7 lines in the frame, BG1 and BG2's VRAM holds Mode 7's.
+    if ((r->tm & 1) && !frame_mode7) dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
+    if ((r->tm & 2) && !frame_mode7) dispcnt |= kDispcntBg0 << 3;
     if (r->tm & 4) dispcnt |= kDispcntBg0;
     if (r->tm & 16) dispcnt |= kDispcntObj;
   }
@@ -199,7 +209,7 @@ static void UpdateYOffset(void) {
   if (hud) {
     // Samus in the middle of the gameplay area, as far as it goes.
     int samus_y = (int16_t)(samus_y_pos - layer1_y_pos);
-    target = samus_y - (kHudLines + (kGbaLines - kHudLines) / 2);
+    target = samus_y - (kHudLines + (kGbaLines - kGbaHudLines) / 2);
     target = target < 0 ? 0 : target > kMaxYOffset ? kMaxYOffset : target;
   } else {
     target = kMaxYOffset / 2;
@@ -238,6 +248,15 @@ void Render_CaptureFrame(void) {
   if (second != bg3_slot_sc[0] && second != bg3_slot_sc[1])
     bg3_slot_sc[first == bg3_slot_sc[0] ? 1 : 0] = second;
 
+  frame_mode7 = false;
+  text_line = -1;
+  for (int g = 0; g < kGbaLines; g++) {
+    if ((line_regs[SnesLine(g)].bgmode & 7) == 7)
+      frame_mode7 = true;
+    else if (text_line < 0 || g == kGbaLines / 2)
+      text_line = SnesLine(g);
+  }
+
   LineIo *io = line_io[io_back];
   for (int g = 0; g < kGbaLines; g++) {
     int s = SnesLine(g);
@@ -247,13 +266,14 @@ void Render_CaptureFrame(void) {
   LogLayoutChange(&line_regs[SnesLine(kGbaLines / 2)]);
 }
 
-static void UpdatePalette(const PpuRegs *r, bool mode7) {
+static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
   SnesHw *h = &g_snes_hw;
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
-  if (!h->cgram_dirty && b == conv.brightness && mode7 == conv.mode7)
+  if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes)
     return;
   h->cgram_dirty = false;
   conv.brightness = b;
+  conv.bg3_palettes = bg3_palettes;
   uint16_t pal[256];
   if (b == 15) {
     memcpy(pal, h->cgram, sizeof(pal));
@@ -269,8 +289,8 @@ static void UpdatePalette(const PpuRegs *r, bool mode7) {
   DmaCopy32(GBA_BG_PALETTE, pal, 256);
   DmaCopy32(GBA_OBJ_PALETTE, pal + 128, 256);
   // BG3's 2bpp palettes of 4 colors in GBA palettes 8-15. (Mode 7's
-  // background has all 256 colors.)
-  for (int p = 0; p < 8 && !mode7; p++) {
+  // background has all 256 colors: frames with both are a compromise.)
+  for (int p = 0; p < 8 && bg3_palettes; p++) {
     for (int k = 0; k < 4; k++)
       GBA_BG_PALETTE[128 + p * 16 + k] = pal[p * 4 + k];
   }
@@ -315,7 +335,7 @@ static void UpdateTilesMode7(const uint32_t *dirty) {
   }
 }
 
-static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool mode7) {
+static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) {
   SnesHw *h = &g_snes_hw;
   uint16_t bg12_base = (r->bgnba[0] & 0xf) << 12;
   uint16_t bg2_base = (r->bgnba[0] >> 4) << 12;
@@ -347,10 +367,12 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool mode7) {
       uint16_t addr = c << kVramChunkShift;
       const uint16_t *src = &h->vram[addr];
       uint16_t off;
-      if (!mode7) {
+      if (bg12) {
         off = (addr - bg12_base) & 0x7fff;
         if (off < 0x4000)
           Convert_Tiles4bpp(vram32 + (off >> 4) * 8, src, 1);
+      }
+      if (bg3) {
         off = (addr - bg3_base) & 0x7fff;
         if (off < kBg3Tiles * 8)
           Convert_Tiles2bpp(vram32 + 0x8000 / 4 + (off >> 3) * 8, src, 2);
@@ -383,9 +405,9 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool mode7) {
   conv.blank_tile = blank;
 }
 
-static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1) {
+static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, bool bg12) {
   SnesHw *h = &g_snes_hw;
-  for (int bg = 0; bg < 2; bg++) {
+  for (int bg = 0; bg < 2 && bg12; bg++) {
     uint8_t sc = r->bgsc[bg];
     bool changed = sc != conv.bgsc[bg] || (bg == 0 && force_bg1);
     conv.bgsc[bg] = sc;
@@ -425,11 +447,13 @@ static const uint8_t kObjPriority[4] = {3, 3, 2, 1};
 
 static void UpdateOam(void) {
   SnesHw *h = &g_snes_hw;
-  if (!h->oam_dirty)
+  static int last_y_off = -1;
+  int y_off = hud ? kHudBlankLines + y_offset : y_offset;
+  if (!h->oam_dirty && y_off == last_y_off)
     return;
   h->oam_dirty = false;
+  last_y_off = y_off;
   const uint8_t *shapes = kObjShapes[h->obsel >> 5];
-  int y_off = hud ? y_offset : kMaxYOffset / 2;
   for (int i = 0; i < 128; i++) {
     const uint8_t *e = &h->oam[i * 4];
     int hi = (h->oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
@@ -448,26 +472,28 @@ static void UpdateOam(void) {
 
 void Render_Present(void) {
   SnesHw *h = &g_snes_hw;
-  const PpuRegs *r = &line_regs[SnesLine(kGbaLines / 2)];
+  bool mode7 = frame_mode7, text = text_line >= 0;
+  // The registers of a line with a tiled background mode, if any, for
+  // where their tiles and maps are.
+  const PpuRegs *r = &line_regs[text ? text_line : SnesLine(kGbaLines / 2)];
   uint32_t dirty[kVramChunks / 32];
   memcpy(dirty, h->vram_dirty, sizeof(dirty));
   memset(h->vram_dirty, 0, sizeof(h->vram_dirty));
 
-  bool mode7 = (r->bgmode & 7) == 7;
   if (mode7 != conv.mode7) {
     // Mode 7 and the other modes use the GBA's VRAM differently.
     memset(dirty, 0xff, sizeof(dirty));
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
   }
-  UpdatePalette(&line_regs[SnesLine(0)], mode7);
+  UpdatePalette(&line_regs[SnesLine(0)], text);
   conv.mode7 = mode7;
   int blank_before = conv.blank_tile;
   if (mode7)
     UpdateTilesMode7(dirty);
-  UpdateTiles(r, dirty, mode7);
-  if (!mode7)
-    UpdateMaps(r, dirty, conv.blank_tile != blank_before);
+  UpdateTiles(r, dirty, text && !mode7, text);
+  if (text)
+    UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
   UpdateOam();
 
   // The VBlank interrupt sets up line 0 and starts HBlank DMA for the
@@ -480,4 +506,5 @@ void Render_Present(void) {
     regs[i] = ((const uint32_t *)io)[i];
   io_back ^= 1;
 }
+
 

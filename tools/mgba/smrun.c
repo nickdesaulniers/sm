@@ -11,6 +11,10 @@
 // K is buttons joined by '+' (A, B, SELECT, START, RIGHT, LEFT, UP, DOWN, R,
 // L), or '-' for none.
 //
+// With AFTER=TEXT, KEYS and SHOTS count frames from the first log line
+// containing TEXT (frame 1 is the frame after), and PRE_KEYS (in KEYS's
+// form, counting from the start) holds buttons before then.
+//
 // Build with tools/mgba/build.sh, against mGBA 0.10.
 #include <mgba/flags.h>
 #include <mgba/core/config.h>
@@ -38,17 +42,49 @@ static uint32_t parse_keys(const char* k, const char* end) {
 }
 
 static int current_frame;
+static const char* after_text;
+static int after_frame;  // when after_text appeared, or 0
 
 static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level,
                       const char* format, va_list args) {
     (void) logger;
     const char* name = mLogCategoryName(category);
     if (level & (mLOG_FATAL | mLOG_ERROR) || (name && !strcmp(name, "GBA Debug"))) {
-        printf("[%d] ", current_frame);
-        vprintf(format, args);
-        putchar('\n');
+        char line[1024];
+        vsnprintf(line, sizeof line, format, args);
+        printf("[%d] %s\n", current_frame, line);
         fflush(stdout);
+        if (after_text && !after_frame && strstr(line, after_text))
+            after_frame = current_frame;
     }
+}
+
+struct Keys {
+    int from, step, n;
+    uint32_t steps[4096];
+};
+
+static struct Keys parse_schedule(const char* spec) {
+    struct Keys k = {.from = -1, .step = 1};
+    if (!spec)
+        return k;
+    k.from = atoi(spec);
+    const char* colon = strchr(spec, ':');
+    k.step = colon ? atoi(colon + 1) : 1;
+    const char* list = colon ? strchr(colon + 1, ':') : NULL;
+    for (const char* p = list ? list + 1 : ""; *p && k.n < 4096;) {
+        const char* comma = strchr(p, ',');
+        const char* end = comma ? comma : p + strlen(p);
+        k.steps[k.n++] = parse_keys(p, end);
+        p = comma ? comma + 1 : end;
+    }
+    return k;
+}
+
+static uint32_t schedule_keys(const struct Keys* k, int frame) {
+    if (!k->n || frame < k->from)
+        return 0;
+    return k->steps[((frame - k->from) / k->step) % k->n];
 }
 
 static void put32(unsigned char* p, uint32_t v) {
@@ -120,33 +156,25 @@ int main(int argc, char** argv) {
     }
     core->reset(core);
 
-    int keys_from = -1, keys_step = 1, nkeys = 0;
-    uint32_t key_steps[256];
-    if (getenv("KEYS")) {
-        const char* spec = getenv("KEYS");
-        keys_from = atoi(spec);
-        const char* colon = strchr(spec, ':');
-        keys_step = colon ? atoi(colon + 1) : 1;
-        const char* list = colon ? strchr(colon + 1, ':') : NULL;
-        for (const char* k = list ? list + 1 : ""; *k && nkeys < 256;) {
-            const char* comma = strchr(k, ',');
-            const char* end = comma ? comma : k + strlen(k);
-            key_steps[nkeys++] = parse_keys(k, end);
-            k = comma ? comma + 1 : end;
-        }
-    }
+    struct Keys pre = parse_schedule(getenv("PRE_KEYS"));
+    struct Keys keys = parse_schedule(getenv("KEYS"));
+    after_text = getenv("AFTER");
     int frames = atoi(argv[2]);
     const char* shots = argc > 3 ? argv[3] : "";
     const char* prefix = argc > 4 ? argv[4] : "shot";
     for (int i = 1; i <= frames; ++i) {
         current_frame = i;
-        if (nkeys && i >= keys_from)
-            core->setKeys(core, key_steps[((i - keys_from) / keys_step) % nkeys]);
+        // Frames counted from AFTER's line, when there is one.
+        int t = !after_text ? i : after_frame ? i - after_frame : 0;
+        if (after_text && !after_frame)
+            core->setKeys(core, schedule_keys(&pre, i));
+        else
+            core->setKeys(core, schedule_keys(&keys, t));
         core->runFrame(core);
-        for (const char* s = shots; *s;) {
-            if (atoi(s) == i) {
+        for (const char* s = shots; *s && t > 0;) {
+            if (atoi(s) == t) {
                 char path[512];
-                snprintf(path, sizeof path, "%s%d.png", prefix, i);
+                snprintf(path, sizeof path, "%s%d.png", prefix, t);
                 write_png(path, pixels, width, height, width);
             }
             const char* comma = strchr(s, ',');
