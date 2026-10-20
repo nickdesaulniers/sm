@@ -30,7 +30,7 @@ void gba_main(void) {
   Render_Init();
 
   REG_IRQ_VECTOR = (uintptr_t)IrqHandler;
-  REG_IE = kIrqVBlank;
+  REG_IE = kIrqVBlank | kIrqVCount;
   REG_IME = 1;
 
   printf("sm: starting\n");
@@ -47,10 +47,15 @@ void gba_main(void) {
     uint16_t state = game_state;
 #if SM_SKIP_INTRO
     // For testing: a new game's intro goes straight to its end, which fades
-    // out and starts the game at Ceres.
+    // out and starts the game at Ceres, or with SM_START_ZEBES, as after
+    // escaping Ceres, on Zebes.
     static uint16_t intro_frames;
     if (game_state == 30 && ++intro_frames == 60)
       cinematic_function = (uint16_t)0x8BC0C5;  // CinematicFunction_Intro_Func72
+#if SM_START_ZEBES
+    if (game_state == 31 && loading_game_state == 0x1f)
+      loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
+#endif
 #endif
     RunOneFrameOfGame();
     if (game_state != state)

@@ -1,5 +1,8 @@
 // See render.h.
 //
+// ARM code in IWRAM, as it runs every frame. (So no division: see
+// cmake/compiler-rt.cmake.)
+//
 // The SNES's Mode 1 maps onto the GBA's Mode 0 like this, by layer:
 //   GBA BG0: SNES BG3 (2bpp, the HUD and effects), priority 0 or 3
 //   GBA BG1: SNES BG1's priority tiles, priority 1
@@ -31,16 +34,13 @@
 #include <string.h>
 
 #include "convert.h"
+#include "display.h"
 #include "gba_hw.h"
 #include "snes_hw.h"
 #include "sm_rtl.h"
 #include "variables.h"
 
-void Vector_IRQ(void);
-
 enum {
-  kSnesLines = 224,
-  kGbaLines = 160,
   // Lines at the top of the SNES screen with the HUD, the first 8 of
   // them blank, shown on the GBA as they are (but for those); the rest of
   // the GBA screen shows part of the SNES's gameplay area, following Samus.
@@ -62,23 +62,23 @@ enum {
 
 #define VRAM_SB(n) (GBA_VRAM + (n) * 0x400)
 
-// The GBA's registers 0x04000000-0x0400002F for each line, which HBlank
-// DMA copies in: DISPCNT, BG0CNT-BG3CNT, the scroll registers and BG2's
-// affine transformation (and DISPSTAT and VCOUNT, in between, which this
-// rewrites unchanged and can't write). See irq.iwram.c.
-typedef struct LineIo {
-  uint16_t dispcnt, green_swap, dispstat, vcount;
-  uint16_t bgcnt[4];
-  uint16_t ofs[8];
-  int16_t bg2p[4];
-  int32_t bg2x, bg2y;
-} LineIo;
-_Static_assert(sizeof(LineIo) == 48, "LineIo is the registers 0x00-0x2F");
+// A line's GBA registers, before they're split into display.h's stream
+// and segments.
+typedef struct LineRegs {
+  DisplaySegment ctl;  // but for first_line
+  uint32_t stream[4];
+} LineRegs;
 
-static PpuRegs line_regs[kSnesLines];
-// One more than the lines: DMA copies in an entry at the end of the last.
-static LineIo line_io[2][kGbaLines + 1];
-static int io_back;
+// The PPU's registers for each SNES line: line_states[line_state[line]],
+// with a state for each time they change down the screen.
+static PpuRegs line_states[kSnesLines];
+static uint8_t line_state[kSnesLines];
+#define LINE_REGS(s) (&line_states[line_state[s]])
+// Two of each, for the frame on show and the next.
+static uint32_t streams[2][kGbaLines + 1][4] IWRAM_BSS;
+static DisplaySegment segments[2][kGbaLines];
+static DisplayFrame frames[2];
+static int back;
 
 static bool hud;
 // Whether lines on show use Mode 7, and one that uses another mode, or -1.
@@ -140,21 +140,18 @@ static int Sext13(int v) {
   return (int16_t)(v << 3) >> 3;
 }
 
-static void BuildLineIoMode7(LineIo *io, const PpuRegs *r, int s) {
+static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   uint16_t dispcnt = kDispcntMode1;
   if (!(r->inidisp & 0x80)) {
     if (r->tm & 1) dispcnt |= kDispcntBg0 << 2;
     if (r->tm & 16) dispcnt |= kDispcntObj;
   }
-  io->dispcnt = dispcnt;
-  io->green_swap = 0;
-  io->dispstat = kDispstatVBlankIrq;
-  io->vcount = 0;
-  io->bgcnt[0] = io->bgcnt[1] = io->bgcnt[3] = 0;
+  l->ctl.dispcnt = dispcnt;
+  l->ctl.bgcnt[0] = l->ctl.bgcnt[1] = l->ctl.bgcnt[3] = 0;
   // 1024x1024, wrapping around unless the SNES's field is "large".
-  io->bgcnt[2] = 3 | kSbMode7 << 8 | 3 << 14 | (r->m7sel & 0x80 ? 0 : 1 << 13);
+  l->ctl.bgcnt[2] = 3 | kSbMode7 << 8 | 3 << 14 | (r->m7sel & 0x80 ? 0 : 1 << 13);
   for (int i = 0; i < 8; i++)
-    io->ofs[i] = 0;
+    l->ctl.ofs[i] = 0;
   // The SNES's screen pixel (sx, sy) shows the map's pixel
   //   ((a b) (c d)) (sx + hofs - x0, sy + vofs - y0) + (x0, y0),
   // and GBA pixel (gx, line) is SNES pixel (gx + kXOffset, s).
@@ -162,17 +159,22 @@ static void BuildLineIoMode7(LineIo *io, const PpuRegs *r, int s) {
   int x0 = r->m7[4], y0 = r->m7[5];
   int dx = kXOffset + Sext13(r->m7hofs) - x0;
   int dy = s + Sext13(r->m7vofs) - y0;
-  io->bg2p[0] = a;
-  io->bg2p[1] = b;
-  io->bg2p[2] = c;
-  io->bg2p[3] = d;
-  io->bg2x = a * dx + b * dy + (x0 << 8);
-  io->bg2y = c * dx + d * dy + (y0 << 8);
+  l->stream[0] = (uint16_t)a | (uint32_t)(uint16_t)b << 16;
+  l->stream[1] = (uint16_t)c | (uint32_t)(uint16_t)d << 16;
+  l->stream[2] = a * dx + b * dy + (x0 << 8);
+  l->stream[3] = c * dx + d * dy + (y0 << 8);
 }
 
-static void BuildLineIo(LineIo *io, const PpuRegs *r, int s, int g) {
+// The next line of a Mode 7 stream with the same registers: the reference
+// point moves down the map by (b, d).
+static void StepLineMode7(LineRegs *l) {
+  l->stream[2] += (int16_t)(l->stream[0] >> 16);
+  l->stream[3] += (int16_t)(l->stream[1] >> 16);
+}
+
+static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   if ((r->bgmode & 7) == 7) {
-    BuildLineIoMode7(io, r, s);
+    BuildLineMode7(l, r, s);
     return;
   }
   uint16_t dispcnt = frame_mode7 ? kDispcntMode1 : kDispcntMode0;
@@ -183,25 +185,34 @@ static void BuildLineIo(LineIo *io, const PpuRegs *r, int s, int g) {
     if (r->tm & 4) dispcnt |= kDispcntBg0;
     if (r->tm & 16) dispcnt |= kDispcntObj;
   }
-  io->dispcnt = dispcnt;
-  io->green_swap = 0;
-  io->dispstat = kDispstatVBlankIrq;
-  io->vcount = 0;
+  l->ctl.dispcnt = dispcnt;
   int bg3_sb = Bg3Slot(r->bgsc[2]) ? kSbBg3Slot1 : kSbBg3Slot0;
-  io->bgcnt[0] = ((r->bgmode & 8) ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
-  io->bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
-  io->bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
-  io->bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
+  l->ctl.bgcnt[0] = ((r->bgmode & 8) ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
+  l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
+  l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
+  l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
   int dy = s - g;
-  io->ofs[0] = r->hofs[2] + kXOffset;
-  io->ofs[1] = r->vofs[2] + dy;
-  io->ofs[2] = io->ofs[4] = r->hofs[0] + kXOffset;
-  io->ofs[3] = io->ofs[5] = r->vofs[0] + dy;
-  io->ofs[6] = r->hofs[1] + kXOffset;
-  io->ofs[7] = r->vofs[1] + dy;
-  io->bg2p[0] = io->bg2p[3] = 0x100;
-  io->bg2p[1] = io->bg2p[2] = 0;
-  io->bg2x = io->bg2y = 0;
+  uint16_t ofs[8];
+  ofs[0] = r->hofs[2] + kXOffset;
+  ofs[1] = r->vofs[2] + dy;
+  ofs[2] = ofs[4] = r->hofs[0] + kXOffset;
+  ofs[3] = ofs[5] = r->vofs[0] + dy;
+  ofs[6] = r->hofs[1] + kXOffset;
+  ofs[7] = r->vofs[1] + dy;
+  // The scrolling is the stream, but in frames with Mode 7, whose stream
+  // is BG2's transformation.
+  for (int i = 0; i < 4; i++) {
+    uint32_t w = ofs[2 * i] | (uint32_t)ofs[2 * i + 1] << 16;
+    l->stream[i] = frame_mode7 ? 0 : w;
+    ((uint32_t *)l->ctl.ofs)[i] = frame_mode7 ? w : 0;
+  }
+  if (frame_mode7)
+    l->stream[0] = l->stream[1] = 0x100;  // BG2's identity, for what it's worth
+}
+
+static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
+  return a->dispcnt == b->dispcnt && !memcmp(a->bgcnt, b->bgcnt, sizeof(a->bgcnt)) &&
+         !memcmp(a->ofs, b->ofs, sizeof(a->ofs));
 }
 
 static void UpdateYOffset(void) {
@@ -219,23 +230,16 @@ static void UpdateYOffset(void) {
 }
 
 void Render_CaptureFrame(void) {
-  SnesHw *h = &g_snes_hw;
-  SnesHw_HdmaInit();
-  for (int v = 0; v < kSnesLines; v++) {
-    line_regs[v] = h->r;
-    SnesHw_HdmaRunLine();
-    if ((h->nmitimen & 0x30) && v == h->vtime)
-      Vector_IRQ();
-  }
+  SnesHw_RunDisplay(line_states, line_state);
 
-  hud = line_regs[8].tm == 4 && line_regs[kHudLines + 8].tm != 4;
+  hud = LINE_REGS(8)->tm == 4 && LINE_REGS(kHudLines + 8)->tm != 4;
   UpdateYOffset();
 
   // The BG3 maps the lines use, in slots.
-  uint8_t first = line_regs[SnesLine(0)].bgsc[2];
+  uint8_t first = LINE_REGS(SnesLine(0))->bgsc[2];
   uint8_t second = first;
   for (int g = 1; g < kGbaLines; g++) {
-    uint8_t sc = line_regs[SnesLine(g)].bgsc[2];
+    uint8_t sc = LINE_REGS(SnesLine(g))->bgsc[2];
     if (sc != first) {
       second = sc;
       break;
@@ -251,19 +255,46 @@ void Render_CaptureFrame(void) {
   frame_mode7 = false;
   text_line = -1;
   for (int g = 0; g < kGbaLines; g++) {
-    if ((line_regs[SnesLine(g)].bgmode & 7) == 7)
+    if ((LINE_REGS(SnesLine(g))->bgmode & 7) == 7)
       frame_mode7 = true;
     else if (text_line < 0 || g == kGbaLines / 2)
       text_line = SnesLine(g);
   }
 
-  LineIo *io = line_io[io_back];
+  // Lines with the same registers as the one before (and the same
+  // vertical offset) have the same GBA registers, but for Mode 7's
+  // reference point, which moves down the map a line at a time.
+  uint32_t(*stream)[4] = streams[back];
+  DisplaySegment *segs = segments[back];
+  int num_segs = 0;
+  LineRegs l;
+  int prev_state = -1, prev_dy = 0;
   for (int g = 0; g < kGbaLines; g++) {
-    int s = SnesLine(g);
-    BuildLineIo(&io[g], &line_regs[s], s, g);
+    int s = SnesLine(g), state = line_state[s];
+    const PpuRegs *r = &line_states[state];
+    if (state == prev_state && s - g == prev_dy) {
+      if ((r->bgmode & 7) == 7)
+        StepLineMode7(&l);
+    } else {
+      BuildLine(&l, r, s, g);
+      if (!num_segs || !SameSegment(&segs[num_segs - 1], &l.ctl)) {
+        segs[num_segs] = l.ctl;
+        segs[num_segs++].first_line = g;
+      }
+    }
+    for (int i = 0; i < 4; i++)
+      stream[g][i] = l.stream[i];
+    prev_state = state;
+    prev_dy = s - g;
   }
-  io[kGbaLines] = io[kGbaLines - 1];
-  LogLayoutChange(&line_regs[SnesLine(kGbaLines / 2)]);
+  for (int i = 0; i < 4; i++)
+    stream[kGbaLines][i] = stream[kGbaLines - 1][i];
+  DisplayFrame *f = &frames[back];
+  f->stream = (const uint32_t(*)[4])stream;
+  f->stream_dest = frame_mode7 ? 0x04000020 : 0x04000010;
+  f->num_segments = num_segs;
+  f->segments = segs;
+  LogLayoutChange(LINE_REGS(SnesLine(kGbaLines / 2)));
 }
 
 static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
@@ -276,13 +307,13 @@ static void UpdatePalette(const PpuRegs *r, bool bg3_palettes) {
   conv.bg3_palettes = bg3_palettes;
   uint16_t pal[256];
   if (b == 15) {
-    memcpy(pal, h->cgram, sizeof(pal));
+    memcpy(pal, g_cgram, sizeof(pal));
   } else {
     uint8_t scale[32];
     for (int i = 0; i < 32; i++)
       scale[i] = b ? (i * (b + 1)) >> 4 : 0;
     for (int i = 0; i < 256; i++) {
-      uint16_t c = h->cgram[i];
+      uint16_t c = g_cgram[i];
       pal[i] = scale[c & 31] | scale[(c >> 5) & 31] << 5 | scale[(c >> 10) & 31] << 10;
     }
   }
@@ -308,14 +339,17 @@ static bool ChunkDirty(const uint32_t *dirty, uint32_t chunk) {
   return (dirty[chunk >> 5] >> (chunk & 31)) & 1;
 }
 
-// 1024 words, aligned.
-static bool ScreenDirty(const uint32_t *dirty, uint16_t addr) {
-  uint32_t w = (addr & 0x7fff) >> (kVramChunkShift + 5);
-  return dirty[w] | dirty[w + 1];
-}
+// Runs the statement after it for each chunk k (declared here) of the 64
+// in the map screen at addr (1024 words, aligned) that changed, or all.
+#define FOR_EACH_DIRTY_CHUNK(dirty, addr, all, k)                                          \
+  for (uint64_t bits_ = (all) ? ~0ull                                                      \
+                              : (uint64_t)(dirty)[((addr) >> 9) + 1] << 32 |              \
+                                    (dirty)[(addr) >> 9],                                  \
+                k = 0;                                                                     \
+       bits_; bits_ >>= 1, k++)                                                            \
+    if (bits_ & 1)
 
 static void UpdateTilesMode7(const uint32_t *dirty) {
-  SnesHw *h = &g_snes_hw;
   // Each word of the first 32 KB is a map entry (low byte) and a pixel
   // (high byte).
   volatile uint16_t *tiles = GBA_VRAM, *map = VRAM_SB(kSbMode7);
@@ -325,7 +359,7 @@ static void UpdateTilesMode7(const uint32_t *dirty) {
       uint32_t c = w * 32 + __builtin_ctz(bits);
       bits &= bits - 1;
       uint32_t addr = c << kVramChunkShift;
-      const uint16_t *src = &h->vram[addr];
+      const uint16_t *src = &g_vram[addr];
       for (int i = 0; i < 16; i += 2) {
         uint16_t w0 = src[i], w1 = src[i + 1];
         map[(addr + i) >> 1] = (w0 & 0xff) | (w1 & 0xff) << 8;
@@ -365,7 +399,7 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
       uint32_t c = w * 32 + __builtin_ctz(bits);
       bits &= bits - 1;
       uint16_t addr = c << kVramChunkShift;
-      const uint16_t *src = &h->vram[addr];
+      const uint16_t *src = &g_vram[addr];
       uint16_t off;
       if (bg12) {
         off = (addr - bg12_base) & 0x7fff;
@@ -392,10 +426,10 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
   // A transparent tile, for the halves of BG1's map that don't show.
   int blank = conv.blank_tile;
   if (blank < 0 || ChunkDirty(dirty, ((bg12_base + blank * 16) & 0x7fff) >> kVramChunkShift)) {
-    if (blank < 0 || !TileIsBlank(&h->vram[(bg12_base + blank * 16) & 0x7fff])) {
+    if (blank < 0 || !TileIsBlank(&g_vram[(bg12_base + blank * 16) & 0x7fff])) {
       blank = 0;
       for (int i = 1023; i >= 0; i--) {
-        if (TileIsBlank(&h->vram[(bg12_base + i * 16) & 0x7fff])) {
+        if (TileIsBlank(&g_vram[(bg12_base + i * 16) & 0x7fff])) {
           blank = i;
           break;
         }
@@ -406,7 +440,6 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
 }
 
 static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, bool bg12) {
-  SnesHw *h = &g_snes_hw;
   for (int bg = 0; bg < 2 && bg12; bg++) {
     uint8_t sc = r->bgsc[bg];
     bool changed = sc != conv.bgsc[bg] || (bg == 0 && force_bg1);
@@ -414,13 +447,14 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, 
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
-      if (!changed && !ScreenDirty(dirty, addr))
-        continue;
-      if (bg == 0)
-        Convert_MapSplit(VRAM_SB(kSbBg1Hi + k), VRAM_SB(kSbBg1Lo + k), &h->vram[addr], 1024,
-                         conv.blank_tile);
-      else
-        Convert_Map(VRAM_SB(kSbBg2 + k), &h->vram[addr], 1024, 0);
+      FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
+        uint32_t o = c * 16;
+        if (bg == 0)
+          Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o, VRAM_SB(kSbBg1Lo + k) + o,
+                           &g_vram[addr + o], 16, conv.blank_tile);
+        else
+          Convert_Map(VRAM_SB(kSbBg2 + k) + o, &g_vram[addr + o], 16, 0);
+      }
     }
   }
   for (int slot = 0; slot < 2; slot++) {
@@ -432,8 +466,11 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_bg1, 
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
-      if (changed || ScreenDirty(dirty, addr))
-        Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k), &h->vram[addr], 1024, 8 << 12);
+      FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
+        uint32_t o = c * 16;
+        Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o], 16,
+                    8 << 12);
+      }
     }
   }
 }
@@ -455,8 +492,8 @@ static void UpdateOam(void) {
   last_y_off = y_off;
   const uint8_t *shapes = kObjShapes[h->obsel >> 5];
   for (int i = 0; i < 128; i++) {
-    const uint8_t *e = &h->oam[i * 4];
-    int hi = (h->oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
+    const uint8_t *e = &g_oam[i * 4];
+    int hi = (g_oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
     int x = e[0] | (hi & 1) << 8;
     int shape = shapes[hi >> 1];
     uint8_t attr = e[3];
@@ -471,14 +508,13 @@ static void UpdateOam(void) {
 
 
 void Render_Present(void) {
-  SnesHw *h = &g_snes_hw;
   bool mode7 = frame_mode7, text = text_line >= 0;
   // The registers of a line with a tiled background mode, if any, for
   // where their tiles and maps are.
-  const PpuRegs *r = &line_regs[text ? text_line : SnesLine(kGbaLines / 2)];
+  const PpuRegs *r = LINE_REGS(text ? text_line : SnesLine(kGbaLines / 2));
   uint32_t dirty[kVramChunks / 32];
-  memcpy(dirty, h->vram_dirty, sizeof(dirty));
-  memset(h->vram_dirty, 0, sizeof(h->vram_dirty));
+  memcpy(dirty, g_vram_dirty, sizeof(dirty));
+  memset(g_vram_dirty, 0, sizeof(g_vram_dirty));
 
   if (mode7 != conv.mode7) {
     // Mode 7 and the other modes use the GBA's VRAM differently.
@@ -486,7 +522,7 @@ void Render_Present(void) {
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
   }
-  UpdatePalette(&line_regs[SnesLine(0)], text);
+  UpdatePalette(LINE_REGS(SnesLine(0)), text);
   conv.mode7 = mode7;
   int blank_before = conv.blank_tile;
   if (mode7)
@@ -496,15 +532,12 @@ void Render_Present(void) {
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
   UpdateOam();
 
-  // The VBlank interrupt sets up line 0 and starts HBlank DMA for the
-  // rest, from now on with this frame's registers.
-  extern const uint32_t *volatile g_line_regs;
-  LineIo *io = line_io[io_back];
-  g_line_regs = (const uint32_t *)io;
-  volatile uint32_t *regs = (volatile uint32_t *)0x04000000;
-  for (int i = 0; i < 12; i++)
-    regs[i] = ((const uint32_t *)io)[i];
-  io_back ^= 1;
+  // From now on, the VBlank interrupt sets up this frame's registers.
+  REG_IME = 0;
+  g_display = &frames[back];
+  Display_Start();
+  REG_IME = 1;
+  back ^= 1;
 }
 
 

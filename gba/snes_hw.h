@@ -72,17 +72,19 @@ typedef struct SnesHw {
 
   DmaChannel dma[8];
 
-  uint16_t cgram[256];
-  // 544 bytes: 128 four-byte entries, then 32 bytes of high bits.
-  uint8_t oam[544];
-  uint16_t vram[kVramWords];
-
-  // What changed since render.c last looked.
-  uint32_t vram_dirty[kVramChunks / 32];
-  bool cgram_dirty, oam_dirty;
+  // What changed since render.c last looked (and g_vram_dirty).
+  bool cgram_dirty, oam_dirty, regs_dirty;
 } SnesHw;
 
+// In IWRAM: the game's register writes and HDMA go through it all the time.
 extern SnesHw g_snes_hw;
+
+// The PPU's memories, in EWRAM. OAM is 544 bytes: 128 four-byte entries,
+// then 32 bytes of high bits.
+extern uint16_t g_cgram[256];
+extern uint8_t g_oam[544];
+extern uint16_t g_vram[kVramWords];
+extern uint32_t g_vram_dirty[kVramChunks / 32];
 
 void SnesHw_Reset(void);
 
@@ -90,6 +92,14 @@ void SnesHw_Reset(void);
 // the end of each line, to set up the next.
 void SnesHw_HdmaInit(void);
 void SnesHw_HdmaRunLine(void);
+
+enum { kSnesLines = 224 };
+
+// Runs the SNES's display of a frame: HDMA, and the game's IRQ handlers,
+// which change registers partway down the screen. Returns the PPU's
+// registers for each line, as states[line_state[line]] with a state for
+// each change: the number of states.
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state);
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);

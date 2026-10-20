@@ -79,8 +79,8 @@ add_executable(sm_gba
     input.c
     main.c
     rtl.c
-    snes_hw.c
-    render.c
+    snes_hw.iwram.c
+    render.iwram.c
     convert.iwram.c
     irq.iwram.c
 )
@@ -90,8 +90,12 @@ set_target_properties(sm_gba PROPERTIES
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
 )
 option(SM_SKIP_INTRO "For testing: skip a new game's intro, to Ceres" OFF)
+option(SM_START_ZEBES "With SM_SKIP_INTRO: start on Zebes, as after escaping Ceres" OFF)
 if(SM_SKIP_INTRO)
     target_compile_definitions(sm_gba PRIVATE SM_SKIP_INTRO=1)
+endif()
+if(SM_START_ZEBES)
+    target_compile_definitions(sm_gba PRIVATE SM_START_ZEBES=1)
 endif()
 
 target_compile_options(sm_gba PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas)
@@ -103,7 +107,9 @@ set_source_files_properties(snes_rom.S PROPERTIES
 # Hot code, linked into IWRAM by gba.ld. ARM rather than Thumb: IWRAM's
 # 32-bit bus fetches an ARM instruction as fast as a Thumb one, and ARM
 # does more per instruction.
-set_source_files_properties(convert.iwram.c irq.iwram.c PROPERTIES COMPILE_OPTIONS "-marm")
+get_target_property(gba_sources sm_gba SOURCES)
+list(FILTER gba_sources INCLUDE REGEX "\\.iwram\\.c$")
+set_source_files_properties(${gba_sources} PROPERTIES COMPILE_OPTIONS "-marm")
 
 target_link_libraries(sm_gba PRIVATE sm_game gba_libc gba_builtins)
 target_link_options(sm_gba PRIVATE

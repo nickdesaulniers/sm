@@ -15,11 +15,20 @@
 // containing TEXT (frame 1 is the frame after), and PRE_KEYS (in KEYS's
 // form, counting from the start) holds buttons before then.
 //
+// With PROFILE=N SYMS=FILE, it runs the N frames from frame PROFILE_FROM
+// (default 1, counted like SHOTS) an instruction at a time, and prints
+// where their cycles went, by function: SYMS is `llvm-nm -n sm.elf`. With
+// PCS=LO:HI (hex) too, it also prints the cycles of each instruction with an
+// address in [LO, HI), to see where in a function they go.
+//
 // Build with tools/mgba/build.sh, against mGBA 0.10.
 #include <mgba/flags.h>
 #include <mgba/core/config.h>
 #include <mgba/core/core.h>
 #include <mgba/core/log.h>
+#include <mgba/core/timing.h>
+#include <mgba/internal/arm/arm.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +94,74 @@ static uint32_t schedule_keys(const struct Keys* k, int frame) {
     if (!k->n || frame < k->from)
         return 0;
     return k->steps[((frame - k->from) / k->step) % k->n];
+}
+
+struct Sym {
+    uint32_t addr;
+    char name[96];
+    unsigned long long cycles;
+};
+static uint32_t pcs_lo, pcs_hi;
+static unsigned long long* pcs_cycles;
+static struct Sym* syms;
+static int nsyms;
+
+static void load_syms(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "can't read %s\n", path);
+        exit(1);
+    }
+    char line[512];
+    int cap = 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned addr;
+        char type, name[256];
+        if (sscanf(line, "%x %c %255s", &addr, &type, name) != 3 || (type != 't' && type != 'T'))
+            continue;
+        if (nsyms == cap)
+            syms = realloc(syms, (cap = cap ? cap * 2 : 4096) * sizeof *syms);
+        syms[nsyms].addr = addr & ~1u;
+        snprintf(syms[nsyms].name, sizeof syms[nsyms].name, "%s", name);
+        syms[nsyms].cycles = 0;
+        nsyms++;
+    }
+    fclose(f);
+}
+
+static struct Sym* find_sym(uint32_t pc) {
+    int lo = 0, hi = nsyms - 1;
+    while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        if (syms[mid].addr <= pc)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    return &syms[lo];
+}
+
+static int by_cycles(const void* a, const void* b) {
+    const struct Sym *x = a, *y = b;
+    return x->cycles < y->cycles ? 1 : x->cycles > y->cycles ? -1 : 0;
+}
+
+// Runs a frame an instruction at a time, adding each one's cycles to its
+// function's.
+static unsigned long long profile_frame(struct mCore* core) {
+    struct ARMCore* cpu = core->cpu;
+    uint32_t start_frame = core->frameCounter(core);
+    uint64_t last = mTimingGlobalTime(core->timing), start = last;
+    while (core->frameCounter(core) == start_frame) {
+        uint32_t pc = cpu->gprs[15] - (cpu->executionMode == MODE_ARM ? 4 : 2);
+        core->step(core);
+        uint64_t now = mTimingGlobalTime(core->timing);
+        find_sym(pc)->cycles += now - last;
+        if (pcs_cycles && pc >= pcs_lo && pc < pcs_hi)
+            pcs_cycles[(pc - pcs_lo) / 2] += now - last;
+        last = now;
+    }
+    return last - start;
 }
 
 static void put32(unsigned char* p, uint32_t v) {
@@ -159,6 +236,17 @@ int main(int argc, char** argv) {
     struct Keys pre = parse_schedule(getenv("PRE_KEYS"));
     struct Keys keys = parse_schedule(getenv("KEYS"));
     after_text = getenv("AFTER");
+    int profile_n = getenv("PROFILE") ? atoi(getenv("PROFILE")) : 0;
+    int profile_from = getenv("PROFILE_FROM") ? atoi(getenv("PROFILE_FROM")) : 1;
+    unsigned long long profile_total = 0;
+    if (profile_n)
+        load_syms(getenv("SYMS"));
+    if (getenv("PCS")) {
+        pcs_lo = strtoul(getenv("PCS"), NULL, 16) & ~1u;
+        const char* colon = strchr(getenv("PCS"), ':');
+        pcs_hi = colon ? strtoul(colon + 1, NULL, 16) : pcs_lo;
+        pcs_cycles = calloc((pcs_hi - pcs_lo) / 2 + 1, sizeof *pcs_cycles);
+    }
     int frames = atoi(argv[2]);
     const char* shots = argc > 3 ? argv[3] : "";
     const char* prefix = argc > 4 ? argv[4] : "shot";
@@ -170,7 +258,24 @@ int main(int argc, char** argv) {
             core->setKeys(core, schedule_keys(&pre, i));
         else
             core->setKeys(core, schedule_keys(&keys, t));
-        core->runFrame(core);
+        bool profiling = profile_n && t >= profile_from && t < profile_from + profile_n &&
+                         (!after_text || after_frame);
+        if (profiling)
+            profile_total += profile_frame(core);
+        else
+            core->runFrame(core);
+        if (profile_n && t == profile_from + profile_n - 1 && profile_total) {
+            qsort(syms, nsyms, sizeof *syms, by_cycles);
+            printf("profile: %llu cycles over %d frames\n", profile_total, profile_n);
+            for (int k = 0; k < 50 && syms[k].cycles; k++)
+                printf("%5.1f%% %10llu  %s\n", 100.0 * syms[k].cycles / profile_total, syms[k].cycles,
+                       syms[k].name);
+            for (uint32_t a = pcs_lo; pcs_cycles && a < pcs_hi; a += 2) {
+                if (pcs_cycles[(a - pcs_lo) / 2])
+                    printf("pc %08x %10llu\n", a, pcs_cycles[(a - pcs_lo) / 2]);
+            }
+            break;
+        }
         for (const char* s = shots; *s && t > 0;) {
             if (atoi(s) == t) {
                 char path[512];

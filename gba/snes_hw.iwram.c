@@ -1,12 +1,20 @@
 // See snes_hw.h. Register behavior follows src/snes/ppu.c, snes.c and
 // dma.c, the emulator the PC build checks the game against.
+//
+// ARM code in IWRAM, as the game's DMA and the SNES's display of each frame
+// run through here. (So no division: see cmake/compiler-rt.cmake.)
 #include "snes_hw.h"
 
 #include <string.h>
 
+#include "gba_hw.h"
 #include "sm_rtl.h"
 
-SnesHw g_snes_hw;
+SnesHw g_snes_hw IWRAM_BSS;
+uint16_t g_cgram[256];
+uint8_t g_oam[544];
+uint16_t g_vram[kVramWords];
+uint32_t g_vram_dirty[kVramChunks / 32];
 
 static uint32_t wram_port_addr;
 
@@ -24,13 +32,13 @@ void SnesHw_Reset(void) {
     c->a2a = 0xffff;
     c->ntrl = 0xff;
   }
-  memset(g_snes_hw.vram_dirty, 0xff, sizeof(g_snes_hw.vram_dirty));
+  memset(g_vram_dirty, 0xff, sizeof(g_vram_dirty));
   g_snes_hw.cgram_dirty = g_snes_hw.oam_dirty = true;
 }
 
 static inline void MarkVramDirty(uint16_t addr) {
   uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift;
-  g_snes_hw.vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
+  g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
 }
 
 uint8_t SnesHw_ReadA(uint32_t addr) {
@@ -62,9 +70,19 @@ static uint16_t VramRemap(void) {
   }
 }
 
+// The PPU registers below 0x34 that aren't in PpuRegs, by bit: OBSEL and
+// the ports to OAM, VRAM and CGRAM.
+static const uint32_t kNotPpuRegs[2] = {
+  1u << 0x01 | 1u << 0x02 | 1u << 0x03 | 1u << 0x04 | 1u << 0x15 | 1u << 0x16 | 1u << 0x17 |
+      1u << 0x18 | 1u << 0x19,
+  1u << (0x21 - 32) | 1u << (0x22 - 32),
+};
+
 static void WriteBBus(uint8_t adr, uint8_t val) {
   SnesHw *h = &g_snes_hw;
   PpuRegs *r = &h->r;
+  if (adr < 0x34 && !((kNotPpuRegs[adr >> 5] >> (adr & 31)) & 1))
+    h->regs_dirty = true;
   switch (adr) {
   case 0x00: r->inidisp = val; break;
   case 0x01: h->obsel = val; h->oam_dirty = true; break;
@@ -82,11 +100,11 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
       if (!(a & 1)) {
         h->oam_latch = val;
       } else {
-        h->oam[a - 1] = h->oam_latch;
-        h->oam[a] = val;
+        g_oam[a - 1] = h->oam_latch;
+        g_oam[a] = val;
       }
     } else {
-      h->oam[0x200 + (a & 0x1f)] = val;
+      g_oam[0x200 + (a & 0x1f)] = val;
     }
     h->oam_addr = (a + 1) & 0x3ff;
     h->oam_dirty = true;
@@ -120,16 +138,16 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     break;
   case 0x16:
     h->vram_ptr = (h->vram_ptr & 0xff00) | val;
-    h->vram_read_buf = h->vram[VramRemap() & 0x7fff];
+    h->vram_read_buf = g_vram[VramRemap() & 0x7fff];
     break;
   case 0x17:
     h->vram_ptr = (h->vram_ptr & 0x00ff) | (val << 8);
-    h->vram_read_buf = h->vram[VramRemap() & 0x7fff];
+    h->vram_read_buf = g_vram[VramRemap() & 0x7fff];
     break;
   case 0x18: {
     uint16_t a = VramRemap() & 0x7fff;
 
-    h->vram[a] = (h->vram[a] & 0xff00) | val;
+    g_vram[a] = (g_vram[a] & 0xff00) | val;
     MarkVramDirty(a);
     if (!(h->vmain & 0x80))
       h->vram_ptr += h->vram_inc;
@@ -138,7 +156,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
   case 0x19: {
     uint16_t a = VramRemap() & 0x7fff;
 
-    h->vram[a] = (h->vram[a] & 0x00ff) | (val << 8);
+    g_vram[a] = (g_vram[a] & 0x00ff) | (val << 8);
     MarkVramDirty(a);
     if (h->vmain & 0x80)
       h->vram_ptr += h->vram_inc;
@@ -162,7 +180,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     if (!h->cgram_high) {
       h->cgram_latch = val;
     } else {
-      h->cgram[h->cgram_ptr++] = ((val & 0x7f) << 8) | h->cgram_latch;
+      g_cgram[h->cgram_ptr++] = ((val & 0x7f) << 8) | h->cgram_latch;
       h->cgram_dirty = true;
     }
     h->cgram_high = !h->cgram_high;
@@ -206,7 +224,7 @@ static uint8_t ReadBBus(uint8_t adr) {
   case 0x39: {
     uint16_t val = h->vram_read_buf;
     if (!(h->vmain & 0x80)) {
-      h->vram_read_buf = h->vram[VramRemap() & 0x7fff];
+      h->vram_read_buf = g_vram[VramRemap() & 0x7fff];
       h->vram_ptr += h->vram_inc;
     }
     return val;
@@ -214,7 +232,7 @@ static uint8_t ReadBBus(uint8_t adr) {
   case 0x3a: {
     uint16_t val = h->vram_read_buf;
     if (h->vmain & 0x80) {
-      h->vram_read_buf = h->vram[VramRemap() & 0x7fff];
+      h->vram_read_buf = g_vram[VramRemap() & 0x7fff];
       h->vram_ptr += h->vram_inc;
     }
     return val >> 8;
@@ -249,23 +267,90 @@ static const uint8_t *ABusSpan(uint8_t bank, uint16_t a, uint32_t count) {
   return NULL;
 }
 
-// A to VRAM, a word at a time, as the game does most of its DMA.
-static bool FastDmaToVram(DmaChannel *c, uint32_t count) {
+// DMA from the A bus to the PPU's memories without going through WriteBBus
+// a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
+// the game does almost all its DMA. Returns false for anything else.
+static bool FastDma(DmaChannel *c, uint32_t count) {
   SnesHw *h = &g_snes_hw;
-  if ((c->dmap & 0x9f) != 0x01 || c->bbad != 0x18 || h->vmain != 0x80 || (count & 1))
+  // B to A, or a fixed or decrementing A address.
+  if (c->dmap & 0x98)
     return false;
   const uint8_t *src = ABusSpan(c->a1b, c->a1t, count);
   if (!src)
     return false;
-  uint16_t p = h->vram_ptr;
-  for (uint32_t i = 0; i < count; i += 2, p++) {
-    h->vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
-    if (!(p & 15))
-      MarkVramDirty(p);
+  uint8_t mode = c->dmap & 7;
+  bool no_remap = !(h->vmain & 0x0c), inc_on_high = h->vmain & 0x80;
+  if (c->bbad == 0x22 && (mode == 0 || mode == 2) && !h->cgram_high && !(count & 1) &&
+      h->cgram_ptr + count / 2 <= 256) {
+    // Whole colors (the unused top bit doesn't matter to the GBA).
+    memcpy(&g_cgram[h->cgram_ptr], src, count);
+    h->cgram_ptr += count / 2;
+    h->cgram_dirty = true;
+  } else if (c->bbad == 0x04 && (mode == 0 || mode == 2) && !(h->oam_addr & 1) &&
+             h->oam_addr + count <= 0x220) {
+    // The low table and then the high table, as the game uploads OAM.
+    uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
+    if (low > count)
+      low = count;
+    memcpy(&g_oam[h->oam_addr], src, low);
+    memcpy(&g_oam[h->oam_addr + low], src + low, count - low);
+    h->oam_addr = (h->oam_addr + count) & 0x3ff;
+    h->oam_dirty = true;
+  } else if (c->bbad == 0x22 && (mode == 0 || mode == 2)) {
+    for (uint32_t i = 0; i < count; i++) {
+      if (!h->cgram_high)
+        h->cgram_latch = src[i];
+      else
+        g_cgram[h->cgram_ptr++] = ((src[i] & 0x7f) << 8) | h->cgram_latch;
+      h->cgram_high = !h->cgram_high;
+    }
+    h->cgram_dirty = true;
+  } else if (c->bbad == 0x04 && (mode == 0 || mode == 2)) {
+    uint16_t a = h->oam_addr;
+    for (uint32_t i = 0; i < count; i++, a = (a + 1) & 0x3ff) {
+      if (a >= 0x200)
+        g_oam[0x200 + (a & 0x1f)] = src[i];
+      else if (!(a & 1))
+        h->oam_latch = src[i];
+      else
+        g_oam[a - 1] = h->oam_latch, g_oam[a] = src[i];
+    }
+    h->oam_addr = a;
+    h->oam_dirty = true;
+  } else if (c->bbad == 0x18 && mode == 1 && no_remap && inc_on_high && !(count & 1)) {
+    uint16_t p = h->vram_ptr, inc = h->vram_inc;
+    if (inc == 1) {
+      for (uint32_t i = 0; i < count; i += 2, p++) {
+        g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
+        if (!(p & 15))
+          MarkVramDirty(p);
+      }
+      MarkVramDirty(h->vram_ptr);
+      MarkVramDirty(p - 1);
+    } else {
+      for (uint32_t i = 0; i < count; i += 2, p += inc) {
+        g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
+        MarkVramDirty(p);
+      }
+    }
+    h->vram_ptr = p;
+  } else if ((c->bbad == 0x18 || c->bbad == 0x19) && mode == 0 && no_remap &&
+             inc_on_high == (c->bbad == 0x19)) {
+    // Bytes to one half of each word: Mode 7's maps and tiles, say.
+    bool high = c->bbad == 0x19;
+    uint16_t p = h->vram_ptr, inc = h->vram_inc;
+    for (uint32_t i = 0; i < count; i++, p += inc) {
+      uint16_t *w = &g_vram[p & 0x7fff];
+      *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
+      if (!(p & 15) || inc != 1)
+        MarkVramDirty(p);
+    }
+    MarkVramDirty(h->vram_ptr);
+    MarkVramDirty(p - 1);
+    h->vram_ptr = p;
+  } else {
+    return false;
   }
-  MarkVramDirty(h->vram_ptr);
-  MarkVramDirty(p - 1);
-  h->vram_ptr = p;
   c->a1t += count;
   return true;
 }
@@ -276,7 +361,7 @@ static void RunDma(uint8_t channels) {
       continue;
     DmaChannel *c = &g_snes_hw.dma[i];
     uint32_t count = c->das ? c->das : 0x10000;
-    if (!FastDmaToVram(c, count)) {
+    if (!FastDma(c, count)) {
       uint8_t mode = c->dmap & 7;
       int step = (c->dmap & 0x08) ? 0 : (c->dmap & 0x10) ? -1 : 1;
       for (uint32_t j = 0; j < count; j++) {
@@ -346,13 +431,9 @@ void WriteReg(uint16 reg, uint8 value) {
   case WRDIVL: h->wrdiv = (h->wrdiv & 0xff00) | value; break;
   case WRDIVH: h->wrdiv = (h->wrdiv & 0x00ff) | (value << 8); break;
   case WRDIVB:
-    if (value == 0) {
-      h->rddiv = 0xffff;
-      h->rdmpy = h->wrdiv;
-    } else {
-      h->rddiv = h->wrdiv / value;
-      h->rdmpy = h->wrdiv % value;
-    }
+    // In Thumb code, which can call the division helpers.
+    h->rddiv = SnesDivide(h->wrdiv, value);
+    h->rdmpy = SnesModulus(h->wrdiv, value);
     break;
   case HTIMEL: h->htime = (h->htime & 0x100) | value; break;
   case HTIMEH: h->htime = (h->htime & 0xff) | ((value & 1) << 8); break;
@@ -438,4 +519,66 @@ void SnesHw_HdmaRunLine(void) {
       c->hdma_do_transfer = true;
     }
   }
+}
+
+void Vector_IRQ(void);
+
+// How many lines from now HDMA does nothing but count down: for each
+// channel, the lines left in a table entry that doesn't repeat, after its
+// first. Up to |max|.
+static int HdmaQuietLines(int max) {
+  for (int i = 0; i < 8 && max; i++) {
+    DmaChannel *c = &g_snes_hw.dma[i];
+    if (!(g_snes_hw.hdmaen & (1 << i)) || c->hdma_terminated)
+      continue;
+    int quiet = (c->hdma_do_transfer || (c->ntrl & 0x80)) ? 0 : (c->ntrl & 0x7f) - 1;
+    if (quiet < max)
+      max = quiet;
+  }
+  return max;
+}
+
+static void HdmaSkipLines(int lines) {
+  for (int i = 0; i < 8; i++) {
+    if ((g_snes_hw.hdmaen & (1 << i)) && !g_snes_hw.dma[i].hdma_terminated)
+      g_snes_hw.dma[i].ntrl -= lines;
+  }
+}
+
+static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
+  const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
+  for (unsigned i = 0; i < sizeof(PpuRegs) / 4; i++) {
+    if (x[i] != y[i])
+      return false;
+  }
+  return true;
+}
+
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state) {
+  SnesHw *h = &g_snes_hw;
+  SnesHw_HdmaInit();
+  int n = 0;
+  h->regs_dirty = true;
+  for (int v = 0; v < kSnesLines; v++) {
+    // HDMA often writes registers with the values they have.
+    if (h->regs_dirty) {
+      h->regs_dirty = false;
+      if (!n || !SameRegs(&states[n - 1], &h->r))
+        states[n++] = h->r;
+    }
+    line_state[v] = n - 1;
+    bool irq = (h->nmitimen & 0x30) && h->vtime < kSnesLines;
+    // Lines with nothing for HDMA to do, before the IRQ at the end of its
+    // line, have this line's registers.
+    int quiet = HdmaQuietLines((irq && h->vtime >= v ? h->vtime : kSnesLines - 1) - v);
+    if (quiet) {
+      HdmaSkipLines(quiet);
+      for (int end = v + quiet; v < end; v++)
+        line_state[v + 1] = n - 1;
+    }
+    SnesHw_HdmaRunLine();
+    if (irq && v == h->vtime)
+      Vector_IRQ();
+  }
+  return n;
 }
