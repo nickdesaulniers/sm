@@ -76,7 +76,6 @@ target_include_directories(sm_game PUBLIC ${game_dir})
 add_executable(sm_gba
     crt0.S
     header.c
-    snes_rom.S
     input.c
     main.c
     rtl.c
@@ -100,10 +99,6 @@ if(SM_START_ZEBES)
 endif()
 
 target_compile_options(sm_gba PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas)
-set_source_files_properties(snes_rom.S PROPERTIES
-    COMPILE_DEFINITIONS "SM_ROM_PATH=\"${SM_ROM}\""
-    OBJECT_DEPENDS "${SM_ROM}"
-)
 
 # Hot code, linked into IWRAM by gba.ld. ARM rather than Thumb: IWRAM's
 # 32-bit bus fetches an ARM instruction as fast as a Thumb one, and ARM
@@ -118,8 +113,18 @@ target_link_options(sm_gba PRIVATE
     -Wl,--gc-sections
 )
 
+# The engine, sm-engine.gba, has none of the game's data: make_cartridge.py
+# appends it from the ROM, to make sm.gba (see cart_data.h).
 add_custom_command(TARGET sm_gba POST_BUILD
-    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:sm_gba> ${CMAKE_BINARY_DIR}/sm.gba
-    BYPRODUCTS ${CMAKE_BINARY_DIR}/sm.gba
-    COMMENT "Creating sm.gba"
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:sm_gba> ${CMAKE_BINARY_DIR}/sm-engine.gba
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/sm-engine.gba
+    COMMENT "Creating sm-engine.gba"
 )
+if(EXISTS "${SM_ROM}")
+    add_custom_command(TARGET sm_gba POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py
+                ${CMAKE_BINARY_DIR}/sm-engine.gba ${SM_ROM} ${CMAKE_BINARY_DIR}/sm.gba
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/sm.gba
+        COMMENT "Creating sm.gba from ${SM_ROM}"
+    )
+endif()

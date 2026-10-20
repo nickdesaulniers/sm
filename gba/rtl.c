@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "cart_data.h"
 #include "gba_hw.h"
 #include "sm_rtl.h"
 #include "types.h"
@@ -16,7 +17,19 @@ bool g_use_my_apu_code = true;
 bool g_debug_flag;
 int snes_frame_counter;
 
+// No game data appended to the cartridge (see cart_data.h): there's nothing
+// to run. A red screen, and why in mGBA's log.
+static void MissingCartData(void) {
+  printf("sm: no game data: make the cartridge with tools/make_cartridge.py\n");
+  REG_DISPCNT = 0;
+  GBA_BG_PALETTE[0] = 0x001f;
+  for (;;) {}
+}
+
 void RtlInit(void) {
+  if (memcmp(__cart_data.magic, CART_DATA_MAGIC, 8) || __cart_data.version != kCartDataVersion ||
+      __cart_data.snes_rom_size != kSnesRomSize)
+    MissingCartData();
   for (int i = 0; i < 0x2000; i++)
     sram[i] = GBA_SRAM[i];
 }

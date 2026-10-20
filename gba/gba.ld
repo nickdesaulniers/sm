@@ -69,8 +69,15 @@ SECTIONS {
     __heap_start = .;
     __heap_end = ORIGIN(ewram) + LENGTH(ewram);
 
-    /* The SNES ROM, which the game reads its data from. */
-    .snes_rom : ALIGN(4) { KEEP(*(.snes_rom)) } > rom
+    /* The end of the engine's image, padded to a multiple of 256 bytes:
+       tools/make_cartridge.py appends the game's data, the SNES ROM among
+       it, here (see cart_data.h). */
+    .rom_end : {
+        BYTE(0)
+        . = ALIGN(256);
+    } > rom
+    __cart_data = LOADADDR(.rom_end) + SIZEOF(.rom_end);
+    snes_rom = __cart_data + 256;
 
     /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment) }
 }

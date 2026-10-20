@@ -19,7 +19,17 @@ cmake -B build-gba -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake -DCMAKE_BUIL
 cmake --build build-gba
 ```
 
-Run `build-gba/sm.gba` in mGBA. The game runs natively, not in an emulator;
+That makes `build-gba/sm-engine.gba`, the engine, and from it and your ROM,
+`build-gba/sm.gba`, the cartridge. Run `sm.gba` in mGBA. The engine has none
+of the game's data, so it can be shared: `tools/make_cartridge.py` makes a
+cartridge from it and a ROM.
+
+```
+python3 tools/make_cartridge.py sm-engine.gba sm.smc sm.gba
+```
+
+GitHub builds the engine for each push (`.github/workflows/gba.yml`), and for a
+tag named `v*`, publishes a release of it with `make_cartridge.py`. The game runs natively, not in an emulator;
 `gba/` replaces the PC's platform layer. The SNES's 256x224 picture is shown
 1:1, cropped to the GBA's 240x160 around Samus. No sound yet, and it runs
 slower than full speed.

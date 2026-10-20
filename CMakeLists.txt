@@ -2,7 +2,8 @@
 #   cmake -B build-gba -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake \
 #       -DCMAKE_BUILD_TYPE=Release
 #   cmake --build build-gba
-# Produces build-gba/sm.gba, with sm.smc built into it.
+# Produces build-gba/sm-engine.gba, the engine, and from it and sm.smc (if
+# there), build-gba/sm.gba, the cartridge: see tools/make_cartridge.py.
 cmake_minimum_required(VERSION 3.20)
 project(sm_gba LANGUAGES C ASM)
 
@@ -16,11 +17,14 @@ endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 
+# Without the ROM (as in CI), the build makes only the engine; see
+# tools/make_cartridge.py.
 set(SM_ROM "${CMAKE_SOURCE_DIR}/sm.smc" CACHE FILEPATH
-    "The Super Metroid ROM to build into the cartridge (sha1 da957f0d63d14cb441d215462904c4fa8519c613)")
+    "The Super Metroid ROM to make sm.gba with (sha1 da957f0d63d14cb441d215462904c4fa8519c613)")
 if(NOT EXISTS "${SM_ROM}")
-    message(FATAL_ERROR "SM_ROM: no such file: ${SM_ROM}")
+    message(STATUS "SM_ROM: no ${SM_ROM}: building only sm-engine.gba")
 endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # The code is not compiled -ffreestanding: that implies -fno-builtin, which
 # stops clang inlining memcpy/memset and similar. Instead it links -nostdlib
