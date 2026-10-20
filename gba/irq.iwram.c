@@ -14,6 +14,8 @@ static void SetSegment(const DisplayFrame *d, const DisplaySegment *s) {
   REG_BLDCNT = s->bld[0];
   REG_BLDALPHA = s->bld[1];
   REG_BLDY = s->bld[2];
+  REG_WININ = s->win[0];
+  REG_WINOUT = s->win[1];
   if (d->stream_dest != 0x04000010) {
     volatile uint16_t *ofs = &REG_BGHOFS(0);
     for (int i = 0; i < 8; i++)
@@ -29,18 +31,21 @@ static void ScheduleSegment(const DisplayFrame *d) {
   REG_DISPSTAT = stat;
 }
 
-void Display_Start(void) {
+ROM_CODE void Display_Start(void) {
   const DisplayFrame *d = g_display;
   if (!d)
     return;
   REG_DMACNT(0) = 0;
   SetSegment(d, &d->segments[0]);
   volatile uint32_t *dest = (volatile uint32_t *)d->stream_dest;
-  for (int i = 0; i < 4; i++)
-    dest[i] = d->stream[0][i];
-  REG_DMASAD(0) = (uintptr_t)d->stream[1];
+  int words = d->stream_words;
+  for (int i = 0; i < words; i++)
+    dest[i] = d->stream[i];
+  // The windows are all the lines high: the stream has their widths.
+  REG_WIN0V = REG_WIN1V = kGbaLines;
+  REG_DMASAD(0) = (uintptr_t)(d->stream + words);
   REG_DMADAD(0) = d->stream_dest;
-  REG_DMACNT(0) = 4 | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
+  REG_DMACNT(0) = words | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
   next_segment = 1;
   ScheduleSegment(d);
 }

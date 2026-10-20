@@ -36,9 +36,9 @@ platform layer, at 60 frames per second in most places. In gameplay, the
 SNES's 256x224 picture is shown 1:1, cropped to the GBA's 240x160 around
 Samus; elsewhere (the title, menus, the pause screen), all of it, squashed.
 The sound plays, with the SNES's echo, if with the GBA's 8-bit hiss. The
-SNES's color math is there as far as the GBA can blend: rain, fog and
-water over the rooms, and tints; not yet its windows (the X-ray scope's,
-power bombs').
+SNES's color math and windows are there as far as the GBA can do them:
+rain, fog and water over the rooms, tints, the X-ray scope's cone and
+power bombs' explosions (brightening, not yellow).
 
 Controls in gameplay work as in Metroid: Zero Mission and Fusion (the GBA
 has no X and Y buttons):

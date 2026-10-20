@@ -98,8 +98,10 @@ enum { kSnesLines = 224 };
 // Runs the SNES's display of a frame: HDMA, and the game's IRQ handlers,
 // which change registers partway down the screen. Returns the PPU's
 // registers for each line, as states[line_state[line]] with a state for
-// each change: the number of states.
-int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state);
+// each change: the number of states. But for the windows' edges (WH0-WH3,
+// as a word), which HDMA often changes every line: they're
+// line_windows[line], and the states' are the last line's.
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows);
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);

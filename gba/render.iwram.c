@@ -73,10 +73,20 @@ typedef struct LineRegs {
 // with a state for each time they change down the screen.
 static PpuRegs line_states[kSnesLines];
 static uint8_t line_state[kSnesLines];
+static uint32_t line_wh[kSnesLines];  // WH0-WH3, by line
 #define LINE_REGS(s) (&line_states[line_state[s]])
-// Two of each, for the frame on show and the next.
-static uint32_t streams[2][kGbaLines + 1][4] IWRAM_BSS;
-static DisplaySegment segments[2][kGbaLines];
+// Two of each, for the frame on show and the next. (One of the streams in
+// EWRAM, for room in IWRAM: HBlank DMA reads only 16 bytes a line.)
+static uint32_t stream0[kGbaLines + 1][4] IWRAM_BSS, stream1[kGbaLines + 1][4];
+static uint32_t (*const streams[2])[4] = {stream0, stream1};
+// The streams of frames with windows (see display.h), and their windows
+// line by line, for them.
+static uint32_t window_streams[2][kGbaLines + 1][kWindowStreamWords];
+static uint32_t line_windows[kGbaLines];
+// Segments: a frame has a few, as a rule (each costs an interrupt). Past
+// the most, the last goes on to the end.
+enum { kMaxSegments = 32 };
+static DisplaySegment segments[2][kMaxSegments];
 static DisplayFrame frames[2];
 static int back;
 
@@ -176,6 +186,7 @@ static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   // 1024x1024, wrapping around unless the SNES's field is "large".
   l->ctl.bgcnt[2] = 3 | kSbMode7 << 8 | 3 << 14 | (r->m7sel & 0x80 ? 0 : 1 << 13);
   l->ctl.bld[0] = l->ctl.bld[1] = l->ctl.bld[2] = 0;
+  l->ctl.win[0] = l->ctl.win[1] = 0;
   for (int i = 0; i < 8; i++)
     l->ctl.ofs[i] = 0;
   // The SNES's screen pixel (sx, sy) shows the map's pixel
@@ -213,17 +224,79 @@ static uint16_t BlendLayers(uint8_t snes) {
 // (UpdatePalette), the same for all the frame's lines. Without windows yet,
 // color math "inside the window" is nowhere, and "outside", everywhere. Not
 // done: the sub screen subtracted.
-static void ColorMath(DisplaySegment *c, const PpuRegs *r) {
+// Whether a layer is in the SNES's windows, as its |sel| (W12SEL's,
+// W34SEL's or WOBJSEL's 4 bits for it) and |logic| (WBGLOG's or WOBJLOG's 2
+// bits) have it, at a pixel in window 1 or not, and 2 or not.
+ROM_CODE static bool InWindows(int sel, int logic, bool in1, bool in2) {
+  bool on1 = sel & 2, on2 = sel & 8;
+  bool w1 = in1 ^ (sel & 1), w2 = in2 ^ ((sel >> 2) & 1);
+  if (!on1 || !on2)
+    return on1 ? w1 : on2 ? w2 : false;
+  switch (logic) {
+  case 0: return w1 || w2;
+  case 1: return w1 && w2;
+  case 2: return w1 ^ w2;
+  default: return !(w1 ^ w2);
+  }
+}
+
+// Whether color math is off in a region (CGWSEL's bits 4-5, |region|), as
+// the color window has it there.
+ROM_CODE static bool NoMath(const PpuRegs *r, int region, bool in1, bool in2) {
+  bool color = InWindows(r->wsel[2] >> 4, (r->wobjlog >> 2) & 3, in1, in2);
+  return region == 3 || (region == 1 && !color) || (region == 2 && color);
+}
+
+// Whether the windows hide all the sub screen's layers in |windowed|
+// somewhere color math's on: where the fixed color shows.
+ROM_CODE static bool FixedShows(const PpuRegs *r, uint8_t windowed) {
+  for (int k = 0; k < 3; k++) {
+    bool in1 = k == 0, in2 = k == 1, hidden = true;
+    for (int i = 0; i < 3; i++) {
+      if (windowed & (1 << i))
+        hidden &= InWindows((r->wsel[i >> 1] >> ((i & 1) * 4)) & 15, (r->wbglog >> (2 * i)) & 3,
+                            in1, in2);
+    }
+    if (hidden && !NoMath(r, (r->cgwsel >> 4) & 3, in1, in2))
+      return true;
+  }
+  return false;
+}
+
+// Returns the sub screen's layers it shows (CGADSUB's bits), or with
+// kFixedInWindows, the ones that windows hide, for the fixed color there.
+enum { kFixedInWindows = 0x80 };
+static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   c->bld[0] = c->bld[1] = c->bld[2] = 0;
   uint8_t math = r->cgadsub & 0x3f;
+  // Color math only inside the color window, or not at all; with the
+  // window, Windows has the GBA's windows do it.
   int region = (r->cgwsel >> 4) & 3;
-  if (!math || region == 1 || region == 3 || frame_mode7 || (r->inidisp & 0x80))
-    return;
+  if (!math || (region == 1 && !(r->wsel[2] & 0xa0)) || region == 3 || frame_mode7 ||
+      (r->inidisp & 0x80))
+    return 0;
   bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
   if (r->cgwsel & 2) {
     uint8_t sub = r->ts & ~r->tm & 7;
     if (!sub || subtract)
-      return;
+      return 0;
+    // Where it's transparent, the sub screen's the fixed color. Where
+    // windows hide its layers (a power bomb's, all but its explosion), it's
+    // that: the main screen brightens, by the brightest of the color's
+    // channels (the GBA can't make it a color), where Windows has the
+    // GBA's windows do it. Its layers don't show, here, elsewhere.
+    uint8_t windowed = 0;
+    for (int i = 0; i < 3; i++) {
+      if ((sub & r->tsw & (1 << i)) && ((r->wsel[i >> 1] >> ((i & 1) * 4)) & 0xa))
+        windowed |= 1 << i;
+    }
+    int fixed = r->coldata[0] > r->coldata[1] ? r->coldata[0] : r->coldata[1];
+    fixed = fixed > r->coldata[2] ? fixed : r->coldata[2];
+    if (windowed && fixed && FixedShows(r, windowed)) {
+      c->bld[0] = BlendLayers(math & ~sub) | 2 << 6;
+      c->bld[2] = fixed * 33 >> 6;  // /31 * 16
+      return windowed | kFixedInWindows;
+    }
     // The sub screen's layers on top.
     if (sub & 1) {
       c->dispcnt |= kDispcntBg0 << 1 | kDispcntBg0 << 2;
@@ -240,7 +313,96 @@ static void ColorMath(DisplaySegment *c, const PpuRegs *r) {
     }
     c->bld[0] = BlendLayers(sub) | BlendLayers(math & ~sub) << 8 | 1 << 6;
     c->bld[1] = half ? 8 | 8 << 8 : 16 | 16 << 8;
+    return sub;
   }
+  return 0;
+}
+
+// What the SNES's windows do in each of the GBA's regions (see Windows):
+// WININ, WINOUT, or 0 if nothing.
+ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blending) {
+  bool fixed = sub & kFixedInWindows;
+  sub &= 7;
+  int math_region = (r->cgwsel >> 4) & 3, clip_region = (r->cgwsel >> 6) & 3;
+  bool used = false;
+  uint8_t bits[3];
+  for (int k = 0; k < 3; k++) {
+    bool in1 = k == 0, in2 = k == 1;
+    // SNES BG1-BG4 and OBJ masked, by its main or sub screen.
+    uint8_t masked = 0;
+    for (int i = 0; i < 5; i++) {
+      int sel = (i < 4 ? r->wsel[i >> 1] >> ((i & 1) * 4) : r->wsel[2]) & 15;
+      int logic = i < 4 ? (r->wbglog >> (2 * i)) & 3 : r->wobjlog & 3;
+      uint8_t w = sub & (1 << i) ? r->tsw : r->tmw;
+      if ((w & (1 << i)) && InWindows(sel, logic, in1, in2))
+        masked |= 1 << i;
+    }
+    bool color = InWindows(r->wsel[2] >> 4, (r->wobjlog >> 2) & 3, in1, in2);
+    bool no_math = NoMath(r, math_region, in1, in2);
+    bool clip = clip_region == 3 || (clip_region == 1 && !color) || (clip_region == 2 && color);
+    if (clip)
+      masked |= 0x1f & ~sub;
+    if (fixed) {
+      // The fixed color where the sub screen's layers are hidden.
+      no_math |= (masked & sub) != sub;
+      masked &= ~sub;
+      used = true;
+    }
+    if (no_math)
+      masked |= sub;  // as the sub screen doesn't show
+    used |= masked || (no_math && blending);
+    bits[k] = (uint8_t)(0x1f & ~BlendLayers(masked)) | (no_math ? 0 : 0x20);
+  }
+  return used ? (bits[0] | bits[1] << 8) | (uint32_t)bits[2] << 16 : 0;
+}
+
+// A window's GBA WINxH, from the SNES's edges (WH0-WH3). For none, from
+// the right edge to it: the GBA's (0, 0) is all the line.
+static uint16_t WindowH(int left, int right) {
+  left -= kXOffset;
+  right += 1 - kXOffset;
+  left = left < 0 ? 0 : left;
+  right = right > 240 ? 240 : right;
+  return left < right ? left << 8 | right : 240 << 8 | 240;
+}
+
+// The SNES's windows, as the GBA's: window 1 is WIN0 and 2 is WIN1 (where
+// they overlap, the GBA's in WIN0 only). For each GBA region, which layers
+// show (the SNES's main screen layers but where TMW masks them, the sub
+// screen's on top, |sub|, but where TSW does), and whether color math is
+// on (CGWSEL's region, by the color window), or the main screen's black
+// (it's clipped: showing the backdrop, here). Only with the tiled layers.
+static void Windows(LineRegs *l, const PpuRegs *r, uint8_t sub) {
+  DisplaySegment *c = &l->ctl;
+  c->win[0] = c->win[1] = 0;
+  // (As a rule, no window is on for anything.)
+  if (!((r->wsel[0] | r->wsel[1] | r->wsel[2]) & 0xaa) || frame_mode7 || (r->inidisp & 0x80))
+    return;
+  // The regions, for the settings: they change seldom, unlike the edges.
+  static uint32_t last_key[3] IWRAM_BSS, regions IWRAM_BSS;
+  bool blending = c->bld[0];
+  uint32_t key[3] = {
+    r->wsel[0] | r->wsel[1] << 8 | r->wsel[2] << 16 | (uint32_t)r->wbglog << 24,
+    r->wobjlog | r->tmw << 8 | r->tsw << 16 | (uint32_t)(r->cgwsel & 0xf0) << 24,
+    sub | blending << 8,
+  };
+  if (key[0] != last_key[0] || key[1] != last_key[1] || key[2] != last_key[2]) {
+    last_key[0] = key[0];
+    last_key[1] = key[1];
+    last_key[2] = key[2];
+    regions = WindowRegions(r, sub, blending);
+  }
+  if (!regions)
+    return;
+  c->dispcnt |= 3 << 13;
+  c->win[0] = regions;
+  c->win[1] = regions >> 16;
+}
+
+// The windows' GBA WIN0H and WIN1H, from the SNES's edges on its line |s|.
+static uint32_t LineWindows(int s) {
+  uint32_t wh = line_wh[s];
+  return WindowH(wh & 0xff, (wh >> 8) & 0xff) | (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
 }
 
 static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
@@ -263,7 +425,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
-  ColorMath(&l->ctl, r);
+  Windows(l, r, ColorMath(&l->ctl, r));
   int dy = s - g;
   uint16_t ofs[8];
   ofs[0] = r->hofs[2] + kXOffset;
@@ -286,7 +448,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
 static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
   const uint16_t *x = &a->dispcnt, *y = &b->dispcnt;
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < 18; i++) {
     if (x[i] != y[i])
       return false;
   }
@@ -308,7 +470,7 @@ static void UpdateYOffset(void) {
 }
 
 void Render_CaptureFrame(void) {
-  SnesHw_RunDisplay(line_states, line_state);
+  SnesHw_RunDisplay(line_states, line_state, line_wh);
 
   squash = game_state < 7 || game_state > 11;
   hud = !squash && LINE_REGS(8)->tm == 4 && LINE_REGS(kHudLines + 8)->tm != 4;
@@ -348,6 +510,7 @@ void Render_CaptureFrame(void) {
   int num_segs = 0;
   LineRegs l;
   int prev_state = -1, prev_dy = 0;
+  bool windows = false;
   for (int g = 0; g < kGbaLines; g++) {
     int s = SnesLine(g), state = line_state[s];
     const PpuRegs *r = &line_states[state];
@@ -356,21 +519,37 @@ void Render_CaptureFrame(void) {
         StepLineMode7(&l);
     } else {
       BuildLine(&l, r, s, g);
-      if (!num_segs || !SameSegment(&segs[num_segs - 1], &l.ctl)) {
+      if (!num_segs || (num_segs < kMaxSegments && !SameSegment(&segs[num_segs - 1], &l.ctl))) {
         segs[num_segs] = l.ctl;
         segs[num_segs++].first_line = g;
       }
     }
     for (int i = 0; i < 4; i++)
       stream[g][i] = l.stream[i];
+    if (l.ctl.dispcnt & (3 << 13)) {
+      line_windows[g] = LineWindows(s);
+      windows = true;
+    }
     prev_state = state;
     prev_dy = s - g;
   }
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
   DisplayFrame *f = &frames[back];
-  f->stream = (const uint32_t(*)[4])stream;
+  f->stream = &stream[0][0];
+  f->stream_words = 4;
   f->stream_dest = frame_mode7 ? 0x04000020 : 0x04000010;
+  if (windows) {
+    // (Not with Mode 7: see Windows.) The transformations stay 0.
+    uint32_t(*w)[kWindowStreamWords] = window_streams[back];
+    for (int g = 0; g <= kGbaLines; g++) {
+      for (int i = 0; i < 4; i++)
+        w[g][i] = stream[g][i];
+      w[g][kWindowStreamWords - 1] = line_windows[g < kGbaLines ? g : kGbaLines - 1];
+    }
+    f->stream = &w[0][0];
+    f->stream_words = kWindowStreamWords;
+  }
   f->num_segments = num_segs;
   f->segments = segs;
   LogLayoutChange(LINE_REGS(SnesLine(kGbaLines / 2)));

@@ -106,6 +106,10 @@ endif()
 if(SM_START_ZEBES)
     target_compile_definitions(sm_gba PRIVATE SM_START_ZEBES=1)
 endif()
+option(SM_TEST_ITEMS "For testing: give Samus the morph ball, power bombs, grapple beam and X-ray scope" OFF)
+if(SM_TEST_ITEMS)
+    target_compile_definitions(sm_gba PRIVATE SM_TEST_ITEMS=1)
+endif()
 
 target_compile_options(sm_gba PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas)
 

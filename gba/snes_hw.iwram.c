@@ -5,6 +5,7 @@
 // run through here. (So no division: see cmake/compiler-rt.cmake.)
 #include "snes_hw.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "gba_hw.h"
@@ -43,7 +44,7 @@ static inline void MarkVramDirty(uint16_t addr) {
   g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
 }
 
-uint8_t SnesHw_ReadA(uint32_t addr) {
+ROM_CODE uint8_t SnesHw_ReadA(uint32_t addr) {
   uint8_t bank = addr >> 16;
   uint16_t a = addr;
   if (bank == 0x7e || bank == 0x7f)
@@ -507,13 +508,18 @@ typedef struct HdmaChannel {
   uint8_t regs[4];  // the B-bus registers they go to, in order
   // For scroll: the registers its words go to, and Mode 7's (or NULL).
   uint16_t *ofs[2], *m7ofs[2];
+  // Writes the windows' edges only (WH0-WH3).
+  bool window;
   // Pointers to the table's bank and the indirect data's: see BankPtr.
   const uint8_t *table, *data;
   bool table_ram, data_ram;
 } HdmaChannel;
 
+// The channels on, those that write only the windows' edges last: they
+// run on their own, for all the frame (HdmaWindows). hdma_count are the
+// others.
 static HdmaChannel hdma[8] IWRAM_BSS;
-static int hdma_count IWRAM_BSS;
+static int hdma_count IWRAM_BSS, hdma_total IWRAM_BSS;
 
 // A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
 // of a bank of RAM (*ram), or the upper half of a LoROM bank's.
@@ -525,7 +531,12 @@ static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
 }
 
 static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_t addr) {
-  return (ram || addr >= 0x8000) ? p[addr] : SnesHw_ReadA(bank << 16 | addr);
+  if (ram || addr >= 0x8000)
+    return p[addr];
+  // The first 8 KB of RAM, in the lower banks: HDMA tables, often.
+  if (addr < 0x2000 && !(bank & 0x40))
+    return g_ram[addr];
+  return SnesHw_ReadA(bank << 16 | addr);
 }
 
 static void HdmaDecode(void) {
@@ -545,6 +556,7 @@ static void HdmaDecode(void) {
     // Modes 2 and 3 write each register twice: the scroll registers' two
     // halves, as most of the game's HDMA does.
     d->scroll = (mode == 2 || mode == 3) && c->bbad >= 0x0d && d->regs[3] <= 0x14;
+    d->window = c->bbad >= 0x26 && c->bbad + kBbadOffsets[mode][3] <= 0x29 && !d->scroll;
     for (int k = 0; d->scroll && k < 2; k++) {
       PpuRegs *r = &g_snes_hw.r;
       uint8_t adr = d->regs[2 * k];
@@ -555,16 +567,44 @@ static void HdmaDecode(void) {
 
     d->data = BankPtr(c->dasb, &d->data_ram);
   }
+  hdma_total = hdma_count;
+  // The windows' last.
+  HdmaChannel others[8], windows[8];
+  int n = 0, w = 0;
+  for (int k = 0; k < hdma_total; k++) {
+    if (hdma[k].window)
+      windows[w++] = hdma[k];
+    else
+      others[n++] = hdma[k];
+  }
+  for (int k = 0; k < n; k++)
+    hdma[k] = others[k];
+  for (int k = 0; k < w; k++)
+    hdma[n + k] = windows[k];
+  hdma_count = n;
 }
 
 // Reads a channel's next table entry: its line count, and the address of
 // its data if indirect.
 static void HdmaNextEntry(HdmaChannel *d) {
   SnesDmaChannel *c = d->c;
-  c->ntrl = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
-  if (d->indirect) {
-    c->das = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
-    c->das |= ReadBank(d->table, d->table_ram, c->a1b, c->a2a++) << 8;
+  uint16_t a = c->a2a;
+  if (d->table_ram || (a >= 0x8000 && a <= 0xfffd)) {
+    // The usual: all of it from a pointer.
+    const uint8_t *p = d->table + a;
+    c->ntrl = p[0];
+    if (d->indirect) {
+      c->das = p[1] | p[2] << 8;
+      c->a2a = a + 3;
+    } else {
+      c->a2a = a + 1;
+    }
+  } else {
+    c->ntrl = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+    if (d->indirect) {
+      c->das = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
+      c->das |= ReadBank(d->table, d->table_ram, c->a1b, c->a2a++) << 8;
+    }
   }
   c->hdma_terminated = c->ntrl == 0;
   c->hdma_do_transfer = true;
@@ -577,7 +617,7 @@ ROM_CODE void SnesHw_HdmaInit(void) {
     c->hdma_do_transfer = false;
   }
   HdmaDecode();
-  for (int k = 0; k < hdma_count; k++) {
+  for (int k = 0; k < hdma_total; k++) {
     hdma[k].c->a2a = hdma[k].c->a1t;
     HdmaNextEntry(&hdma[k]);
   }
@@ -672,6 +712,74 @@ void SnesHw_HdmaRunLine(void) {
 
 void Vector_IRQ(void);
 
+// The channels that write only the windows' edges, for all the frame's
+// lines: as their edges aren't in the states, they don't make every line
+// a line HDMA has to stop at (see SnesHw_RunDisplay). A channel at a time,
+// its state in registers. Where the game writes the edges itself partway
+// down the screen, though, it's lost.
+static void HdmaWindows(uint32_t *line_windows) {
+  uint8_t *wh = g_snes_hw.r.wh;
+  uint32_t start = wh[0] | wh[1] << 8 | wh[2] << 16 | (uint32_t)wh[3] << 24;
+  // (As a rule, there are none, and the edges are as they were.)
+  static uint32_t filled IWRAM_BSS;
+  static bool uniform IWRAM_BSS;
+  if (hdma_count == hdma_total && uniform && filled == start)
+    return;
+  for (int v = 0; v < kSnesLines; v++)
+    line_windows[v] = start;
+  filled = start;
+  uniform = hdma_count == hdma_total;
+  uint8_t *out = (uint8_t *)line_windows;
+  for (int k = hdma_count; k < hdma_total; k++) {
+    HdmaChannel *d = &hdma[k];
+    SnesDmaChannel *c = d->c;
+    const uint8_t *table = d->table, *data = d->data;
+    bool table_ram = d->table_ram, data_ram = d->data_ram, indirect = d->indirect;
+    uint8_t a1b = c->a1b, dasb = c->dasb, ntrl = c->ntrl;
+    uint16_t a2a = c->a2a, das = c->das;
+    bool transfer = c->hdma_do_transfer, terminated = c->hdma_terminated;
+    int bytes = d->bytes;
+    // The first 8 KB of RAM in the lower banks, as a bank of RAM: if the
+    // table's there, and the frame's lines of it (3 bytes each at most).
+    if (!table_ram && !(a1b & 0x40) && a2a < 0x2000 - 3 * kSnesLines) {
+      table = g_ram;
+      table_ram = true;
+    }
+    if (!data_ram && !(dasb & 0x40) && das < 0x2000 - 4 * kSnesLines) {
+      data = g_ram;
+      data_ram = true;
+    }
+    for (int v = 0; v < kSnesLines; v++) {
+      if (!terminated) {
+        if (transfer) {
+          for (int j = 0; j < bytes; j++)
+            wh[d->regs[j] - 0x26] = indirect ? ReadBank(data, data_ram, dasb, das++)
+                                             : ReadBank(table, table_ram, a1b, a2a++);
+        }
+        ntrl--;
+        transfer = ntrl & 0x80;
+        if (!(ntrl & 0x7f)) {
+          // The next entry, as HdmaNextEntry.
+          ntrl = ReadBank(table, table_ram, a1b, a2a++);
+          if (indirect) {
+            das = ReadBank(table, table_ram, a1b, a2a++);
+            das |= ReadBank(table, table_ram, a1b, a2a++) << 8;
+          }
+          terminated = ntrl == 0;
+          transfer = true;
+        }
+      }
+      for (int j = 0; j < bytes; j++)
+        out[v * 4 + d->regs[j] - 0x26] = wh[d->regs[j] - 0x26];
+    }
+    c->ntrl = ntrl;
+    c->a2a = a2a;
+    c->das = das;
+    c->hdma_do_transfer = transfer;
+    c->hdma_terminated = terminated;
+  }
+}
+
 // How many lines from now HDMA does nothing but count down: for each
 // channel, the lines left in a table entry that doesn't repeat, after its
 // first. Up to |max|.
@@ -690,18 +798,26 @@ static void HdmaSkipLines(int lines) {
     hdma[k].c->ntrl -= lines;
 }
 
+// But for the windows' edges (bytes 47-50: the top of word 11 and the
+// bottom of word 12).
+_Static_assert(offsetof(PpuRegs, wh) == 47, "PpuRegs.wh");
 static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
   const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
-  for (unsigned i = 0; i < sizeof(PpuRegs) / 4; i++) {
+  for (unsigned i = 0; i < 11; i++) {
     if (x[i] != y[i])
       return false;
   }
-  return true;
+  for (unsigned i = 13; i < sizeof(PpuRegs) / 4; i++) {
+    if (x[i] != y[i])
+      return false;
+  }
+  return !((x[11] ^ y[11]) & 0x00ffffff) && !((x[12] ^ y[12]) & 0xff000000);
 }
 
-int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state) {
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows) {
   SnesHw *h = &g_snes_hw;
   SnesHw_HdmaInit();
+  HdmaWindows(line_windows);
   int n = 0;
   h->regs_dirty = true;
   // A line shows the registers as HDMA and the IRQ at the end of the line

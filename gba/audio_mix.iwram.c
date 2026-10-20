@@ -143,7 +143,7 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
 
 uint32_t g_audio_underruns IWRAM_BSS;
 
-void Audio_VBlank(void) {
+ROM_CODE void Audio_VBlank(void) {
   const int8_t *l = silence, *r = silence;
   if (!g_audio_queued)
     g_audio_underruns++;

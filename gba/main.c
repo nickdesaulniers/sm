@@ -77,6 +77,14 @@ void gba_main(void) {
       loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
 #endif
 #endif
+#if SM_TEST_ITEMS
+    // For testing the windows, which the X-ray scope and power bombs use.
+    if (game_state == 8 && !(collected_items & 0x8000)) {
+      collected_items |= 0xc004;
+      equipped_items |= 0xc004;
+      samus_power_bombs = samus_max_power_bombs = 10;
+    }
+#endif
     // (Less the sound's, which interrupts them: see Audio_Background.)
     uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();

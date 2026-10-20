@@ -128,6 +128,8 @@ int main(int argc, char** argv) {
     const SnesHw* hw = sym(argv[1], "g_snes_hw");
     const PpuRegs* states = sym(argv[1], "line_states");
     const uint8_t* line_state = sym(argv[1], "line_state");
+    // The windows' edges, by line (see SnesHw_RunDisplay).
+    const uint8_t* line_wh = sym(argv[1], "line_wh");
 
     static Snes snes;
     Ppu* ppu = ppu_init(&snes);
@@ -142,6 +144,8 @@ int main(int argc, char** argv) {
     ppu_runLine(ppu, 0);
     for (int y = 0; y < 224; y++) {
         set_regs(ppu, &states[line_state[y]], hw->obsel);
+        for (int i = 0; i < 4; i++)
+            ppu_write(ppu, 0x26 + i, line_wh[y * 4 + i]);
         ppu_runLine(ppu, y + 1);
     }
 
