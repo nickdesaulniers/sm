@@ -12,8 +12,9 @@
 
 void RtlInit(void);
 void RunOneFrameOfGame(void);
-void IrqHandler(void);
+void IrqEntry(void);
 extern volatile uint32_t g_vblank_count;
+extern uint32_t g_audio_underruns;
 
 static void VBlankIntrWait(void) {
   __asm__ volatile("swi 0x05" ::: "r0", "r1", "r2", "r3", "memory");
@@ -48,18 +49,19 @@ void gba_main(void) {
   Render_Init();
   Audio_Init();
 
-  REG_IRQ_VECTOR = (uintptr_t)IrqHandler;
-  REG_IE = kIrqVBlank | kIrqVCount;
+  REG_IRQ_VECTOR = (uintptr_t)IrqEntry;
+  REG_IE = kIrqVBlank | kIrqVCount | kIrqTimer1;
   REG_IME = 1;
 
   printf("sm: starting\n");
   coroutine_state_0 = 1;
   bug_fix_counter = 1;
 
-  // Per 60 frames: CPU cycles per frame of the game, its sound, and
-  // render.c's work on its picture (not counting the wait for VBlank).
+  // Per 60 frames: CPU cycles per frame of the game, its sound (per frame of
+  // the GBA's), and render.c's work on its picture (not counting the wait
+  // for VBlank); and how often the sound ran out.
   uint32_t frames = 0, game_cycles = 0, audio_cycles = 0, render_cycles = 0;
-  uint32_t vblanks = g_vblank_count;
+  uint32_t vblanks = g_vblank_count, audio_start = g_audio_cycles;
   for (;;) {
     g_snes_hw.joy1 = Input_ReadJoypad();
     uint16_t state = game_state;
@@ -75,28 +77,28 @@ void gba_main(void) {
       loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
 #endif
 #endif
-    uint32_t t0 = Cycles();
+    // (Less the sound's, which interrupts them: see Audio_Background.)
+    uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();
     if (game_state != state)
       printf("sm: game state %u\n", (unsigned)game_state);
-    uint32_t t1 = Cycles();
-    Audio_Frame();
-    uint32_t t2 = Cycles();
+    uint32_t t1 = Cycles(), a1 = g_audio_cycles;
     Render_CaptureFrame();
-    uint32_t t3 = Cycles();
+    uint32_t t2 = Cycles(), a2 = g_audio_cycles;
     VBlankIntrWait();
-    uint32_t t4 = Cycles();
+    uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
-    uint32_t t5 = Cycles();
-    game_cycles += t1 - t0;
-    audio_cycles += t2 - t1;
-    render_cycles += (t3 - t2) + (t5 - t4);
+    uint32_t t4 = Cycles(), a4 = g_audio_cycles;
+    game_cycles += (t1 - t0) - (a1 - a0);
+    render_cycles += (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
     if (++frames == 60) {
-      uint32_t v = g_vblank_count;
+      uint32_t v = g_vblank_count, audio = g_audio_cycles;
+      audio_cycles = (audio - audio_start) / (v - vblanks);
+      audio_start = audio;
       printf("sm: 60 frames in %u vblanks; cycles/frame: game %u, audio %u, render %u; "
-             "state %u; stack %u\n",
-             (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)(audio_cycles / 60),
-             (unsigned)(render_cycles / 60), (unsigned)game_state, StackUsed());
+             "state %u; stack %u; underruns %u\n",
+             (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)audio_cycles,
+             (unsigned)(render_cycles / 60), (unsigned)game_state, StackUsed(), (unsigned)g_audio_underruns);
       vblanks = v;
       frames = game_cycles = audio_cycles = render_cycles = 0;
     }

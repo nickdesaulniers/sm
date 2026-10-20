@@ -7,7 +7,7 @@
 // all the driver reads was uploaded from the ROM, so it reads the ROM
 // (SpcRam_Read). In place of the DSP, the driver's writes to its registers
 // set up the GBA's mixer: its voices play the samples make_cartridge.py
-// decoded, at 10512 Hz, with the DSP's envelopes. No echo yet, nor pitch
+// decoded, at 10512 Hz, with the DSP's envelopes and echo. No pitch
 // modulation, nor interpolation.
 #include "audio.h"
 
@@ -21,7 +21,7 @@
 
 // In IWRAM, with the DSP's registers and envelopes: the driver works on
 // them 500 times a second.
-static SpcPlayer player IWRAM_BSS;
+static SpcPlayer player;
 
 // The APU's RAM: the blocks of the ROM the game uploaded to it, newest
 // last.
@@ -110,7 +110,7 @@ static const AudioSample *FindSample(uint32_t rom_offset) {
   return NULL;
 }
 
-static void KeyOn(int v) {
+__attribute__((noinline)) static void KeyOn(int v) {
   AudioVoice *voice = &g_audio_voices[v];
   Envelope *e = &envelopes[v];
   uint16_t entry = (dsp[0x5d] << 8) + dsp[v * 16 + 4] * 4;
@@ -118,6 +118,7 @@ static void KeyOn(int v) {
   const AramBlock *b = FindAramBlock(start);
   const AudioSample *s = b ? FindSample(b->src + (uint16_t)(start - b->dest) - snes_rom) : NULL;
   voice->noise = (dsp[0x3d] >> v) & 1;
+  voice->echo = (dsp[0x4d] >> v) & 1;
   if (!s && !voice->noise) {
     printf("audio: no sample at 0x%04x (srcn %u)\n", start, dsp[v * 16 + 4]);
     voice->on = false;
@@ -137,6 +138,69 @@ static void KeyOn(int v) {
   e->state = (dsp[v * 16 + 5] & 0x80) ? kAttack : kGain;
 }
 
+// The master and echo volumes, or none while the DSP's muted.
+__attribute__((noinline)) static void UpdateVolumes(void) {
+  bool mute = dsp[0x6c] & 0x40;
+  g_audio_mix.master_l = mute ? 0 : dsp[0x0c];
+  g_audio_mix.master_r = mute ? 0 : dsp[0x1c];
+  g_audio_mix.echo_l = mute ? 0 : dsp[0x2c];
+  g_audio_mix.echo_r = mute ? 0 : dsp[0x3c];
+}
+
+// The registers the driver changes now and then, in ROM.
+__attribute__((noinline)) static void DspWriteChanged(uint8_t reg, uint8_t value) {
+  switch (reg) {
+  case 0x4c:  // KON
+    for (int i = 0; i < 8; i++) {
+      if (value & (1 << i))
+        KeyOn(i);
+    }
+    break;
+  case 0x5c:  // KOF
+    for (int i = 0; i < 8; i++) {
+      if (value & (1 << i))
+        envelopes[i].state = kRelease;
+    }
+    break;
+  case 0x4d:  // EON
+    for (int i = 0; i < 8; i++)
+      g_audio_voices[i].echo = (value >> i) & 1;
+    break;
+  case 0x7d: {  // EDL
+    unsigned len = (value & 0xf) * kAudioEchoSamples16ms / 2;
+    g_audio_mix.echo_len = len ? len : 1;
+    Audio_ClearEcho();
+    break;
+  }
+  case 0x0d:  // EFB
+    g_audio_mix.feedback = value;
+    break;
+  case 0x0f: case 0x1f: case 0x2f: case 0x3f:
+  case 0x4f: case 0x5f: case 0x6f: case 0x7f: {  // FIR
+    // Its taps, oldest first, at 32 kHz; here, at half the mixer's rate,
+    // six of them a tap.
+    const int8_t *c = (const int8_t *)&dsp[0x0f];
+    g_audio_mix.fir[0] = c[0x70] + c[0x60] + c[0x50] + c[0x40] + c[0x30] + c[0x20];
+    g_audio_mix.fir[1] = c[0x10] + c[0x00];
+    break;
+  }
+  case 0x0c: case 0x1c: case 0x2c: case 0x3c:  // MVOL, EVOL
+    UpdateVolumes();
+    break;
+  case 0x6c:  // FLG: soft reset, mute, echo writes, noise rate
+    g_audio_mix.echo_writes = !(value & 0x20);
+    g_audio_noise_period = kRates[value & 0x1f];
+    UpdateVolumes();
+    if (value & 0x80) {
+      for (int i = 0; i < 8; i++) {
+        envelopes[i].state = kRelease;
+        envelopes[i].level = 0;
+      }
+    }
+    break;
+  }
+}
+
 // ARM code in IWRAM, as the driver writes registers 500 times a second.
 __attribute__((target("arm"), section(".iwram.text")))
 void Audio_DspWrite(uint8 reg, uint8 value) {
@@ -153,29 +217,7 @@ void Audio_DspWrite(uint8 reg, uint8 value) {
     g_audio_voices[v].step = pitch * (16 * kAudioDspSamples) >> 8;
     return;
   }
-  switch (reg) {
-  case 0x4c:  // KON
-    for (int i = 0; i < 8; i++) {
-      if (value & (1 << i))
-        KeyOn(i);
-    }
-    break;
-  case 0x5c:  // KOF
-    for (int i = 0; i < 8; i++) {
-      if (value & (1 << i))
-        envelopes[i].state = kRelease;
-    }
-    break;
-  case 0x6c:  // FLG: soft reset, noise rate
-    g_audio_noise_period = kRates[value & 0x1f];
-    if (value & 0x80) {
-      for (int i = 0; i < 8; i++) {
-        envelopes[i].state = kRelease;
-        envelopes[i].level = 0;
-      }
-    }
-    break;
-  }
+  DspWriteChanged(reg, value);
 }
 
 // One step of an envelope, as src/snes/dsp.c's dsp_handleGain.
@@ -252,6 +294,8 @@ static void RunEnvelopes(unsigned n) {
 }
 
 void Audio_Init(void) {
+  g_audio_mix.echo_len = 1;
+  dsp[0x6c] = 0xe0;  // as the DSP resets: muted, no echo writes
   SpcPlayer_Initialize(&player);
 
   REG_SOUNDCNT_X = 0x80;  // on (first: the rest ignore writes while off)
@@ -281,53 +325,71 @@ void RtlApuUpload(const uint8 *p) {
 #if SM_AUDIO_LOG
   printf("audio: %u upload %u\n", (unsigned)log_frame, (unsigned)(p - snes_rom));
 #endif
+  // Not while Audio_Background runs the driver.
+  g_audio_lock++;
   SpcPlayer_Upload(&player, p);
+  g_audio_lock--;
 }
 
-// A frame's samples, with the driver's ticks in between. Its timer ticks
+// |n| (even) samples, with the driver's ticks in between. Its timer ticks
 // at 500 Hz; it runs two ticks at a time, at 250 Hz, for the time: its
 // tempo, effects and envelopes count ticks, and its slides and vibrato
 // interpolate between them, so they come out the same, if coarser.
-static void MixFrame(int8_t *left, int8_t *right) {
+static void Mix(int8_t *left, int8_t *right, int n) {
   // 16.16, in the mixer's samples.
   enum { kTicksPerRun = 2, kSamplesPerTick = 65536u * kAudioRate / (500 / kTicksPerRun) };
-  static uint32_t until_tick;
+  static int32_t until_tick;
   int done = 0;
-  while (done < kAudioFrameSamples) {
-    if (until_tick < 0x10000) {
+  while (done < n) {
+    // (In twos: the echo runs at half the rate.)
+    if (until_tick < 0x20000) {
       SpcPlayer_Tick(&player, kTicksPerRun);
       until_tick += kSamplesPerTick;
     }
-    int n = until_tick >> 16;
-    if (n > kAudioFrameSamples - done)
-      n = kAudioFrameSamples - done;
-    if (n > kAudioChunk)
-      n = kAudioChunk;
-    envelope_time += n * kAudioDspSamples;
+    int k = (until_tick >> 16) & ~1;
+    if (k > n - done)
+      k = n - done;
+    if (k > kAudioChunk)
+      k = kAudioChunk;
+    envelope_time += k * kAudioDspSamples;
     RunEnvelopes(envelope_time >> 8);
     envelope_time &= 0xff;
-    int mute = dsp[0x6c] & 0x40;
-    Audio_MixChunk(left + done, right + done, n, mute ? 0 : (int8_t)dsp[0x0c],
-                   mute ? 0 : (int8_t)dsp[0x1c]);
-    done += n;
-    until_tick -= n << 16;
+    Audio_MixChunk(left + done, right + done, k);
+    done += k;
+    until_tick -= k << 16;
   }
 }
 
-void Audio_Frame(void) {
+volatile uint8_t g_audio_lock;
+volatile uint32_t g_audio_cycles;
+
+void Audio_Background(void) {
+  uint32_t t0 = Cycles();
 #if SM_AUDIO_LOG
   log_frame++;
 #endif
-  // Up to three frames ahead of what's playing, which the VBlank interrupt
-  // moves on from a frame at a time. A frame's worth a frame of the game,
-  // or two when few are left: always two, after a frame of the game that
-  // took two of the GBA's, would make the next take two as well.
+  // The VBlank interrupt plays the buffers a frame at a time; this keeps
+  // about two and a half frames ahead of it: a frame's worth a frame, and
+  // two after a frame when the game was busy with the driver.
+  enum { kFrame = kAudioFrameSamples, kAhead = kFrame * 5 / 2 & ~1 };
   static uint8_t next;
-  for (int n = g_audio_queued < 2 ? 2 : 1; n && g_audio_queued < 3; n--) {
-    MixFrame(g_audio_buffers[0][next], g_audio_buffers[1][next]);
-    next = (next + 1) & (kAudioBuffers - 1);
-    REG_IME = 0;
-    g_audio_queued++;
-    REG_IME = 1;
+  static int filled;  // samples, in buffer |next|
+  int ahead = g_audio_queued * kFrame + filled;
+  int n = kAhead - ahead;
+  if (n > 2 * kFrame)
+    n = 2 * kFrame;
+  while (n > 0) {
+    int k = kFrame - filled < n ? kFrame - filled : n;
+    Mix(g_audio_buffers[0][next] + filled, g_audio_buffers[1][next] + filled, k);
+    filled += k;
+    n -= k;
+    if (filled == kFrame) {
+      filled = 0;
+      next = (next + 1) & (kAudioBuffers - 1);
+      REG_IME = 0;
+      g_audio_queued++;
+      REG_IME = 1;
+    }
   }
+  g_audio_cycles += Cycles() - t0;
 }

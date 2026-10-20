@@ -79,6 +79,8 @@ add_executable(sm_gba
     header.c
     audio.c
     audio_mix.iwram.c
+    audio_mix.S
+    irq_entry.S
     input.c
     main.c
     rtl.c

@@ -9,7 +9,7 @@
 // the low nibble: a bitplane of a row of SNES pixels, as GBA 4bpp pixels.
 static uint32_t expand[256] IWRAM_BSS;
 
-void Convert_Init(void) {
+ROM_CODE void Convert_Init(void) {
   for (int b = 0; b < 256; b++) {
     uint32_t v = 0;
     for (int k = 0; k < 8; k++) {

@@ -549,9 +549,16 @@ static void UpdateOam(void) {
     SetSquashMatrices();
   last_squash = squash;
   const uint8_t *shapes = kObjShapes[h->obsel >> 5];
+  // The game puts the sprites it doesn't use at line 240, small, where
+  // they don't show: most of them, most of the time.
+  bool unused_hide = kObjHeight[shapes[0]] <= 256 - 0xf0;
   for (int i = 0; i < 128; i++) {
     const uint8_t *e = &g_oam[i * 4];
     int hi = (g_oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
+    if (e[1] == 0xf0 && !(hi & 2) && unused_hide) {
+      GBA_OAM[i * 4] = 1 << 9;  // hidden
+      continue;
+    }
     int x = e[0] | (hi & 1) << 8;
     int shape = shapes[hi >> 1];
     uint8_t attr = e[3];

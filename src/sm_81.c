@@ -268,7 +268,7 @@ GBA_IWRAM_CODE void DrawSpritemapWithBaseTile(uint8 db, uint16 j, uint16 r20_x, 
   oam_next_ptr = idx;
 }
 
-GBA_IWRAM_CODE void DrawSpritemapWithBaseTile2(uint8 db, uint16 j, uint16 r20_x, uint16 r18_y, uint16 r3, uint16 r0) {  // 0x818B22
+void DrawSpritemapWithBaseTile2(uint8 db, uint16 j, uint16 r20_x, uint16 r18_y, uint16 r3, uint16 r0) {  // 0x818B22
   const uint8 *pp = RomPtrWithBank(db, j);
   int idx = oam_next_ptr;
   int n = GET_WORD(pp);
@@ -287,7 +287,7 @@ GBA_IWRAM_CODE void DrawSpritemapWithBaseTile2(uint8 db, uint16 j, uint16 r20_x,
   oam_next_ptr = idx;
 }
 
-GBA_IWRAM_CODE void DrawSpritemapWithBaseTileOffscreen(uint8 db, uint16 j, uint16 r20_x, uint16 r18_y, uint16 r3, uint16 r0) {  // 0x818B96
+void DrawSpritemapWithBaseTileOffscreen(uint8 db, uint16 j, uint16 r20_x, uint16 r18_y, uint16 r3, uint16 r0) {  // 0x818B96
   const uint8 *pp = RomPtrWithBank(db, j);
   int idx = oam_next_ptr;
   int n = GET_WORD(pp);

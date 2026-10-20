@@ -1,4 +1,4 @@
-// The interrupt handler, which the BIOS calls in ARM state.
+// The interrupt handler, which irq_entry.S calls in ARM state.
 #include "audio.h"
 #include "display.h"
 #include "gba_hw.h"
@@ -42,9 +42,17 @@ void Display_Start(void) {
   ScheduleSegment(d);
 }
 
+// When in the frame the sound's work runs: after the VBlank interrupt, in
+// cycles, by when Render_Present is done with VRAM, as a rule.
+enum { kAudioDelay = 40 * 1232 };
+volatile uint8_t g_audio_background_running IWRAM_BSS;
+
 static void VBlank(void) {
   g_vblank_count++;
   Audio_VBlank();
+  REG_TMCNT_H(1) = 0;
+  REG_TMCNT_L(1) = 0x10000 - kAudioDelay;
+  REG_TMCNT_H(1) = 0xc0;  // enabled, with its interrupt
   // Every frame, as a frame of the game can take more than one of the
   // GBA's.
   Display_Start();
@@ -70,12 +78,21 @@ static void VCount(void) {
   ScheduleSegment(d);
 }
 
-void IrqHandler(void) {
+// Whether irq_entry.S is to run Audio_Background: once a frame, unless
+// it's still running, or the game's busy with the sound driver.
+bool IrqHandler(void) {
   uint16_t flags = REG_IF & REG_IE;
   if (flags & kIrqVBlank)
     VBlank();
   if (flags & kIrqVCount)
     VCount();
+  bool audio = false;
+  if (flags & kIrqTimer1) {
+    REG_TMCNT_H(1) = 0;
+    audio = !g_audio_background_running && !g_audio_lock;
+    g_audio_background_running |= audio;
+  }
   REG_IFBIOS |= flags;
   REG_IF = flags;
+  return audio;
 }

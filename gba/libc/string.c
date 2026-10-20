@@ -82,6 +82,9 @@ NO_BUILTIN void *memset(void *dst, int value, size_t n) {
   return dst;
 }
 
+// The rest of the C library is seldom used: in ROM.
+#pragma clang section text = ""
+
 NO_BUILTIN int memcmp(const void *a, const void *b, size_t n) {
   const unsigned char *x = a, *y = b;
   for (; n; --n, ++x, ++y) {
@@ -123,6 +126,7 @@ NO_BUILTIN int strcmp(const char *a, const char *b) {
 // these simple versions don't need. Note __aeabi_memset's argument order
 // differs from memset's.
 // https://github.com/ARM-software/abi-aa/blob/main/rtabi32/rtabi32.rst
+#pragma clang section text = ".iwram.text.libc"
 void __aeabi_memcpy(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
 void __aeabi_memcpy4(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
 void __aeabi_memcpy8(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }

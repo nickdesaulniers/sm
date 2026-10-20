@@ -17,6 +17,10 @@ enum {
   // The mixer mixes at most this many samples at a time: about as many as
   // between the driver's ticks (audio.c).
   kAudioChunk = 48,
+  // The longest echo the DSP has, 15 * 16 ms (EDL), in the mixer's samples
+  // and in the pairs of them the echo works on.
+  kAudioEchoSamples16ms = kAudioRate * 16 / 1000,
+  kAudioEchoMax = 15 * kAudioEchoSamples16ms / 2,
 };
 
 // A DSP voice, as the mixer plays it.
@@ -28,12 +32,33 @@ typedef struct AudioVoice {
   // Its volume times its envelope, /4 so that eight voices' samples (-128
   // to 127) times them fit in 16 bits: right << 16 + left.
   int32_t vol;
-  bool on, noise;
+  bool on, noise, echo;
 } AudioVoice;
 
+// The DSP's volumes, master and echo, as the mixer mixes with them.
+typedef struct AudioMix {
+  int8_t master_l, master_r;
+  int8_t echo_l, echo_r, feedback;
+  // The echo runs at half the mixer's rate (it's the music's low end,
+  // mostly), on pairs of samples. Its filter (FIR): the DSP's 8 taps at 32
+  // kHz, about 6 of its samples a tap here, newest first.
+  int16_t fir[2];
+  // Whether the voices' echo goes into the echo buffer (FLG), and how many
+  // pairs of the mixer's samples it delays them (EDL).
+  bool echo_writes;
+  uint16_t echo_len;
+} AudioMix;
+
 void Audio_Init(void);
-// Once a frame of the game: runs the driver and mixes ahead.
-void Audio_Frame(void);
+// Once a frame of the GBA's, from the timer 1 interrupt (irq.iwram.c,
+// irq_entry.S), with interrupts on: runs the driver and mixes ahead.
+void Audio_Background(void);
+// While nonzero, the game is busy with the driver, and Audio_Background
+// waits for the next frame.
+extern volatile uint8_t g_audio_lock;
+extern volatile uint8_t g_audio_background_running;
+// The cycles Audio_Background has taken, all told.
+extern volatile uint32_t g_audio_cycles;
 
 // audio_mix.iwram.c:
 extern AudioVoice g_audio_voices[8];
@@ -41,8 +66,11 @@ extern int8_t g_audio_buffers[2][kAudioBuffers][kAudioFrameSamples];
 extern volatile uint8_t g_audio_play, g_audio_queued;
 // The DSP's samples between steps of its noise (by FLG), or 0 to hold.
 extern uint16_t g_audio_noise_period;
-// Mixes |n| (up to kAudioChunk) samples of the voices into |left| and
-// |right|, with the master volume.
-void Audio_MixChunk(int8_t *left, int8_t *right, int n, int master_l, int master_r);
+extern AudioMix g_audio_mix;
+// Mixes |n| (even, up to kAudioChunk) samples of the voices into |left| and
+// |right|, with g_audio_mix's volumes and echo.
+void Audio_MixChunk(int8_t *left, int8_t *right, int n);
+// Empties the echo buffer.
+void Audio_ClearEcho(void);
 // In the VBlank interrupt: plays the next buffer this frame.
 void Audio_VBlank(void);
