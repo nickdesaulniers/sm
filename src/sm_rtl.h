@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 
-extern uint8 g_ram[0x20000];
+extern uint8 g_ram[0x20000] RAM_ALIGNED;
 extern void RtlApuWrite(uint32 adr, uint8 val);
 extern int snes_frame_counter;
 
@@ -42,7 +42,7 @@ static inline uint16 GET_WORD(const uint8 *p) { return *(uint16 *)(p); }
 static inline const uint8 *RomFixedPtr(uint32_t addr) { return &g_rom[(((addr >> 16) << 15) | (addr & 0x7fff)) & 0x3fffff]; }
 #else
 #define GET_WORD(p) (*(uint16*)(p))
-#define RomFixedPtr(addr) (&g_rom[(((addr >> 16) << 15) | (addr & 0x7fff)) & 0x3fffff])
+#define RomFixedPtr(addr) (&g_rom[((((addr) >> 16) << 15) | ((addr) & 0x7fff)) & 0x3fffff])
 #endif
 
 #define GET_BYTE(p) (*(uint8*)(p))

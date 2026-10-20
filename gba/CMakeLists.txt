@@ -1,0 +1,112 @@
+# The GBA cartridge: sm.elf, then sm.gba via objcopy.
+
+# The C library functions the compiler and the game expect (see libc/).
+add_library(gba_libc STATIC
+    libc/stdio.c
+    libc/stdlib.c
+    libc/string.c
+)
+# -fno-builtin keeps clang from turning these implementations into calls
+# to themselves (they also carry no_builtin).
+target_compile_options(gba_libc PRIVATE -fno-builtin)
+
+# compiler-rt builtins for operations ARMv4T has no instructions for:
+# division, 64-bit multiply, shifts and division.
+sm_add_builtins(gba_builtins
+    muldi3.c                # __aeabi_lmul
+    udivsi3.c               # __aeabi_uidiv
+    udivmodsi4.c
+    arm/aeabi_uidivmod.S    # __aeabi_uidivmod
+    divsi3.c                # __aeabi_idiv
+    divmodsi4.c
+    arm/aeabi_idivmod.S     # __aeabi_idivmod
+    udivmoddi4.c
+    arm/aeabi_uldivmod.S    # __aeabi_uldivmod
+    divmoddi4.c
+    arm/aeabi_ldivmod.S     # __aeabi_ldivmod
+    ashldi3.c               # __aeabi_llsl
+    lshrdi3.c               # __aeabi_llsr
+    ashrdi3.c               # __aeabi_lasr
+    clzsi2.c                # __clzsi2
+    ctzsi2.c                # __ctzsi2
+)
+
+# The game itself, as decompiled: everything but the PC's platform layer and
+# the SNES emulator it checks the game against.
+set(game_dir ${CMAKE_SOURCE_DIR}/src)
+add_library(sm_game STATIC
+    ${game_dir}/sm_80.c
+    ${game_dir}/sm_81.c
+    ${game_dir}/sm_82.c
+    ${game_dir}/sm_84.c
+    ${game_dir}/sm_85.c
+    ${game_dir}/sm_86.c
+    ${game_dir}/sm_87.c
+    ${game_dir}/sm_88.c
+    ${game_dir}/sm_89.c
+    ${game_dir}/sm_8b.c
+    ${game_dir}/sm_8d.c
+    ${game_dir}/sm_8f.c
+    ${game_dir}/sm_90.c
+    ${game_dir}/sm_91.c
+    ${game_dir}/sm_92.c
+    ${game_dir}/sm_93.c
+    ${game_dir}/sm_94.c
+    ${game_dir}/sm_9b.c
+    ${game_dir}/sm_a0.c
+    ${game_dir}/sm_a2.c
+    ${game_dir}/sm_a3.c
+    ${game_dir}/sm_a4.c
+    ${game_dir}/sm_a5.c
+    ${game_dir}/sm_a6.c
+    ${game_dir}/sm_a7.c
+    ${game_dir}/sm_a8.c
+    ${game_dir}/sm_a9.c
+    ${game_dir}/sm_aa.c
+    ${game_dir}/sm_ad.c
+    ${game_dir}/sm_b2.c
+    ${game_dir}/sm_b3.c
+    ${game_dir}/sm_b4.c
+)
+# The decompiled code is warning-heavy; keep the build log readable.
+target_compile_options(sm_game PRIVATE -w)
+target_include_directories(sm_game PUBLIC ${game_dir})
+
+add_executable(sm_gba
+    crt0.S
+    header.c
+    snes_rom.S
+    main.c
+    rtl.c
+    snes_hw.c
+    render.c
+    convert.iwram.c
+    irq.iwram.c
+)
+set_target_properties(sm_gba PROPERTIES
+    OUTPUT_NAME sm
+    SUFFIX .elf
+    LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
+)
+target_compile_options(sm_gba PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas)
+set_source_files_properties(snes_rom.S PROPERTIES
+    COMPILE_DEFINITIONS "SM_ROM_PATH=\"${SM_ROM}\""
+    OBJECT_DEPENDS "${SM_ROM}"
+)
+
+# Hot code, linked into IWRAM by gba.ld. ARM rather than Thumb: IWRAM's
+# 32-bit bus fetches an ARM instruction as fast as a Thumb one, and ARM
+# does more per instruction.
+set_source_files_properties(convert.iwram.c irq.iwram.c PROPERTIES COMPILE_OPTIONS "-marm")
+
+target_link_libraries(sm_gba PRIVATE sm_game gba_libc gba_builtins)
+target_link_options(sm_gba PRIVATE
+    -T ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
+    -Wl,--gc-sections
+)
+
+add_custom_command(TARGET sm_gba POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:sm_gba> ${CMAKE_BINARY_DIR}/sm.gba
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/sm.gba
+    COMMENT "Creating sm.gba"
+)

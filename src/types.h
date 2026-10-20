@@ -17,12 +17,33 @@
 
 typedef uint8_t uint8;
 typedef int8_t int8;
+#if SM_GBA
+// The game casts byte pointers into RAM and ROM to wider types at any
+// address, as the SNES allows. The ARM7TDMI instead rotates the data of a
+// misaligned load. 1-byte aligned typedefs make clang access memory through
+// them a byte at a time, unless it can prove the address aligned.
+typedef uint16_t uint16 __attribute__((aligned(1)));
+typedef int16_t int16 __attribute__((aligned(1)));
+typedef uint32_t uint32 __attribute__((aligned(1)));
+typedef int32_t int32 __attribute__((aligned(1)));
+typedef uint64_t uint64 __attribute__((aligned(1)));
+typedef int64_t int64 __attribute__((aligned(1)));
+#else
 typedef uint16_t uint16;
 typedef int16_t int16;
 typedef uint32_t uint32;
 typedef int32_t int32;
 typedef uint64_t uint64;
 typedef int64_t int64;
+#endif
+
+// For g_ram: lets clang access variables at constant even offsets into it
+// with halfword loads on the GBA.
+#if SM_GBA
+#define RAM_ALIGNED __attribute__((aligned(4)))
+#else
+#define RAM_ALIGNED
+#endif
 typedef unsigned int uint;
 
 typedef uint16 VoidP;

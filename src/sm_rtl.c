@@ -12,7 +12,7 @@ struct StateRecorder;
 static void RtlSaveMusicStateToRam_Locked();
 static void RtlRestoreMusicAfterLoad_Locked(bool is_reset);
 
-uint8 g_ram[0x20000];
+uint8 g_ram[0x20000] RAM_ALIGNED;
 uint8 *g_sram;
 const uint8 *g_rom;
 
