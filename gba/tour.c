@@ -46,7 +46,9 @@ static uint16_t camera_x, camera_y;
 static uint32_t speed_vblanks;
 static bool tour_shot;
 // Where Samus came into the room: she's held there, or she can fall back
-// through a door in the floor, and on and on.
+// through a door in the floor, and on and on. With -DSM_TOUR_FREE she
+// isn't, for smrun's KEYS to play a scene in a room (with -DSM_TOUR_ONLY;
+// doors she touches still do nothing).
 static uint16_t pin_x, pin_y;
 static bool tour_door;
 
@@ -99,6 +101,11 @@ static void FindRooms(void) {
   }
   tour_count = kept;
 #endif
+#ifdef SM_TOUR_DOOR
+  // The door into the last room, as -DSM_TOUR_DOOR=0xa360 (the Glass
+  // Tunnel's, from the West Tunnel, into the glass tube), for a scene.
+  tour_doors[tour_count - 1] = SM_TOUR_DOOR;
+#endif
   printf("tour: %d rooms\n", tour_count);
 }
 
@@ -120,11 +127,26 @@ bool Tour_BeforeFrame(void) {
   }
   tour_door = false;
   if (tour_frames == 0) {
+#ifdef SM_TOUR_AT
+    // Where in the room, as -DSM_TOUR_AT=x,y (pixels), in place of the
+    // door's: past the landing site, where she starts.
+    static const uint16_t kAt[2] = {SM_TOUR_AT};
+    if (tour_next > 1)
+      samus_x_pos = kAt[0], samus_y_pos = kAt[1];
+#endif
+#ifdef SM_TOUR_FREE
+    // The tour's doors are elevators', which leave Samus's controls off
+    // for the ride.
+    if (tour_next > 1)
+      CallSomeSamusCode(1);
+#endif
     pin_x = samus_x_pos, pin_y = samus_y_pos;
     still_frames = 0;
     speed_from = -1;
   }
+#ifndef SM_TOUR_FREE
   samus_x_pos = pin_x, samus_y_pos = pin_y;
+#endif
   still_frames = layer1_x_pos == camera_x && layer1_y_pos == camera_y ? still_frames + 1 : 0;
   camera_x = layer1_x_pos, camera_y = layer1_y_pos;
   if (speed_from < 0 && (still_frames >= kStillFrames || tour_frames >= kMaxStillWait)) {
