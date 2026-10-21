@@ -27,15 +27,24 @@ enum {
 #endif
   kLastRoom = 0xe0b5,   // Ceres's last: not the debug room after it
 };
-// Frames in each room before the next door (more, to measure each room's
-// speed once settled).
+// Frames in each room before the next door, at least (more, to stay in
+// each).
 #ifndef SM_TOUR_SETTLE
 #define SM_TOUR_SETTLE 90
 #endif
 enum { kSettleFrames = SM_TOUR_SETTLE };
+// Each room's speed: the vblanks of kSpeedFrames frames, once the camera
+// has stood still for kStillFrames (it scrolls to Samus first, for seconds
+// and with pauses), or after kMaxStillWait.
+enum { kSpeedFrames = 60, kStillFrames = 60, kMaxStillWait = 300 };
+extern volatile uint32_t g_vblank_count;
 
 static uint16_t tour_rooms[kMaxRooms], tour_doors[kMaxRooms];
 static int tour_count, tour_next, tour_frames;
+static int still_frames, speed_from;  // speed_from: the frame it's from, or -1
+static uint16_t camera_x, camera_y;
+static uint32_t speed_vblanks;
+static bool tour_shot;
 // Where Samus came into the room: she's held there, or she can fall back
 // through a door in the floor, and on and on.
 static uint16_t pin_x, pin_y;
@@ -106,15 +115,32 @@ bool Tour_BeforeFrame(void) {
     game_state = kGameState_8_MainGameplay;  // a door she touched: not the tour's
   if (game_state != kGameState_8_MainGameplay) {
     tour_frames = 0;
+    tour_shot = false;
     return false;
   }
   tour_door = false;
-  if (tour_frames == 0)
+  if (tour_frames == 0) {
     pin_x = samus_x_pos, pin_y = samus_y_pos;
+    still_frames = 0;
+    speed_from = -1;
+  }
   samus_x_pos = pin_x, samus_y_pos = pin_y;
-  if (++tour_frames < kSettleFrames)
+  still_frames = layer1_x_pos == camera_x && layer1_y_pos == camera_y ? still_frames + 1 : 0;
+  camera_x = layer1_x_pos, camera_y = layer1_y_pos;
+  if (speed_from < 0 && (still_frames >= kStillFrames || tour_frames >= kMaxStillWait)) {
+    speed_from = tour_frames;
+    speed_vblanks = g_vblank_count;
+  } else if (speed_from >= 0 && tour_frames - speed_from == kSpeedFrames) {
+    printf("tour: speed %04x %u\n", room_ptr, (unsigned)(g_vblank_count - speed_vblanks));
+  }
+  if (!tour_shot) {
+    // The shot: of the frame before the next door, settled.
+    tour_shot = ++tour_frames >= kSettleFrames - 1 && speed_from >= 0 &&
+                tour_frames - speed_from > kSpeedFrames && tour_next <= tour_count;
     return false;
+  }
   // Time for the next room's door.
+  tour_shot = false;
   tour_frames = 0;
   if (tour_next >= tour_count) {
     if (tour_next++ == tour_count)
@@ -130,9 +156,7 @@ bool Tour_BeforeFrame(void) {
 }
 
 bool Tour_AfterFrame(void) {
-  // The shot: of the frame before the next door, settled.
-  if (game_state == kGameState_8_MainGameplay && tour_count && tour_next <= tour_count &&
-      tour_frames == kSettleFrames - 1) {
+  if (game_state == kGameState_8_MainGameplay && tour_shot) {
     printf("tour: shot %04x\n", room_ptr);
     return true;
   }
