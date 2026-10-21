@@ -1056,12 +1056,16 @@ static void Spc_Loop_Part2(SpcPlayer *p, uint8 ticks) {
       p->echo_stored_time++;
   }
 
-  t = p->main_tempo_accum + (uint8)(ticks * HIBYTE(p->tempo));
+  t = p->main_tempo_accum + ticks * HIBYTE(p->tempo);
   p->main_tempo_accum = t;
   if (t >= 256) {
-    do {
-      Music_HandleCmdFromSnes(p);
-    } while (p->fast_forward);
+    // (Of several ticks at once, as the GBA runs them, a fast tempo can
+    // make more than one of the music's.)
+    for (; t >= 256; t -= 256) {
+      do {
+        Music_HandleCmdFromSnes(p);
+      } while (p->fast_forward);
+    }
   } else if (p->port_to_snes[0]) {
     Channel *c = p->channel;
     for (p->cur_chan_bit = 1; p->cur_chan_bit != 0; p->cur_chan_bit <<= 1, c++) {

@@ -320,14 +320,26 @@ static void RunEnvelopes(unsigned n) {
     } else if (e->state == kGain && !(r[7] & 0x80)) {
       level = (r[7] & 0x7f) * 16;
     } else {
-      unsigned rate = EnvelopeRate(e, r);
-      if (rate) {
-        // (No division: the GBA does it in software, slowly.)
-        unsigned t = e->counter + n;
-        for (; t >= rate; t -= rate)
-          level = EnvelopeStep(e, r, level);
-        e->counter = t;
+      // Its steps in the time, at the rate of its state, which can change
+      // as it goes: the attack's quick steps would go on into the decay
+      // and the sustain, and the notes fade too soon. (No division: the
+      // GBA does it in software, slowly.)
+      unsigned rate, t = e->counter + n;
+      while ((rate = EnvelopeRate(e, r)) && t >= rate) {
+        if (e->state == kSustain || (e->state == kGain && (r[7] & 0x60) == 0x20)) {
+          // Falling exponentially, as most are, with nothing to change it:
+          // EnvelopeStep's, quicker.
+          for (; t >= rate; t -= rate)
+            level -= ((level - 1) >> 8) + 1;
+        } else {
+          int state = e->state;
+          do {
+            level = EnvelopeStep(e, r, level);
+            t -= rate;
+          } while (t >= rate && e->state == state);
+        }
       }
+      e->counter = rate ? t : 0;
     }
     e->level = level;
     // Volume (/128) times envelope (/2048), in 8 bits (see AudioVoice), so
@@ -378,35 +390,6 @@ void RtlApuUpload(const uint8 *p) {
   g_audio_lock--;
 }
 
-// |n| (even) samples, with the driver's ticks in between. Its timer ticks
-// at 500 Hz; it runs two ticks at a time, at 250 Hz, for the time: its
-// tempo, effects and envelopes count ticks, and its slides and vibrato
-// interpolate between them, so they come out the same, if coarser.
-static void Mix(int8_t *left, int8_t *right, int n) {
-  // 16.16, in the mixer's samples.
-  enum { kTicksPerRun = 2, kSamplesPerTick = 65536u * kAudioRate / (500 / kTicksPerRun) };
-  static int32_t until_tick;
-  int done = 0;
-  while (done < n) {
-    // (In twos: the echo runs at half the rate.)
-    if (until_tick < 0x20000) {
-      SpcPlayer_Tick(&player, kTicksPerRun);
-      until_tick += kSamplesPerTick;
-    }
-    int k = (until_tick >> 16) & ~1;
-    if (k > n - done)
-      k = n - done;
-    if (k > kAudioChunk)
-      k = kAudioChunk;
-    envelope_time += k * kAudioDspSamples;
-    RunEnvelopes(envelope_time >> 8);
-    envelope_time &= 0xff;
-    Audio_MixChunk(left + done, right + done, k);
-    done += k;
-    until_tick -= k << 16;
-  }
-}
-
 volatile uint8_t g_audio_lock;
 volatile uint32_t g_audio_cycles;
 
@@ -425,13 +408,42 @@ void Audio_Background(void) {
   int n = kAhead - ahead;
   if (n > 2 * kFrame)
     n = 2 * kFrame;
+  // The driver's timer ticks at 500 Hz; it runs four ticks at a time, at
+  // 125 Hz, for the time: its tempo, effects and envelopes count ticks, and
+  // its slides and vibrato interpolate between them, so they come out the
+  // same, if coarser. (The music's tempo, 32 in the songs looked at, steps
+  // it every 8 ticks, so notes keep their time.) The DSP's envelopes run
+  // twice as often, at 250 Hz, so that notes don't stop with a click (the
+  // quickest go in 8 ms). In 16.16, the mixer's samples to the next time
+  // the envelopes run.
+  enum { kTicksPerRun = 4, kSamplesPerEnvelopes = 65536u * kAudioRate / 250 };
+  static int32_t until_envelopes;
+  static bool tick_next;
   while (n > 0) {
-    int k = kFrame - filled < n ? kFrame - filled : n;
-    Mix(g_audio_buffers[0][next] + filled, g_audio_buffers[1][next] + filled, k);
-    filled += k;
+    // (In twos: the echo runs at half the rate.)
+    if (until_envelopes < 0x20000) {
+      tick_next = !tick_next;
+      if (tick_next)
+        SpcPlayer_Tick(&player, kTicksPerRun);
+      until_envelopes += kSamplesPerEnvelopes;
+      // For the time since they last ran (as long as the time to come).
+      RunEnvelopes(envelope_time >> 8);
+      envelope_time &= 0xff;
+    }
+    // Mixed in chunks from one to the next, across the buffers (they
+    // follow each other) but for the last.
+    int k = (until_envelopes >> 16) & ~1;
+    if (k > n)
+      k = n;
+    if (k > kAudioChunk)
+      k = kAudioChunk;
+    if (k > (kAudioBuffers - next) * kFrame - filled)
+      k = (kAudioBuffers - next) * kFrame - filled;
+    Audio_MixChunk(g_audio_buffers[0][next] + filled, g_audio_buffers[1][next] + filled, k);
+    envelope_time += k * kAudioDspSamples;
+    until_envelopes -= k << 16;
     n -= k;
-    if (filled == kFrame) {
-      filled = 0;
+    for (filled += k; filled >= kFrame; filled -= kFrame) {
       next = (next + 1) & (kAudioBuffers - 1);
       REG_IME = 0;
       g_audio_queued++;
