@@ -7,6 +7,7 @@
 #include "input.h"
 #include "render.h"
 #include "snes_hw.h"
+#include "tour.h"
 #include "sm_rtl.h"
 #include "variables.h"
 
@@ -93,6 +94,9 @@ void gba_main(void) {
       printf("joy: %u %04x\n", (unsigned)trace_frame, g_snes_hw.joy1);
     trace_joy = g_snes_hw.joy1;
 #endif
+#if SM_ROOM_TOUR
+    Tour_BeforeFrame();
+#endif
     // (Less the sound's, which interrupts them: see Audio_Background.)
     uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();
@@ -136,6 +140,14 @@ void gba_main(void) {
     Render_Present();
     uint32_t t4 = Cycles(), a4 = g_audio_cycles;
     Audio_Kick();
+#if SM_ROOM_TOUR
+    // Holds the frame on screen for smrun's SHOT_ON.
+    if (Tour_AfterFrame())
+      for (int i = 0; i < 4; i++) {
+        VBlankIntrWait();
+        Audio_Kick();
+      }
+#endif
     game_cycles += (t1 - t0) - (a1 - a0);
     render_cycles += (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
     if (++frames == 60) {

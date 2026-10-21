@@ -16,6 +16,9 @@
 //   GBA BG1: SNES BG2's priority tiles, priority 1
 //   GBA BG2: SNES BG1, priority 2
 //   GBA BG3: SNES BG2's other tiles, priority 2
+// In a frame that adds BG3 to BG2 but not BG1 (bg3_mid), BG1's layers and
+// sprites go a priority higher (0 and 1; sprites 0-3), for BG3 to go
+// between BG1 and BG2.
 //
 // GBA VRAM:
 //   0x0000-0x7FFF  BG1/BG2 tiles (the SNES's 1024 at BG1's base)
@@ -128,11 +131,20 @@ static uint16_t bg12_hi_cols[2][4];
 static bool split_bg2;
 // The GBA layers of BG1 and BG2, as split_bg2 has them.
 static uint8_t bg12_layers[2] = {6, 8};
+// Whether the frame adds BG3 (on the sub screen) to BG2 but not BG1, as in
+// some of Brinstar's and the Wrecked Ship's rooms: then BG3 goes between
+// them, BG1 a priority higher and sprites too (see ColorMath).
+static bool bg3_mid;
+// With the sub screen subtracted, how much the main screen keeps where the
+// sub screen's layers are, in 16ths (see SubtractWeight).
+static int subtract_weight;
+static uint8_t subtract_layer = 4;
 
 // What render.c last converted, to see when it has to start over.
 static struct {
   uint16_t bg12_base, bg3_base, obj_base[2];
   uint8_t bgsc[2];
+  uint8_t bg_row[2];  // of 64x64 maps, the row of screens converted
   uint8_t bg3_slot_sc[2];
   int blank_tile;
   int brightness;
@@ -184,7 +196,8 @@ static int Bg3Slot(uint8_t sc) {
 }
 
 static uint16_t BgSize(uint8_t sc) {
-  // 64x64 maps get only their top half: there are two screens per map.
+  // 64x64 maps get half, the row of two screens on show (UpdateMaps12):
+  // there are two screens per map.
   return (sc & 3) == 3 ? 1 : (sc & 3);
 }
 
@@ -240,8 +253,9 @@ static uint16_t BlendLayers(uint8_t snes) {
 // sum's the same. (The game's rooms add BG3 that way, for rain, fog, water
 // and the like.) The fixed color, added or subtracted, is in the palette
 // (UpdatePalette), the same for all the frame's lines. Without windows yet,
-// color math "inside the window" is nowhere, and "outside", everywhere. Not
-// done: the sub screen subtracted.
+// color math "inside the window" is nowhere, and "outside", everywhere. The
+// sub screen subtracted only darkens, by about what it takes away
+// (SubtractWeight).
 // Whether a layer is in the SNES's windows, as its |sel| (W12SEL's,
 // W34SEL's or WOBJSEL's 4 bits for it) and |logic| (WBGLOG's or WOBJLOG's 2
 // bits) have it, at a pixel in window 1 or not, and 2 or not.
@@ -281,6 +295,15 @@ ROM_CODE static bool FixedShows(const PpuRegs *r, uint8_t windowed) {
   return false;
 }
 
+// The sub screen's layers that the line |r|'s color math uses, as
+// ColorMath has them. Subtracted, it's one of them, that SubtractWeight
+// chose: the GBA can't have several on top, as they are on the SNES's sub
+// screen, with nothing to blend between them (Tourian's darkness).
+static uint8_t SubLayers(const PpuRegs *r) {
+  uint8_t sub = r->ts & ~r->tm & 7;
+  return (r->cgadsub & 0x80) && (sub & subtract_layer) ? subtract_layer : sub;
+}
+
 // Returns the sub screen's layers it shows (CGADSUB's bits), or with
 // kFixedInWindows, the ones that windows hide, for the fixed color there.
 enum { kFixedInWindows = 0x80 };
@@ -295,8 +318,8 @@ static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     return 0;
   bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
   if (r->cgwsel & 2) {
-    uint8_t sub = r->ts & ~r->tm & 7;
-    if (!sub || subtract)
+    uint8_t sub = SubLayers(r);
+    if (!sub || (subtract && !(r->tm & 3)))
       return 0;
     // Where it's transparent, the sub screen's the fixed color. Where
     // windows hide its layers (a power bomb's, all but its explosion), it's
@@ -310,10 +333,22 @@ static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     }
     int fixed = r->coldata[0] > r->coldata[1] ? r->coldata[0] : r->coldata[1];
     fixed = fixed > r->coldata[2] ? fixed : r->coldata[2];
-    if (windowed && fixed && FixedShows(r, windowed)) {
+    if (windowed && fixed && !subtract && FixedShows(r, windowed)) {
       c->bld[0] = BlendLayers(math & ~sub) | 2 << 6;
       c->bld[2] = fixed * 33 >> 6;  // /31 * 16
       return windowed | kFixedInWindows;
+    }
+    if (!(r->tm & 3) && (math & r->tm & 4) && !subtract) {
+      // Only BG3 on the main screen, and the room on the sub screen
+      // (Crateria's and Maridia's fog, for one). BG3 is GBA BG0, which
+      // would be in front of the others at the same priority: the room
+      // shows as usual (and Samus), with BG3 on top added to it.
+      uint8_t room = r->ts & ~r->tm & 0x13;
+      c->dispcnt |= BlendLayers(room) << 8;
+      c->bgcnt[0] &= ~3;
+      c->bld[0] = 1 | BlendLayers(room | 0x20) << 8 | 1 << 6;
+      c->bld[1] = half ? 8 | 8 << 8 : 16 | 16 << 8;
+      return sub;
     }
     // The sub screen's layers on top.
     uint16_t on_top = BlendLayers(sub);
@@ -322,8 +357,13 @@ static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
       if (on_top & (1 << i))
         c->bgcnt[i] &= ~3;
     }
+    if (bg3_mid)
+      c->bgcnt[0] |= 2;  // in front of BG2 only
     c->bld[0] = BlendLayers(sub) | BlendLayers(math & ~sub) << 8 | 1 << 6;
-    c->bld[1] = half ? 8 | 8 << 8 : 16 | 16 << 8;
+    // Subtracted (Maridia's and Tourian's shadows): the GBA can't, but
+    // where the sub screen's layers are, it darkens what's under them,
+    // about as much as their colors do, and they don't show.
+    c->bld[1] = subtract ? subtract_weight << 8 : half ? 8 | 8 << 8 : 16 | 16 << 8;
     return sub;
   }
   return 0;
@@ -434,11 +474,12 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
   // The SNES background split into GBA BG1 and BG2 or BG3.
   int split = split_bg2;
-  l->ctl.bgcnt[1] = 1 | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
-  l->ctl.bgcnt[2] = 2 | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
+  l->ctl.bgcnt[1] = (1 - bg3_mid) | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
+  l->ctl.bgcnt[2] = (2 - bg3_mid) | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
   Windows(l, r, ColorMath(&l->ctl, r));
-  int dy = s - g;
+  // (The SNES shows a background's row VOFS + 1 on its first line.)
+  int dy = s + 1 - g;
   uint16_t ofs[8];
   ofs[0] = r->hofs[2] + kXOffset;
   ofs[1] = r->vofs[2] + dy;
@@ -518,11 +559,99 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   SetSplit(shown[1] > shown[0] && (r->tm & 2));
 }
 
+// The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
+// line |r|'s registers, or 0 where it's transparent.
+ROM_CODE static int BgPixel(const PpuRegs *r, int bg, int x, int line) {
+  uint8_t sc = r->bgsc[bg];
+  int bx = (r->hofs[bg] + x) & 0x3ff, by = (r->vofs[bg] + line) & 0x3ff;
+  int screen = (bx >> 8) & (sc & 1);
+  screen += (by >> 8) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
+  uint16_t e = g_vram[((sc & 0xfc) << 8 | screen << 10 | ((by >> 3) & 31) << 5 | ((bx >> 3) & 31)) &
+                      0x7fff];
+  int tx = e & 0x4000 ? 7 - (bx & 7) : bx & 7, ty = e & 0x8000 ? 7 - (by & 7) : by & 7;
+  int nba = (bg == 2 ? r->bgnba[1] : r->bgnba[0] >> (bg * 4)) & 15;
+  int words = bg == 2 ? 8 : 16;
+  const uint16_t *t = &g_vram[((nba << 12) + (e & 0x3ff) * words + ty) & 0x7fff];
+  int shift = 7 - tx;
+  int c = (t[0] >> shift & 1) | (t[0] >> (shift + 8) & 1) << 1;
+  if (bg == 2)
+    return c ? ((e >> 10) & 7) * 4 + c : 0;
+  c |= (t[8] >> shift & 1) << 2 | (t[8] >> (shift + 8) & 1) << 3;
+  return c ? ((e >> 10) & 7) * 16 + c : 0;
+}
+
+ROM_CODE static int Luma(uint16_t color) {
+  return (color & 31) + (color >> 5 & 31) + (color >> 10 & 31);
+}
+
+// What's left of |m|'s channels after |s|'s are taken from them.
+ROM_CODE static int LumaLeft(uint16_t m, uint16_t s) {
+  int left = 0;
+  for (int i = 0; i < 15; i += 5) {
+    int d = (m >> i & 31) - (s >> i & 31);
+    left += d > 0 ? d : 0;
+  }
+  return left;
+}
+
+// For the line |r|, which subtracts the sub screen: of its layers, the
+// one with the most pixels on show (of a few dozen), subtract_layer; and how
+// much of the main screen's brightness is left where it is, in 16ths. (The
+// GBA darkens by that, as it can't subtract.)
+ROM_CODE static int SubtractWeight(const PpuRegs *r) {
+  uint8_t sub = r->ts & ~r->tm & 7, main = r->tm & 3;
+  if (!sub)
+    return 16;
+  enum { kColumns = 8, kRows = 5 };
+  uint8_t pixels[3][kRows * kColumns];
+  int count[3] = {0, 0, 0}, best = 2;
+  for (int bg = 0; bg < 3; bg++) {
+    if (!(sub & (1 << bg)))
+      continue;
+    for (int k = 0; k < kRows * kColumns; k++) {
+      int x = kXOffset + 15 + (k % kColumns) * 30, line = SnesLine(16 + (k / kColumns) * 32);
+      pixels[bg][k] = BgPixel(r, bg, x, line);
+      count[bg] += pixels[bg][k] != 0;
+    }
+    if (count[bg] > count[best] || !(sub & (1 << best)))
+      best = bg;
+  }
+  subtract_layer = 1 << best;
+  int left_luma = 0, main_luma = 0;
+  for (int k = 0; k < kRows * kColumns; k++) {
+    int s = pixels[best][k], m = 0;
+    if (!s)
+      continue;
+    int x = kXOffset + 15 + (k % kColumns) * 30, line = SnesLine(16 + (k / kColumns) * 32);
+    for (int bg = 0; bg < 2 && !m; bg++) {
+      if (main & (1 << bg))
+        m = BgPixel(r, bg, x, line);
+    }
+    left_luma += LumaLeft(g_cgram[m], g_cgram[s]);
+    main_luma += Luma(g_cgram[m]);
+  }
+  int weight = main_luma ? (left_luma << 4) / main_luma : 16;
+  return r->cgadsub & 0x40 ? weight >> 1 : weight;
+}
+
+// Whether the line |r| adds BG3 alone, on the sub screen, to BG2 but not
+// BG1 (see bg3_mid).
+ROM_CODE static bool Bg3Between(const PpuRegs *r) {
+  return (r->cgwsel & 2) && !(r->cgadsub & 0x80) && (r->ts & ~r->tm & 7) == 4 &&
+         (r->tm & 3) == 3 && (r->cgadsub & 3) == 2;
+}
+
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh);
 
   squash = game_state < 7 || game_state > 11;
-  hud = !squash && LINE_REGS(8)->tm == 4 && LINE_REGS(kHudLines + 8)->tm != 4;
+  // The HUD: BG3 alone, and below it, other layers or another BG3 (in
+  // rooms with fog, BG3 alone again, the room on the sub screen, and
+  // color math, unlike the HUD's).
+  const PpuRegs *top = LINE_REGS(8), *below = LINE_REGS(kHudLines + 8);
+  hud = !squash && top->tm == 4 &&
+        (below->tm != 4 || below->cgadsub != top->cgadsub || below->bgsc[2] != top->bgsc[2] ||
+         below->hofs[2] != top->hofs[2] || below->vofs[2] != top->vofs[2]);
   UpdateYOffset();
 
   // The BG3 maps the lines use, in slots.
@@ -554,6 +683,10 @@ void Render_CaptureFrame(void) {
     ChooseSplit(LINE_REGS(text_line));
   else
     SetSplit(false);
+  bg3_mid = text_line >= 0 && !frame_mode7 && !split_bg2 && Bg3Between(LINE_REGS(text_line));
+  if (text_line >= 0 && !frame_mode7 && (LINE_REGS(text_line)->cgadsub & 0x80) &&
+      (LINE_REGS(text_line)->cgwsel & 2))
+    subtract_weight = SubtractWeight(LINE_REGS(text_line));
 
   // Lines with the same registers as the one before (and the same
   // vertical offset) have the same GBA registers, but for Mode 7's
@@ -798,15 +931,19 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
   for (int bg = 0; bg < 2; bg++) {
     uint8_t sc = r->bgsc[bg];
     bool split = bg == split_bg2;
-    bool changed = sc != conv.bgsc[bg] || (split && force_split) || split_changed;
-    if (sc != conv.bgsc[bg]) {
+    // A 64x64 map's top or bottom row, by the middle line (Kraid's room).
+    int row = (sc & 3) == 3 ? ((r->vofs[bg] + text_line) >> 8) & 1 : 0;
+    bool moved = sc != conv.bgsc[bg] || row != conv.bg_row[bg];
+    bool changed = moved || (split && force_split) || split_changed;
+    if (moved) {
       memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
       memset(bg12_hi_cols[bg], 0, sizeof(bg12_hi_cols[bg]));
     }
     conv.bgsc[bg] = sc;
+    conv.bg_row[bg] = row;
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
-      uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
+      uint16_t addr = (((sc & 0xfc) << 8) + (row * 2 + k) * 0x400) & 0x7fff;
       uint8_t *counts = &bg12_hi[bg][k * 64];
       uint16_t *cols = &bg12_hi_cols[bg][k * 2];
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
@@ -875,12 +1012,13 @@ ROM_CODE static void SetSquashMatrices(void) {
 static void UpdateOam(void) {
   SnesHw *h = &g_snes_hw;
   static int last_y_off = -1;
-  static bool last_squash;
+  static bool last_squash, last_bg3_mid;
   int y_off = hud ? kHudBlankLines + y_offset : y_offset;
-  if (!h->oam_dirty && y_off == last_y_off && squash == last_squash)
+  if (!h->oam_dirty && y_off == last_y_off && squash == last_squash && bg3_mid == last_bg3_mid)
     return;
   h->oam_dirty = false;
   last_y_off = y_off;
+  last_bg3_mid = bg3_mid;
   if (squash && !last_squash)
     SetSquashMatrices();
   last_squash = squash;
@@ -912,7 +1050,8 @@ static void UpdateOam(void) {
       o[0] = ((e[1] - y_off) & 0xff) | (shape >> 2) << 14;
       o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
     }
-    o[2] = tile | kObjPriority[(attr >> 4) & 3] << 10 | ((attr >> 1) & 7) << 12;
+    int priority = (attr >> 4) & 3;
+    o[2] = tile | (bg3_mid ? 3 - priority : kObjPriority[priority]) << 10 | ((attr >> 1) & 7) << 12;
   }
 }
 

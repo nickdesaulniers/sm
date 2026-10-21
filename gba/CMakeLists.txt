@@ -83,6 +83,7 @@ add_executable(sm_gba
     irq_entry.S
     input.c
     main.c
+    tour.c
     rtl.c
     snes_hw.iwram.c
     render.iwram.c
@@ -109,6 +110,10 @@ endif()
 option(SM_TRACE "For testing against the PC build (tools/hostrun.c): log the joypad and the game's state each frame" OFF)
 if(SM_TRACE)
     target_compile_definitions(sm_gba PRIVATE SM_TRACE=1)
+endif()
+option(SM_ROOM_TOUR "For testing (tools/room-tour.sh): take Samus into each room in turn" OFF)
+if(SM_ROOM_TOUR)
+    target_compile_definitions(sm_gba PRIVATE SM_ROOM_TOUR=1)
 endif()
 option(SM_TEST_ITEMS "For testing: give Samus the morph ball, power bombs, grapple beam and X-ray scope" OFF)
 if(SM_TEST_ITEMS)

@@ -27,6 +27,11 @@
 // (counted like SHOTS) to PREFIX.ewram, PREFIX.iwram, .io, .pal, .vram and
 // .oam: for tools/snesref.c, and for looking into.
 //
+// With SHOT_ON=TEXT, for each log line containing TEXT, it saves the
+// picture two frames later (time enough for it to be on screen) as
+// OUT_PREFIX<label>.png, and the memory as DUMP's does, to OUT_PREFIX<label>:
+// the label is the word after TEXT (gba/tour.c holds its frames for this).
+//
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
 //
 // Build with tools/mgba/build.sh, against mGBA 0.10.
@@ -62,6 +67,9 @@ static uint32_t parse_keys(const char* k, const char* end) {
 static int current_frame;
 static const char* after_text;
 static int after_frame;  // when after_text appeared, or 0
+static const char* shot_text;
+static int shot_frame;  // when to save SHOT_ON's next, or 0
+static char shot_label[64];
 
 static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level,
                       const char* format, va_list args) {
@@ -74,6 +82,11 @@ static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level
         fflush(stdout);
         if (after_text && !after_frame && strstr(line, after_text))
             after_frame = current_frame;
+        const char* shot = shot_text ? strstr(line, shot_text) : NULL;
+        if (shot) {
+            shot_frame = current_frame + 2;
+            sscanf(shot + strlen(shot_text), " %63s", shot_label);
+        }
     }
 }
 
@@ -297,6 +310,7 @@ int main(int argc, char** argv) {
     struct Keys pre = parse_schedule(getenv("PRE_KEYS"));
     struct Keys keys = parse_schedule(getenv("KEYS"));
     after_text = getenv("AFTER");
+    shot_text = getenv("SHOT_ON");
     if (getenv("AUDIO")) {
         audio_out = fopen(getenv("AUDIO"), "wb");
         write_wav_header(audio_out, 0);
@@ -351,6 +365,13 @@ int main(int argc, char** argv) {
         const char* dump = getenv("DUMP");
         if (dump && t > 0 && atoi(dump) == t && strchr(dump, ':'))
             dump_memory(core, strchr(dump, ':') + 1);
+        if (shot_frame == i) {
+            char path[512];
+            snprintf(path, sizeof path, "%s%s", prefix, shot_label);
+            dump_memory(core, path);
+            snprintf(path, sizeof path, "%s%s.png", prefix, shot_label);
+            write_png(path, pixels, width, height, width);
+        }
         for (const char* s = shots; *s && t > 0;) {
             if (atoi(s) == t) {
                 char path[512];

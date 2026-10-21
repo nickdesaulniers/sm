@@ -18,3 +18,6 @@ SDL2.dll
 /build-items/
 /build-trace/
 /build-ctrace/
+/build-tour/
+/sm.gba
+*.sav
