@@ -112,7 +112,7 @@ enum {
 #define IWRAM_DATA __attribute__((section(".iwram.data")))
 // In a *.iwram.c file, a function that runs too seldom to take IWRAM: Thumb
 // code in the cartridge after all.
-#define ROM_CODE __attribute__((target("thumb"), section(".romtext"), noinline))
+#define ROM_CODE __attribute__((target("thumb"), section(".romtext")))
 #define IWRAM_BSS __attribute__((section(".iwram_bss")))
 #define EWRAM_BSS __attribute__((section(".ewram_bss")))
 

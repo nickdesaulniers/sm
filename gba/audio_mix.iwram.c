@@ -1,9 +1,5 @@
 // The audio mixer, ARM code in IWRAM, as it runs for every sample. (So no
 // division: see cmake/compiler-rt.cmake.)
-// This file's functions (and the headers' inline ones it emits) are in
-// IWRAM, as ARM (see CMakeLists.txt), but for those ROM_CODE puts in ROM.
-#pragma clang section text = ".iwram.text"
-
 #include "audio.h"
 
 #include "gba_hw.h"
