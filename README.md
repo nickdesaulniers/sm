@@ -71,6 +71,8 @@ python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
 
 - [How this port was made](docs/HOW-IT-WAS-MADE.md): from a black screen to
   every room of the game, and the bugs found on the way.
+- [Issues to report upstream](docs/UPSTREAM-ISSUES.md): bugs found in the
+  decompilation while porting it, with their fixes.
 - [Porting a SNES game to the GBA](docs/PORTING-GUIDE.md): a guide for agents
   (and people) attempting a similar port. It covers the approach, the
   hardware mapping, the tools for checking the result, and the pitfalls.
