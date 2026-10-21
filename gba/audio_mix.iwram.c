@@ -111,6 +111,20 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
         sum[i] += noise_samples[i] * vol;
       continue;
     }
+    if (!vol) {
+      // Silent (its envelope or volume at 0: of the voices mixed, 30% in
+      // Norfair, 42% in Maridia): it plays on, unheard, as on the SNES.
+      // Its |n| steps, as Audio_MixVoice takes them.
+      uint32_t pos = voice->pos + voice->step * n;
+      if (pos >= voice->end) {
+        if (!voice->loop_len)
+          voice->on = false;
+        while (pos >= voice->end && voice->loop_len)
+          pos -= voice->loop_len;
+      }
+      voice->pos = pos;
+      continue;
+    }
     Audio_MixVoice(sum, n, voice);
   }
   // The voices' sum, *4, is at the scale of the SNES's 16-bit samples; the
