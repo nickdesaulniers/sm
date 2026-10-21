@@ -1497,7 +1497,7 @@ static void FileSelectMenu_1_LoadFileSelectMenuBG2(void) {  // 0x819E93
   VramWriteEntry *v2;
 
   for (int i = 1023; i >= 0; --i)
-    ram3000.pause_menu_map_tilemap[i + 768] = kZebesAndStarsTilemap[i];
+    ((uint16 *)ram3000.menu.menu_tilemap)[i] = kZebesAndStarsTilemap[i];
   uint16 v1 = vram_write_queue_tail;
   v2 = gVramWriteEntry(vram_write_queue_tail);
   v2->size = 2048;

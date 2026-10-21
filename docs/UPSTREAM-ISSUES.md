@@ -53,3 +53,19 @@ a delay marker, which happens every few frames during play, and prints to
 stdout.
 
 **Fix:** remove it (commit 5691898).
+
+## 4. The menu tilemap is declared a quarter of its size
+
+**Where:** `src/ida_types.h`, `Ram3000_Menu`; used in `src/sm_81.c`.
+
+**What:** `menu_tilemap` ($7E:3600) is declared `uint8 menu_tilemap[512]`,
+but every use treats it as 2048 bytes: the menus DMA 2048 bytes from it,
+`ClearMenuTilemap`'s loop fills 1024 words of it, and
+`FileSelectMenu_1_LoadFileSelectMenuBG2` fills it through another member
+of the union, `ram3000.pause_menu_map_tilemap[i + 768]` for `i` up to 1023,
+past that array's 1024 entries. It's all within `g_ram`, so nothing goes
+wrong, but UBSan reports the index out of bounds.
+
+**Fix:** declare it `uint8 menu_tilemap[2048]`, and fill it as itself in
+`FileSelectMenu_1_LoadFileSelectMenuBG2` (this branch, the commit that added this entry). The
+C still matches the original frame by frame.

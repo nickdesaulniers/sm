@@ -1239,7 +1239,7 @@ typedef struct Ram3000_Menu {
   uint16 palette_backup_in_menu[256];
   uint8 backup_of_io_registers_in_gameover[54];
   uint8 field_536[202];
-  uint8 menu_tilemap[512];
+  uint8 menu_tilemap[2048];
 } Ram3000_Menu;
 
 /* 136 */
