@@ -3605,7 +3605,39 @@ static uint8 AdvancePaletteFadeForAllPalettes(void) {  // 0x82DA02
   }
 }
 
+// A fade works out up to 512 colors' 3 channels a frame, with a division
+// each. On the GBA, which divides in software, slowly, they're looked up:
+// for the fade lengths the game uses, a channel's result for a step depends
+// only on its value and its target, 0-31 each, and the build works them all
+// out (tools/gen_fade_table.py).
+#if SM_GBA
+extern const uint8 kFadeSteps6[6][1024], kFadeSteps8[8][1024], kFadeSteps12[12][1024],
+    kFadeSteps15[15][1024];
+
+// The step's results, or NULL (the first and last steps, or another
+// length), as of the last step asked for.
+static const uint8 *FadeStep(uint16 a) {
+  static uint16 last_a = 0xffff, last_denom;
+  static const uint8 *last_step;
+  if (a != last_a || palette_change_denom != last_denom) {
+    uint16 d = palette_change_denom;
+    const uint8 (*steps)[1024] = d == 6 ? kFadeSteps6 : d == 8 ? kFadeSteps8 :
+                                 d == 12 ? kFadeSteps12 : d == 15 ? kFadeSteps15 : NULL;
+    last_step = steps && a >= 1 && a <= d ? steps[a - 1] : NULL;
+    last_a = a;
+    last_denom = d;
+  }
+  return last_step;
+}
+#endif
+
 static uint16 CalculateNthTransitionColorFromXtoY(uint16 a, uint16 k, uint16 j) {  // 0x82DA4A
+#if SM_GBA
+  const uint8 *t = FadeStep(a);
+  if (t)
+    return t[(k & 0x1F) << 5 | (j & 0x1F)] | t[(k >> 5 & 0x1F) << 5 | (j >> 5 & 0x1F)] << 5 |
+           t[(k >> 10 & 0x1F) << 5 | (j >> 10 & 0x1F)] << 10;
+#endif
   return CalculateNthTransitionColorComponentFromXtoY(a, k & 0x1F, j & 0x1F) |
          CalculateNthTransitionColorComponentFromXtoY(a, (k >> 5) & 0x1F, (j >> 5) & 0x1F) << 5 |
          CalculateNthTransitionColorComponentFromXtoY(a, (k >> 10) & 0x1F, (j >> 10) & 0x1F) << 10;

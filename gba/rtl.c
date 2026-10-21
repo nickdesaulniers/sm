@@ -26,15 +26,12 @@ static void MissingCartData(void) {
   for (;;) {}
 }
 
-void InitDivide(void);
-
 void RtlInit(void) {
   if (memcmp(__cart_data.magic, CART_DATA_MAGIC, 8) || __cart_data.version != kCartDataVersion ||
       __cart_data.snes_rom_size != kSnesRomSize)
     MissingCartData();
   for (int i = 0; i < 0x2000; i++)
     sram[i] = GBA_SRAM[i];
-  InitDivide();
 }
 
 void Die(const char *error) {
@@ -85,13 +82,17 @@ uint16 Mult8x8(uint8 a, uint8 b) {
 // 2^32 / b rounded up, for any 16-bit a and b from 2 to 255 (it's less than
 // 2^-16 over, and a / b's fraction is at most 1 - 1/b: checked for all of
 // them). The fades between rooms divide some 1500 times a frame, which the
-// ARM7TDMI does in software, slowly; this is a umull, in ARM.
-static uint32_t reciprocals[256];
-
-void InitDivide(void) {
-  for (int b = 2; b < 256; b++)
-    reciprocals[b] = 0xffffffffu / b + 1;
-}
+// ARM7TDMI does in software, slowly; this is a umull, in ARM. (The table is
+// worked out by the compiler, in ROM.)
+#define R(b) ((b) < 2 ? 0 : 0xffffffffu / (b) + 1)
+#define R4(b) R(b), R((b) + 1), R((b) + 2), R((b) + 3)
+#define R16(b) R4(b), R4((b) + 4), R4((b) + 8), R4((b) + 12)
+#define R64(b) R16(b), R16((b) + 16), R16((b) + 32), R16((b) + 48)
+static const uint32_t reciprocals[256] = {R64(0), R64(64), R64(128), R64(192)};
+#undef R
+#undef R4
+#undef R16
+#undef R64
 
 GBA_IWRAM_CODE uint16 SnesDivide(uint16 a, uint8 b) {
   if (b < 2)

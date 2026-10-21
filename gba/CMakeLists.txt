@@ -35,7 +35,15 @@ sm_add_builtins(gba_builtins
 # The game itself, as decompiled: everything but the PC's platform layer and
 # the SNES emulator it checks the game against.
 set(game_dir ${CMAKE_SOURCE_DIR}/src)
+# The fades' steps, worked out by the build (see src/sm_82.c's FadeStep).
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fade_table.c
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/gen_fade_table.py
+            ${CMAKE_CURRENT_BINARY_DIR}/fade_table.c
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen_fade_table.py
+)
 add_library(sm_game STATIC
+    ${CMAKE_CURRENT_BINARY_DIR}/fade_table.c
     ${game_dir}/sm_80.c
     ${game_dir}/sm_81.c
     ${game_dir}/sm_82.c

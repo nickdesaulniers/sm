@@ -785,18 +785,32 @@ enum { kNoTransfer = 0xffff };
 
 // The channel's table, baked, if it's in ROM and indirect; or NULL.
 ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
-  static BakedTable baked[4];
+  enum { kBaked = 6 };  // (Norfair has as many going)
+  static BakedTable baked[kBaked];
   static int next;
   const SnesDmaChannel *c = d->c;
   if (!d->indirect || d->table_ram || c->a1t < 0x8000)
     return NULL;
   uint32_t key = (uint32_t)c->a1b << 16 | c->a1t | (uint32_t)d->bytes << 24;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < kBaked; i++) {
     if (baked[i].key == key)
       return &baked[i];
   }
+  // Baked the second time a table's asked for: some start at another place
+  // every frame (as a door's fade scrolls), and baking them would only
+  // double the work of going through them.
+  static uint32_t seen[8];
+  static int next_seen;
+  bool again = false;
+  for (int i = 0; i < 8; i++)
+    again |= seen[i] == key;
+  if (!again) {
+    seen[next_seen] = key;
+    next_seen = (next_seen + 1) & 7;
+    return NULL;
+  }
   BakedTable *b = &baked[next];
-  next = (next + 1) & 3;
+  next = next + 1 == kBaked ? 0 : next + 1;
   b->key = 0;
   for (int v = 0; v < kSnesLines; v++)
     b->das[v] = kNoTransfer;
