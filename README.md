@@ -89,16 +89,17 @@ layout of the GBA Metroids, *Zero Mission* and *Fusion*:
 | Run                    | hold B                | always on                            |
 | Aim diagonally up      | R                     | hold L                               |
 | Aim diagonally down    | L                     | hold L + Down                        |
-| Pick an item           | Select cycles through them | Select picks what R readies |
+| Pick an item           | Select cycles through them | Select picks what R readies instead of missiles |
 | Missiles (or the item) | pick, then X          | hold R, then B                       |
+| X-ray scope            | pick, then hold B     | pick, then hold R                    |
 | Power bombs            | pick, then X in morph ball | hold R in morph ball, then B    |
 | Put the item away      | Y                     | let go of R                          |
 | Pause, map             | Start                 | Start                                |
 
 So, as on the GBA Metroids, missiles are a shoulder button away: hold R and
 press B. Select cycles R's item through super missiles, the grapple beam and
-the X-ray scope, whichever Samus has found. Letting go of R doesn't drop
-Samus from the grapple beam. Because Samus always runs, the speed booster
+the X-ray scope, whichever Samus has found, and back to missiles (shown as
+nothing picked). Letting go of R doesn't drop Samus from the grapple beam. Because Samus always runs, the speed booster
 charges whenever she runs long enough.
 
 On the title screen, the menus and the pause screen, each button is the SNES

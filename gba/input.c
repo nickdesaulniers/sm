@@ -6,8 +6,10 @@
 //   R       hold to ready missiles, or the item Select picked; power bombs
 //           in morph ball; hold to look with the X-ray scope
 //   L       hold to aim diagonally: up, or down with Down held (SNES R, L)
-//   Select  pick what R readies: missiles, super missiles, grapple beam or
-//           X-ray scope, of those Samus has
+//   Select  pick what R readies instead of missiles: super missiles,
+//           grapple beam or X-ray scope, of those Samus has, then missiles
+//           again (as nothing picked: R has them anyway, so Select doesn't
+//           show them)
 //   Start   pause
 // and Samus always runs (SNES B held). Elsewhere, menus and the pause
 // screen included, the buttons are the SNES's buttons of the same names.
@@ -43,7 +45,8 @@ enum {
 enum { kShowPickedItemFrames = 40 };
 
 static uint16_t keys;
-static uint8_t r_item = kItemMissiles;
+// What Select picked for R, or none, for missiles.
+static uint8_t r_item = kItemNone;
 static uint8_t show_picked_item;
 
 static bool HasItem(int item) {
@@ -58,7 +61,7 @@ static bool HasItem(int item) {
 }
 
 static void PickNextRItem(void) {
-  static const uint8_t kRItems[] = {kItemMissiles, kItemSuperMissiles, kItemGrapple, kItemXray};
+  static const uint8_t kRItems[] = {kItemNone, kItemSuperMissiles, kItemGrapple, kItemXray};
   int i = 0;
   while (i < 4 && kRItems[i] != r_item)
     i++;
@@ -95,8 +98,9 @@ uint16 GbaWantedHudItem(void) {
     if (InMorphBall())
       return kItemPowerBombs;
     if (!HasItem(r_item))
-      PickNextRItem();
-    return HasItem(r_item) ? r_item : kItemNone;
+      r_item = kItemNone;
+    int item = r_item != kItemNone ? r_item : kItemMissiles;
+    return HasItem(item) ? item : kItemNone;
   }
   return show_picked_item ? r_item : kItemNone;
 }
