@@ -2,11 +2,13 @@
 
 <p align="center">
   <img src="docs/images/title.png" width="240" alt="The title screen">
+  <img src="docs/images/ceres-ridley.png" width="240" alt="Ridley takes the baby Metroid on Ceres station">
   <img src="docs/images/ceres-explodes.png" width="240" alt="Ceres station explodes as Samus escapes">
-  <img src="docs/images/zebes.png" width="240" alt="Planet Zebes">
-  <img src="docs/images/landing.png" width="240" alt="Samus leaves her ship in the rain">
   <br>
+  <img src="docs/images/landing.png" width="240" alt="Samus leaves her ship in the rain">
   <img src="docs/images/kraid.png" width="240" alt="Kraid">
+  <img src="docs/images/phantoon.png" width="240" alt="Phantoon">
+  <br>
   <img src="docs/images/botwoon.png" width="240" alt="Botwoon">
   <img src="docs/images/ridley.png" width="240" alt="Ridley">
   <img src="docs/images/mother-brain.png" width="240" alt="Mother Brain">
