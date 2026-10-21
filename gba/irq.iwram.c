@@ -31,12 +31,18 @@ static void ScheduleSegment(const DisplayFrame *d) {
   REG_DISPSTAT = stat;
 }
 
+static void Patch(const DisplayFrame *d, const uint16_t *colors) {
+  for (int i = 0; i < d->num_patches; i++)
+    GBA_BG_PALETTE[d->patch_index[i] + 128] = colors[i];
+}
+
 ROM_CODE void Display_Start(void) {
   const DisplayFrame *d = g_display;
   if (!d)
     return;
   REG_DMACNT(0) = 0;
   SetSegment(d, &d->segments[0]);
+  Patch(d, d->patch_segment == 0 ? d->patch_color : d->restore_color);
   volatile uint32_t *dest = (volatile uint32_t *)d->stream_dest;
   int words = d->stream_words;
   for (int i = 0; i < words; i++)
@@ -97,6 +103,8 @@ static void VCount(void) {
       while (REG_VCOUNT < line) {}
       while (!(REG_DISPSTAT & 2)) {}  // HBlank
     }
+    if (next_segment == d->patch_segment)
+      Patch(d, d->patch_color);
     SetSegment(d, &d->segments[next_segment++]);
   }
   ScheduleSegment(d);

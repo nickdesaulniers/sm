@@ -18,8 +18,13 @@ enum {
   kMaxRooms = 320,
   kFirstRoom = 0x91f8,  // the landing site
   kLastRoom = 0xe0b5,   // Ceres's last: not the debug room after it
-  kSettleFrames = 90,
 };
+// Frames in each room before the next door (more, to measure each room's
+// speed once settled).
+#ifndef SM_TOUR_SETTLE
+#define SM_TOUR_SETTLE 90
+#endif
+enum { kSettleFrames = SM_TOUR_SETTLE };
 
 static uint16_t tour_rooms[kMaxRooms], tour_doors[kMaxRooms];
 static int tour_count, tour_next, tour_frames;

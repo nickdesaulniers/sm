@@ -46,6 +46,12 @@ typedef struct DisplayFrame {
   uint32_t stream_dest;
   int num_segments;
   const DisplaySegment *segments;
+  // Colors of the GBA's palette to set from a segment on (|patch_segment|,
+  // or with none, -1), and back at VBlank: BG3's for the gameplay area that
+  // differ from the HUD's (see render.iwram.c's subtract_color).
+  int patch_segment, num_patches;
+  uint8_t patch_index[24];
+  uint16_t patch_color[24], restore_color[24];
 } DisplayFrame;
 
 // The frame on show, or null: irq.iwram.c sets it up at every VBlank.

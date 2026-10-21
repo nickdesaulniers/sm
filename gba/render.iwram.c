@@ -139,6 +139,19 @@ static bool bg3_mid;
 // sub screen's layers are, in 16ths (see SubtractWeight).
 static int subtract_weight;
 static uint8_t subtract_layer = 4;
+// Or, with bit 15 set, a color the palette subtracts, as it does the fixed
+// color: the sub screen's average, when it's all over the screen; or when
+// it's BG3 all over the screen (Maridia's shadows), the brightest of its
+// colors, with the BG3 palettes it uses in subtract_palettes. Then BG3 goes
+// on top with each of its colors c as that color less c, added: the SNES's
+// subtraction, but for main screen colors darker than that color. (See
+// SubtractWeight.)
+static uint16_t subtract_color;
+static uint8_t subtract_palettes;
+// The palette's colors for that in the gameplay area (see DisplayFrame).
+static int num_patches;
+static uint8_t patch_index[24];
+static uint16_t patch_color[24], restore_color[24];
 
 // What render.c last converted, to see when it has to start over.
 static struct {
@@ -150,6 +163,7 @@ static struct {
   int brightness;
   uint32_t fixed_math;
   bool mode7, bg3_palettes, split_bg2;
+  uint8_t subtract_palettes;
 } conv = {.blank_tile = -1, .brightness = -1};
 
 static int SnesLine(int g) {
@@ -299,7 +313,7 @@ ROM_CODE static bool FixedShows(const PpuRegs *r, uint8_t windowed) {
 // ColorMath has them. Subtracted, it's one of them, that SubtractWeight
 // chose: the GBA can't have several on top, as they are on the SNES's sub
 // screen, with nothing to blend between them (Tourian's darkness).
-static uint8_t SubLayers(const PpuRegs *r) {
+ROM_CODE static uint8_t SubLayers(const PpuRegs *r) {
   uint8_t sub = r->ts & ~r->tm & 7;
   return (r->cgadsub & 0x80) && (sub & subtract_layer) ? subtract_layer : sub;
 }
@@ -307,7 +321,7 @@ static uint8_t SubLayers(const PpuRegs *r) {
 // Returns the sub screen's layers it shows (CGADSUB's bits), or with
 // kFixedInWindows, the ones that windows hide, for the fixed color there.
 enum { kFixedInWindows = 0x80 };
-static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
+ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   c->bld[0] = c->bld[1] = c->bld[2] = 0;
   uint8_t math = r->cgadsub & 0x3f;
   // Color math only inside the color window, or not at all; with the
@@ -319,6 +333,18 @@ static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
   if (r->cgwsel & 2) {
     uint8_t sub = SubLayers(r);
+    // (Or the palette subtracts, as SubtractWeight chose.)
+    if (subtract && (subtract_color & 0x8000) && !subtract_palettes)
+      return 0;
+    if (subtract && (subtract_color & 0x8000)) {
+      // The palette subtracts the brightest of BG3's colors, and BG3 adds
+      // back what's too much (see subtract_color).
+      c->dispcnt |= kDispcntBg0;
+      c->bgcnt[0] &= ~3;
+      c->bld[0] = 1 | BlendLayers(math & (r->tm | 0x20)) << 8 | 1 << 6;
+      c->bld[1] = 16 | 16 << 8;
+      return 4;
+    }
     if (!sub || (subtract && !(r->tm & 3)))
       return 0;
     // Where it's transparent, the sub screen's the fixed color. Where
@@ -456,11 +482,34 @@ static uint32_t LineWindows(int s) {
   return WindowH(wh & 0xff, (wh >> 8) & 0xff) | (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
 }
 
+// Whether two lines' registers are the same, but for the scrolling: then
+// so are their GBA registers but for the stream. (Maridia's water and
+// Norfair's heat have different scrolling on every line.)
+_Static_assert(sizeof(PpuRegs) == 64 && offsetof(PpuRegs, hofs) == 10 &&
+                   offsetof(PpuRegs, vofs) + sizeof(((PpuRegs *)0)->vofs) == 26,
+               "SameButScrolling's layout");
+static bool SameButScrolling(const PpuRegs *a, const PpuRegs *b) {
+  const uint16_t *x = (const uint16_t *)a, *y = (const uint16_t *)b;
+  for (int i = 0; i < 32; i++) {
+    if (x[i] != y[i] && (i < 5 || i >= 13))
+      return false;
+  }
+  return true;
+}
+
+// The registers BuildLine last made the GBA's of, but for the scrolling,
+// in this frame.
+static const PpuRegs *built_regs;
+
 static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   if ((r->bgmode & 7) == 7) {
     BuildLineMode7(l, r, s);
     return;
   }
+  int split = split_bg2;
+  if (!frame_mode7 && built_regs && SameButScrolling(built_regs, r))
+    goto scrolling;
+  built_regs = r;
   uint16_t dispcnt = frame_mode7 ? kDispcntMode1 : kDispcntMode0;
   if (!(r->inidisp & 0x80)) {
     // With Mode 7 lines in the frame, BG1 and BG2's VRAM holds Mode 7's.
@@ -473,11 +522,11 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   int bg3_front = (r->bgmode & 8) && bg3_hi_total[Bg3Slot(r->bgsc[2])];
   l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
   // The SNES background split into GBA BG1 and BG2 or BG3.
-  int split = split_bg2;
   l->ctl.bgcnt[1] = (1 - bg3_mid) | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
   l->ctl.bgcnt[2] = (2 - bg3_mid) | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
   Windows(l, r, ColorMath(&l->ctl, r));
+scrolling:;
   // (The SNES shows a background's row VOFS + 1 on its first line.)
   int dy = s + 1 - g;
   uint16_t ofs[8];
@@ -563,7 +612,7 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
 // line |r|'s registers, or 0 where it's transparent.
 ROM_CODE static int BgPixel(const PpuRegs *r, int bg, int x, int line) {
   uint8_t sc = r->bgsc[bg];
-  int bx = (r->hofs[bg] + x) & 0x3ff, by = (r->vofs[bg] + line) & 0x3ff;
+  int bx = (r->hofs[bg] + x) & 0x3ff, by = (r->vofs[bg] + line + 1) & 0x3ff;
   int screen = (bx >> 8) & (sc & 1);
   screen += (by >> 8) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
   uint16_t e = g_vram[((sc & 0xfc) << 8 | screen << 10 | ((by >> 3) & 31) << 5 | ((bx >> 3) & 31)) &
@@ -594,44 +643,164 @@ ROM_CODE static int LumaLeft(uint16_t m, uint16_t s) {
   return left;
 }
 
-// For the line |r|, which subtracts the sub screen: of its layers, the
-// one with the most pixels on show (of a few dozen), subtract_layer; and how
-// much of the main screen's brightness is left where it is, in 16ths. (The
-// GBA darkens by that, as it can't subtract.)
+// SubtractWeight's samples, k of 40 in 5 rows of 8: staggered, so that
+// they fall on all of a tile's rows and columns, not one (BG3's shadows
+// can be a pattern of thin lines).
+ROM_CODE static int SampleX(int k) {
+  return kXOffset + 11 + (k & 7) * 29 + (k >> 3) * 5;
+}
+
+ROM_CODE static int SampleLine(int k) {
+  return SnesLine(9 + (k >> 3) * 29 + (k & 7) * 3);
+}
+
+// What's left of each of |m|'s channels with |s|'s taken away, |add|'s
+// added back (to 31 at most), against what the SNES makes of |m| less |c|:
+// how far off, in all.
+ROM_CODE static int SubtractError(uint16_t m, uint16_t s, uint16_t add, uint16_t c) {
+  int error = 0;
+  for (int i = 0; i < 15; i += 5) {
+    int v = (m >> i & 31) - (s >> i & 31), want = (m >> i & 31) - (c >> i & 31);
+    v = (v < 0 ? 0 : v) + (add >> i & 31);
+    v = v > 31 ? 31 : v;
+    want = want < 0 ? 0 : want;
+    error += v > want ? v - want : want - v;
+  }
+  return error;
+}
+
+// For the line |r|, which subtracts the sub screen, by a few dozen of its
+// pixels on show and the main screen's there: the GBA's way that comes
+// closest, of
+// - darkening where the sub screen's layer with the most pixels
+//   (subtract_layer) is, by how much of the main screen's brightness is left
+//   there, in 16ths (the result);
+// - if the sub screen is all over the screen, subtracting the average of
+//   its colors in the palette (subtract_color, with subtract_palettes 0);
+// - if it's BG3 all over the screen, subtracting a color in the palette,
+//   and BG3 adding back what's too much, by its colors: the color, channel
+//   by channel, that's closest (subtract_color, with the BG3 palettes it
+//   uses, subtract_palettes).
+// Every fourth frame: the colors and the scrolling change slowly.
 ROM_CODE static int SubtractWeight(const PpuRegs *r) {
+  static uint8_t phase;
+  if (phase++ & 3)
+    return subtract_weight;
   uint8_t sub = r->ts & ~r->tm & 7, main = r->tm & 3;
+  subtract_color = 0;
   if (!sub)
     return 16;
-  enum { kColumns = 8, kRows = 5 };
-  uint8_t pixels[3][kRows * kColumns];
+  enum { kColumns = 8, kRows = 5, kSamples = kColumns * kRows };
+  uint8_t pixels[3][kSamples];
+  uint16_t main_colors[kSamples], sub_colors[kSamples];
+  uint8_t opaque_at[kSamples];
   int count[3] = {0, 0, 0}, best = 2;
   for (int bg = 0; bg < 3; bg++) {
     if (!(sub & (1 << bg)))
       continue;
-    for (int k = 0; k < kRows * kColumns; k++) {
-      int x = kXOffset + 15 + (k % kColumns) * 30, line = SnesLine(16 + (k / kColumns) * 32);
+    for (int k = 0; k < kSamples; k++) {
+      int x = SampleX(k), line = SampleLine(k);
       pixels[bg][k] = BgPixel(r, bg, x, line);
-      count[bg] += pixels[bg][k] != 0;
     }
-    if (count[bg] > count[best] || !(sub & (1 << best)))
+  }
+  // The layer that takes the most away: with the most pixels on show (in
+  // front of the others) that aren't black.
+  for (int k = 0; k < kSamples; k++) {
+    for (int bg = 0; bg < 3; bg++) {
+      if ((sub & (1 << bg)) && pixels[bg][k]) {
+        count[bg] += g_cgram[pixels[bg][k]] != 0;
+        break;
+      }
+    }
+  }
+  for (int bg = 0; bg < 3; bg++) {
+    if ((sub & (1 << bg)) && (count[bg] > count[best] || !(sub & (1 << best))))
       best = bg;
   }
   subtract_layer = 1 << best;
+  // The main and sub screens' pixels; and of the sub screen's, how many,
+  // how many BG3's, their sums and the brightest.
+  int opaque = 0, bg3 = 0, sums[3] = {0, 0, 0}, brightest[3] = {0, 0, 0};
+  int darkest[3] = {31, 31, 31};
   int left_luma = 0, main_luma = 0;
-  for (int k = 0; k < kRows * kColumns; k++) {
-    int s = pixels[best][k], m = 0;
-    if (!s)
-      continue;
-    int x = kXOffset + 15 + (k % kColumns) * 30, line = SnesLine(16 + (k / kColumns) * 32);
+  for (int k = 0; k < kSamples; k++) {
+    int x = SampleX(k), line = SampleLine(k);
+    int m = 0, p = 0, from = 0;
     for (int bg = 0; bg < 2 && !m; bg++) {
       if (main & (1 << bg))
         m = BgPixel(r, bg, x, line);
     }
-    left_luma += LumaLeft(g_cgram[m], g_cgram[s]);
-    main_luma += Luma(g_cgram[m]);
+    for (int bg = 0; bg < 3 && !p; bg++) {
+      if (sub & (1 << bg))
+        p = pixels[bg][k], from = bg;
+    }
+    main_colors[k] = g_cgram[m];
+    sub_colors[k] = p ? g_cgram[p] : 0;
+    opaque_at[k] = p != 0;
+    if (pixels[best][k]) {
+      left_luma += LumaLeft(g_cgram[m], g_cgram[pixels[best][k]]);
+      main_luma += Luma(g_cgram[m]);
+    }
+    if (!p)
+      continue;
+    opaque++;
+    bg3 += from == 2;
+    for (int c = 0; c < 3; c++) {
+      int v = g_cgram[p] >> (5 * c) & 31;
+      sums[c] += v;
+      brightest[c] = v > brightest[c] ? v : brightest[c];
+      darkest[c] = v < darkest[c] ? v : darkest[c];
+    }
   }
   int weight = main_luma ? (left_luma << 4) / main_luma : 16;
-  return r->cgadsub & 0x40 ? weight >> 1 : weight;
+  if (r->cgadsub & 0x40)
+    weight >>= 1;
+  // Where the sub screen's transparent, nothing's subtracted (it's the
+  // fixed color, black as a rule), nor added back.
+  if (opaque < kSamples)
+    darkest[0] = darkest[1] = darkest[2] = 0;
+  uint16_t mean = 0, top = 0;
+  for (int c = 0; c < 3; c++)
+    mean |= ((sums[c] + kSamples / 2) / kSamples) << (5 * c);
+  // How far off each would be, at the pixels. (Not halved.)
+  bool add_back = opaque && bg3 == opaque;
+  int darkened = 0, averaged = 0, added_back = add_back ? 0 : 0x7fffffff;
+  for (int k = 0; k < kSamples; k++) {
+    uint16_t m = main_colors[k], c = sub_colors[k];
+    uint16_t dark = pixels[best][k] ? 0 : m;
+    for (int i = 0; i < 15 && pixels[best][k]; i += 5)
+      dark |= ((m >> i & 31) * weight >> 4) << i;
+    darkened += SubtractError(dark, 0, 0, c);
+    averaged += SubtractError(m, mean, 0, c);
+  }
+  // Adding back: by channel, the color between BG3's darkest and
+  // brightest that's closest.
+  for (int ch = 0; ch < 15 && add_back; ch += 5) {
+    int best_error = 0x7fffffff, best_s = 0;
+    for (int v = darkest[ch / 5]; v <= brightest[ch / 5]; v++) {
+      int error = 0;
+      for (int k = 0; k < kSamples; k++) {
+        int m = main_colors[k] >> ch & 31, c = sub_colors[k] >> ch & 31;
+        int got = (m > v ? m - v : 0) + (opaque_at[k] && v > c ? v - c : 0);
+        int want = m > c ? m - c : 0;
+        got = got > 31 ? 31 : got;
+        error += got > want ? got - want : want - got;
+      }
+      if (error < best_error)
+        best_error = error, best_s = v;
+    }
+    added_back += best_error;
+    top |= best_s << ch;
+  }
+  if (averaged <= darkened && averaged <= added_back) {
+    subtract_color = 0x8000 | mean;
+    subtract_palettes = 0;
+  } else if (added_back < darkened) {
+    // All of BG3's palettes: those not among the pixels, too.
+    subtract_color = 0x8000 | top;
+    subtract_palettes = 0xff;
+  }
+  return weight;
 }
 
 // Whether the line |r| adds BG3 alone, on the sub screen, to BG2 but not
@@ -639,6 +808,26 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
 ROM_CODE static bool Bg3Between(const PpuRegs *r) {
   return (r->cgwsel & 2) && !(r->cgadsub & 0x80) && (r->ts & ~r->tm & 7) == 4 &&
          (r->tm & 3) == 3 && (r->cgadsub & 3) == 2;
+}
+
+// The GBA shows a background only three lines after DISPCNT turns it on
+// partway down the screen (it was the backdrop at the top of the gameplay
+// area, below the HUD): segments before one that turns on BG1-BG3 already
+// have them on, but blacked out, with BG0 in front of them. (Not in
+// segments with sprites, color math or windows: the HUD has none.)
+ROM_CODE static void KeepLayersOn(DisplaySegment *segs, int n) {
+  uint16_t later = 0;
+  for (int i = n - 1; i >= 0; i--) {
+    DisplaySegment *c = &segs[i];
+    uint16_t hidden = later & ~c->dispcnt;
+    if (hidden && !c->bld[0] && !(c->dispcnt & (kDispcntObj | 3 << 13))) {
+      c->dispcnt |= hidden;
+      c->bgcnt[0] &= ~3;
+      c->bld[0] = hidden >> 8 | 3 << 6;
+      c->bld[2] = 16;
+    }
+    later |= c->dispcnt & 0x0e00;
+  }
 }
 
 void Render_CaptureFrame(void) {
@@ -687,6 +876,8 @@ void Render_CaptureFrame(void) {
   if (text_line >= 0 && !frame_mode7 && (LINE_REGS(text_line)->cgadsub & 0x80) &&
       (LINE_REGS(text_line)->cgwsel & 2))
     subtract_weight = SubtractWeight(LINE_REGS(text_line));
+  else
+    subtract_color = 0;
 
   // Lines with the same registers as the one before (and the same
   // vertical offset) have the same GBA registers, but for Mode 7's
@@ -697,6 +888,7 @@ void Render_CaptureFrame(void) {
   LineRegs l;
   int prev_state = -1, prev_dy = 0;
   bool windows = false;
+  built_regs = NULL;
   for (int g = 0; g < kGbaLines; g++) {
     int s = SnesLine(g), state = line_state[s];
     const PpuRegs *r = &line_states[state];
@@ -721,6 +913,7 @@ void Render_CaptureFrame(void) {
   }
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
+  KeepLayersOn(segs, num_segs);
   DisplayFrame *f = &frames[back];
   f->stream = &stream[0][0];
   f->stream_words = 4;
@@ -738,6 +931,10 @@ void Render_CaptureFrame(void) {
   }
   f->num_segments = num_segs;
   f->segments = segs;
+  // The gameplay area's first segment, for the palette's patches.
+  f->patch_segment = 0;
+  while (hud && f->patch_segment < num_segs - 1 && segs[f->patch_segment].first_line < kGbaHudLines - 1)
+    f->patch_segment++;
   LogLayoutChange(LINE_REGS(SnesLine(kGbaLines / 2)));
 }
 
@@ -746,9 +943,13 @@ void Render_CaptureFrame(void) {
 // 0 for none.
 static uint32_t FixedMath(const PpuRegs *m) {
   int region = (m->cgwsel >> 4) & 3;
-  if ((m->cgwsel & 2) || !(m->cgadsub & 0x3f) || region == 1 || region == 3)
+  bool sub = m->cgwsel & 2;
+  if ((sub && !((m->cgadsub & 0x80) && (subtract_color & 0x8000))) || !(m->cgadsub & 0x3f) ||
+      region == 1 || region == 3)
     return 0;
-  uint32_t color = m->coldata[0] | m->coldata[1] << 5 | m->coldata[2] << 10;
+  // The sub screen's one color (see subtract_color), or the fixed color.
+  uint32_t color = sub ? subtract_color & 0x7fff
+                       : m->coldata[0] | m->coldata[1] << 5 | m->coldata[2] << 10;
   if (!color && !(m->cgadsub & 0x40))
     return 0;
   return m->cgadsub | color << 8;
@@ -779,9 +980,11 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   SnesHw *h = &g_snes_hw;
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
   uint32_t math = FixedMath(m);
+  uint8_t subtracted = (subtract_color & 0x8000) && (m->cgwsel & 2) ? subtract_palettes : 0;
   if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes &&
-      math == conv.fixed_math)
+      math == conv.fixed_math && subtracted == conv.subtract_palettes)
     return;
+  conv.subtract_palettes = subtracted;
   h->cgram_dirty = false;
   conv.brightness = b;
   conv.bg3_palettes = bg3_palettes;
@@ -820,6 +1023,25 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   Recolor(GBA_OBJ_PALETTE + 64, g_cgram + 192, 64, o, full && o == same);
   for (int p = 0; p < 8 && bg3_palettes; p++)
     Recolor(GBA_BG_PALETTE + 128 + p * 16, g_cgram + p * 4, 4, b3, full && b3 == same);
+  // BG3's colors c that add back the subtracted color less c (see
+  // subtract_color), in the gameplay area only: the HUD has some of the
+  // same palettes.
+  num_patches = 0;
+  for (int p = 0; p < 8 && bg3_palettes; p++) {
+    if (!(subtracted & (1 << p)))
+      continue;
+    for (int i = 1; i < 4; i++) {
+      uint16_t color = 0;
+      for (int ch = 0; ch < 15; ch += 5) {
+        int d = (subtract_color >> ch & 31) - (g_cgram[p * 4 + i] >> ch & 31);
+        d = d < 0 ? 0 : (math & 0x40) ? d >> 1 : d;
+        color |= Bright(d, b) << ch;
+      }
+      patch_index[num_patches] = p * 16 + i;
+      patch_color[num_patches] = color;
+      restore_color[num_patches++] = GBA_BG_PALETTE[128 + p * 16 + i];
+    }
+  }
 }
 
 static bool TileIsBlank(const uint16_t *t) {
@@ -1082,6 +1304,13 @@ void Render_Present(void) {
 
   // From now on, the VBlank interrupt sets up this frame's registers: from
   // now, if it's still VBlank. (Not partway down the screen.)
+  DisplayFrame *f = &frames[back];
+  f->num_patches = num_patches;
+  for (int i = 0; i < num_patches; i++) {
+    f->patch_index[i] = patch_index[i];
+    f->patch_color[i] = patch_color[i];
+    f->restore_color[i] = restore_color[i];
+  }
   REG_IME = 0;
   g_display = &frames[back];
   if (REG_VCOUNT >= kGbaLines)
