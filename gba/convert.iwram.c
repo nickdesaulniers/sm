@@ -1,6 +1,10 @@
 // Converting SNES graphics to the GBA's formats, in ARM code in IWRAM, as
 // it's done for every tile the game changes. (No division in here: the
 // compiler-rt helpers are Thumb, see cmake/compiler-rt.cmake.)
+// This file's functions (and the headers' inline ones it emits) are in
+// IWRAM, as ARM (see CMakeLists.txt), but for those ROM_CODE puts in ROM.
+#pragma clang section text = ".iwram.text"
+
 #include "convert.h"
 
 #include "gba_hw.h"
@@ -22,7 +26,7 @@ ROM_CODE void Convert_Init(void) {
 
 // A SNES 4bpp tile is 16 words: rows of bitplanes 0 and 1, then rows of
 // bitplanes 2 and 3.
-void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
+__attribute__((noinline)) void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 16, dst += 8) {
     for (int r = 0; r < 8; r++) {
       uint32_t p01 = src[r], p23 = src[r + 8];
@@ -49,7 +53,7 @@ static inline uint32_t MapEntry(uint32_t e, uint32_t pal_add) {
 }
 
 // Returns how many of the entries have the priority bit.
-int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add) {
+__attribute__((noinline)) int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add) {
   uint32_t hi = 0;
   for (int i = 0; i < count; i++) {
     dst[i] = MapEntry(src[i], pal_add);
@@ -61,7 +65,7 @@ int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t
 // Splits a map in two by the priority bit: tiles in front of the
 // priority 2 sprites, and those behind, with |blank| (a transparent tile)
 // in the other. Returns how many are in front.
-int Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
+__attribute__((noinline)) int Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
                      int count, uint32_t blank) {
   int n = 0;
   for (int i = 0; i < count; i++) {

@@ -35,6 +35,15 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # engine), not just unused files.
 add_compile_options(${GBA_COMPILE_OPTIONS} -fno-strict-aliasing -ffunction-sections -fdata-sections)
 add_link_options(${GBA_LINK_OPTIONS})
+# LTO: the source places code in IWRAM or ROM by section (see gba/gba.ld),
+# so it can. But it isn't faster: at -O3 the code it inlines across files
+# doesn't fit in IWRAM; at -O2 (--lto-O2) it does, and the picture takes
+# 5-7k more cycles a frame, the game the same.
+option(SM_LTO "Link-time optimization (slower, as measured)" OFF)
+if(SM_LTO)
+    add_compile_options(-flto)
+    add_link_options(-flto -Wl,--lto-O2)
+endif()
 include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/gba/libc/include)
 include(cmake/compiler-rt.cmake)
 

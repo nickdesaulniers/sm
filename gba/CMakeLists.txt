@@ -9,6 +9,9 @@ add_library(gba_libc STATIC
 # -fno-builtin keeps clang from turning these implementations into calls
 # to themselves (they also carry no_builtin).
 target_compile_options(gba_libc PRIVATE -fno-builtin)
+# Not LTO (with SM_LTO): code that LTO generates calls these (and
+# compiler-rt's) by name, which bitcode in an archive can't answer.
+target_compile_options(gba_libc PRIVATE -fno-lto)
 set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS "-marm")
 
 # compiler-rt builtins for operations ARMv4T has no instructions for:
@@ -31,6 +34,8 @@ sm_add_builtins(gba_builtins
     clzsi2.c                # __clzsi2
     ctzsi2.c                # __ctzsi2
 )
+
+target_compile_options(gba_builtins PRIVATE -fno-lto)
 
 # The game itself, as decompiled: everything but the PC's platform layer and
 # the SNES emulator it checks the game against.

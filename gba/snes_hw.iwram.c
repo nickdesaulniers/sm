@@ -3,6 +3,10 @@
 //
 // ARM code in IWRAM, as the game's DMA and the SNES's display of each frame
 // run through here. (So no division: see cmake/compiler-rt.cmake.)
+// This file's functions (and the headers' inline ones it emits) are in
+// IWRAM, as ARM (see CMakeLists.txt), but for those ROM_CODE puts in ROM.
+#pragma clang section text = ".iwram.text"
+
 #include "snes_hw.h"
 
 #include <stddef.h>

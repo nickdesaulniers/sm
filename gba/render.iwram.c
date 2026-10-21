@@ -37,6 +37,10 @@
 // Sprite tiles keep the SNES's layout of 16 to a row, in the left half of
 // the GBA's rows of 32 (2D mapping), with a copy in the right half, so that
 // sprites whose tiles wrap around a row come out right.
+// This file's functions (and the headers' inline ones it emits) are in
+// IWRAM, as ARM (see CMakeLists.txt), but for those ROM_CODE puts in ROM.
+#pragma clang section text = ".iwram.text"
+
 #include "render.h"
 
 #include <stdio.h>

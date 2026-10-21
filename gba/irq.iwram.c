@@ -1,4 +1,8 @@
 // The interrupt handler, which irq_entry.S calls in ARM state.
+// This file's functions (and the headers' inline ones it emits) are in
+// IWRAM, as ARM (see CMakeLists.txt), but for those ROM_CODE puts in ROM.
+#pragma clang section text = ".iwram.text"
+
 #include "audio.h"
 #include "display.h"
 #include "gba_hw.h"

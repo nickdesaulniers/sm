@@ -1,9 +1,11 @@
 /* Linker script for the GBA cartridge.
  * https://problemkaputt.de/gbatek.htm#gbamemorymap
  *
- * Code runs from the cartridge, except *.iwram.c and .iwram sections, which
- * go to IWRAM. Data goes to EWRAM (the game's 128 KB of SNES RAM is most of
- * it), except .iwram.data and .iwram_bss. */
+ * Code runs from the cartridge, but for sections named .iwram*, which go
+ * to IWRAM: the source places them (*.iwram.c files with a pragma, functions
+ * elsewhere with GBA_IWRAM_CODE, ROM_CODE back in ROM), as LTO leaves no
+ * files to place by name. Data goes to EWRAM (the game's 128 KB of SNES RAM
+ * is most of it), except .iwram.data and .iwram_bss. */
 ENTRY(_start)
 
 MEMORY {
@@ -30,7 +32,7 @@ SECTIONS {
     } > rom
 
     .text : {
-        *(EXCLUDE_FILE(*.iwram.c.o*) .text .text.*)
+        *(.text .text.*)
         /* ROM_CODE (gba_hw.h): from *.iwram.c files, but not hot. */
         *(.romtext .romtext.*)
     } > rom
@@ -38,7 +40,6 @@ SECTIONS {
 
     .iwram : ALIGN(4) {
         __iwram_start = .;
-        *.iwram.c.o*(.text .text.*)
         *(.iwram .iwram.*)
         . = ALIGN(4);
         __iwram_end = .;
