@@ -78,6 +78,9 @@ void gba_main(void) {
   // for VBlank); and how often the sound ran out.
   uint32_t frames = 0, game_cycles = 0, audio_cycles = 0, render_cycles = 0;
   uint32_t vblanks = g_vblank_count, audio_start = g_audio_cycles;
+  // And the frames that took more than one of the GBA's, with the slowest's
+  // work, for players' logs: cheap, as the line's printed anyway.
+  uint32_t slow = 0, worst[4] = {0, 0, 0, 0}, presented_audio = g_audio_cycles;
   for (;;) {
     g_snes_hw.joy1 = Input_ReadJoypad();
     uint16_t state = game_state;
@@ -151,6 +154,7 @@ void gba_main(void) {
     Render_CaptureFrame();
     uint32_t t2 = Cycles(), a2 = g_audio_cycles;
     static uint32_t presented_at;
+    uint32_t last_presented = presented_at;
     WaitForVBlank(presented_at);
     uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
@@ -166,18 +170,34 @@ void gba_main(void) {
         Audio_Kick();
       }
 #endif
-    game_cycles += (t1 - t0) - (a1 - a0);
-    render_cycles += (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
+    uint32_t game = (t1 - t0) - (a1 - a0), render = (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
+    uint32_t audio_now = a4 - presented_audio;
+    presented_audio = a4;
+    game_cycles += game;
+    render_cycles += render;
+    if (presented_at - last_presented > 1) {
+      slow++;
+      if (game + render + audio_now > worst[0] + worst[1] + worst[2]) {
+        worst[0] = game, worst[1] = render, worst[2] = audio_now;
+        worst[3] = presented_at - last_presented;
+      }
+    }
     if (++frames == 60) {
       uint32_t v = g_vblank_count, audio = g_audio_cycles;
       audio_cycles = (audio - audio_start) / (v - vblanks);
       audio_start = audio;
       printf("sm: 60 frames in %u vblanks; cycles/frame: game %u, audio %u, render %u; "
-             "state %u; stack %u; underruns %u\n",
+             "state %u; stack %u; underruns %u; room %04x",
              (unsigned)(v - vblanks), (unsigned)(game_cycles / 60), (unsigned)audio_cycles,
-             (unsigned)(render_cycles / 60), (unsigned)game_state, StackUsed(), (unsigned)g_audio_underruns);
+             (unsigned)(render_cycles / 60), (unsigned)game_state, StackUsed(), (unsigned)g_audio_underruns,
+             room_ptr);
+      if (slow)
+        printf("; slow %u, the slowest %u vblanks: game %u, audio %u, render %u", (unsigned)slow,
+               (unsigned)worst[3], (unsigned)worst[0], (unsigned)worst[2], (unsigned)worst[1]);
+      printf("\n");
       vblanks = v;
-      frames = game_cycles = audio_cycles = render_cycles = 0;
+      frames = game_cycles = audio_cycles = render_cycles = slow = 0;
+      worst[0] = worst[1] = worst[2] = worst[3] = 0;
     }
   }
 }
