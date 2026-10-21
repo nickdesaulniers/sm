@@ -6,7 +6,8 @@
 // TRACE is the log of a cartridge built with -DSM_TRACE=ON (from smrun):
 // its "joy: FRAME VALUE" lines are the joypad (JOY1), frame by frame. With
 // the same skipping of the intro as gba/main.c (-DSM_SKIP_INTRO=ON
-// -DSM_START_ZEBES=ON; with CERES=1, without SM_START_ZEBES), this runs
+// -DSM_START_ZEBES=ON; with CERES=1, without SM_START_ZEBES; with INTRO=1,
+// neither, for the whole intro), this runs
 // FRAMES frames of the PC's C code (mine), or of it and the original,
 // emulated, compared every frame (both, the default: a mismatch prints
 // "Verify failure!"), and prints the same "t:" lines as the GBA's, to
@@ -102,10 +103,11 @@ int main(int argc, char **argv) {
   bug_fix_counter = 1;
   uint16 intro_frames = 0;
   bool ceres = getenv("CERES") != NULL;
+  bool intro = getenv("INTRO") != NULL;
   for (int fr = 0; fr < frames; fr++) {
-    if (game_state == 30 && ++intro_frames == 60)
+    if (!intro && game_state == 30 && ++intro_frames == 60)
       cinematic_function = (uint16)0x8BC0C5;  // CinematicFunction_Intro_Func72
-    if (!ceres && game_state == 31 && loading_game_state == 0x1f)
+    if (!intro && !ceres && game_state == 31 && loading_game_state == 0x1f)
       loading_game_state = 0x22;  // kLoadingGameState_22_EscapingCeres
     // JOY1's bits, B first, are the emulated joypad's from bit 0.
     int input = 0;
