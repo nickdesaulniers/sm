@@ -26,12 +26,15 @@ static void MissingCartData(void) {
   for (;;) {}
 }
 
+void InitDivide(void);
+
 void RtlInit(void) {
   if (memcmp(__cart_data.magic, CART_DATA_MAGIC, 8) || __cart_data.version != kCartDataVersion ||
       __cart_data.snes_rom_size != kSnesRomSize)
     MissingCartData();
   for (int i = 0; i < 0x2000; i++)
     sram[i] = GBA_SRAM[i];
+  InitDivide();
 }
 
 void Die(const char *error) {
@@ -78,12 +81,28 @@ uint16 Mult8x8(uint8 a, uint8 b) {
   return a * b;
 }
 
-uint16 SnesDivide(uint16 a, uint8 b) {
-  return (b == 0) ? 0xffff : a / b;
+// The SNES's divider, by multiplying: a / b is the top word of a times
+// 2^32 / b rounded up, for any 16-bit a and b from 2 to 255 (it's less than
+// 2^-16 over, and a / b's fraction is at most 1 - 1/b: checked for all of
+// them). The fades between rooms divide some 1500 times a frame, which the
+// ARM7TDMI does in software, slowly; this is a umull, in ARM.
+static uint32_t reciprocals[256];
+
+void InitDivide(void) {
+  for (int b = 2; b < 256; b++)
+    reciprocals[b] = 0xffffffffu / b + 1;
 }
 
-uint16 SnesModulus(uint16 a, uint8 b) {
-  return (b == 0) ? a : a % b;
+GBA_IWRAM_CODE uint16 SnesDivide(uint16 a, uint8 b) {
+  if (b < 2)
+    return b ? a : 0xffff;
+  return (uint64_t)a * reciprocals[b] >> 32;
+}
+
+GBA_IWRAM_CODE uint16 SnesModulus(uint16 a, uint8 b) {
+  if (b < 2)
+    return b ? 0 : a;
+  return a - (uint16)((uint64_t)a * reciprocals[b] >> 32) * b;
 }
 
 // The GBA's SRAM is 8 bits wide: a byte at a time.
