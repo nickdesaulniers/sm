@@ -1,57 +1,126 @@
-# sm
+# Super Metroid for the Game Boy Advance
 
-Our discord server is: https://discord.gg/AJJbJAzNNJ
+<p align="center">
+  <img src="docs/images/title.png" width="240" alt="The title screen">
+  <img src="docs/images/ceres.png" width="240" alt="Escaping Ceres station">
+  <img src="docs/images/crateria.png" width="240" alt="Samus at her ship in the rain">
+  <img src="docs/images/brinstar.png" width="240" alt="Brinstar">
+  <br>
+  <img src="docs/images/norfair.png" width="240" alt="Norfair">
+  <img src="docs/images/wrecked-ship.png" width="240" alt="The Wrecked Ship">
+  <img src="docs/images/maridia.png" width="240" alt="Maridia">
+  <img src="docs/images/tourian.png" width="240" alt="Tourian">
+</p>
 
-Early version. It has bugs and the code is messy.
+Super Metroid, running natively on the Game Boy Advance. The game itself is
+the [snesrev/sm](https://github.com/snesrev/sm) decompilation, the SNES game's
+code rewritten as C. This port compiles that C for the GBA's ARM7TDMI and
+replaces the SNES's graphics, sound and input with the GBA's own. Nothing is
+emulated: the game runs at 60 frames per second in most places. The GBA's
+16.8 MHz CPU has no time to spare for an emulator.
 
-For building instructions, see: https://github.com/snesrev/sm/blob/main/BUILDING.md
+The port includes none of the game's data. You build the cartridge from your
+own copy of the SNES ROM.
 
-Put sm.smc (sha1 hash da957f0d63d14cb441d215462904c4fa8519c613) in the root folder. When running, it will run both versions and compare frame by frame. If it detects a mismatch, it saves a snapshot in saves/ and displays a counter on screen counting down from 300.
+## Building the cartridge
 
-
-## Game Boy Advance
-
-The `gba-port` branch also builds the game for the Game Boy Advance, with
-clang and lld (no GCC, no devkitARM), with `sm.smc` built into the cartridge:
+You need clang and lld (it's built with LLVM 22), CMake, Python 3 and git.
+There's no devkitARM or GCC. On Debian or Ubuntu:
 
 ```
-cmake -B build-gba -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build-gba
+sudo apt install clang lld llvm cmake python3 git
 ```
 
-That makes `build-gba/sm-engine.gba`, the engine, and from it and your ROM,
-`build-gba/sm.gba`, the cartridge. Run `sm.gba` in mGBA. The engine has none
-of the game's data, so it can be shared: `tools/make_cartridge.py` makes a
-cartridge from it and a ROM.
+Then:
+
+1. Clone this repository and check out the `gba-port` branch:
+
+   ```
+   git clone -b gba-port https://github.com/<you>/sm.git
+   cd sm
+   ```
+
+2. Put your Super Metroid ROM in that directory and name it `sm.smc`. It must
+   be the US release without a copier header (sha1
+   `da957f0d63d14cb441d215462904c4fa8519c613`).
+
+3. Build:
+
+   ```
+   ./build-gba.sh
+   ```
+
+   The first build also fetches LLVM's compiler-rt sources, a few MB, for the
+   division routines the ARM7TDMI lacks. It then compiles the game and
+   prepares the ROM's data for the GBA: the graphics are converted as the game
+   loads them, and the sound samples are decoded ahead of time.
+
+4. The cartridge is `sm.gba`, in the same directory. Run it in
+   [mGBA](https://mgba.io) or on a flash cartridge. Saves go to the
+   cartridge's SRAM (in an emulator, a `.sav` file next to `sm.gba`).
+
+Instead of building it all, you can download `sm-engine.gba` and
+`make_cartridge.py` from a release and add your ROM's data to the engine:
 
 ```
-python3 tools/make_cartridge.py sm-engine.gba sm.smc sm.gba
+python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
 ```
 
-GitHub builds the engine for each push (`.github/workflows/gba.yml`), and for a
-tag named `v*`, publishes a release of it with `make_cartridge.py`.
+## Reading more
 
-The game runs natively, not in an emulator: `gba/` replaces the PC's
-platform layer, at 60 frames per second in most places. In gameplay, the
-SNES's 256x224 picture is shown 1:1, cropped to the GBA's 240x160 around
-Samus; elsewhere (the title, menus, the pause screen), all of it, squashed.
-The sound plays, with the SNES's echo, if with the GBA's 8-bit hiss. The
-SNES's color math and windows are there as far as the GBA can do them:
-rain, fog and water over the rooms, tints, the X-ray scope's cone and
-power bombs' explosions (brightening, not yellow).
+- [How this port was made](docs/HOW-IT-WAS-MADE.md): from a black screen to
+  every room of the game, and the bugs found on the way.
+- [Porting a SNES game to the GBA](docs/PORTING-GUIDE.md): a guide for agents
+  (and people) attempting a similar port. It covers the approach, the
+  hardware mapping, the tools for checking the result, and the pitfalls.
 
-Controls in gameplay work as in Metroid: Zero Mission and Fusion (the GBA
-has no X and Y buttons):
+## Controls
 
-| GBA          | Action                                                    |
-|--------------|-----------------------------------------------------------|
-| A            | Jump                                                      |
-| B            | Shoot                                                     |
-| R (hold)     | Ready missiles, or what Select picked; power bombs in morph ball |
-| L (hold)     | Aim diagonally up (with Down held: down)                  |
-| Select       | Pick what R readies: missiles, super missiles, grapple beam, X-ray scope |
-| Start        | Pause                                                     |
-| -            | Run: always on                                            |
+The SNES pad has X and Y buttons and the GBA doesn't, so gameplay uses the
+layout of the GBA Metroids, *Zero Mission* and *Fusion*:
 
-In menus and on the pause screen, the buttons are the SNES's buttons of the
-same names (B to go back).
+| Action                 | SNES (default)        | GBA                                  |
+|------------------------|-----------------------|--------------------------------------|
+| Jump                   | A                     | A                                    |
+| Shoot                  | X                     | B                                    |
+| Run                    | hold B                | always on                            |
+| Aim diagonally up      | R                     | hold L                               |
+| Aim diagonally down    | L                     | hold L + Down                        |
+| Pick an item           | Select cycles through them | Select picks what R readies |
+| Missiles (or the item) | pick, then X          | hold R, then B                       |
+| Power bombs            | pick, then X in morph ball | hold R in morph ball, then B    |
+| Put the item away      | Y                     | let go of R                          |
+| Pause, map             | Start                 | Start                                |
+
+So, as on the GBA Metroids, missiles are a shoulder button away: hold R and
+press B. Select cycles R's item through super missiles, the grapple beam and
+the X-ray scope, whichever Samus has found. Letting go of R doesn't drop
+Samus from the grapple beam. Because Samus always runs, the speed booster
+charges whenever she runs long enough.
+
+On the title screen, the menus and the pause screen, each button is the SNES
+button of the same name (B goes back).
+
+## How it differs from the SNES
+
+- **The screen.** The GBA's screen is 240x160, and the SNES's is 256x224.
+  During gameplay the GBA shows a 1:1 crop that follows Samus vertically, with
+  the HUD at the top. The title screen, menus and pause screen show the whole
+  SNES screen, squashed to fit.
+- **Sound.** The SNES's sound driver runs on the GBA's CPU, with the SNES's
+  echo, and a mixer in place of the SNES's sound chip. It sounds right but
+  has the GBA's 8-bit hiss.
+- **Effects.** The SNES's color math and windows are mapped onto the GBA's
+  blending and windows: rain, fog, water, heat shimmer, shadows, the X-ray
+  scope's cone and power bombs. The GBA can't subtract colors, so darkened
+  rooms are approximated, and power bombs' explosions brighten the screen
+  rather than turning it yellow.
+- **Speed.** A few places drop below 60 fps: some of Ceres station's rooms,
+  the X-ray scope, and big power bomb explosions.
+
+## The PC version
+
+This branch keeps the decompilation's PC build too, which runs the C code and
+the original game side by side and compares them frame by frame. See
+[BUILDING.md](BUILDING.md) for its build, and the
+[snesrev Discord](https://discord.gg/AJJbJAzNNJ) for the project.
