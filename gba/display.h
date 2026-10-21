@@ -56,6 +56,9 @@ typedef struct DisplayFrame {
 
 // The frame on show, or null: irq.iwram.c sets it up at every VBlank.
 extern const DisplayFrame *volatile g_display;
+// Whether render.c presented a frame since the last VBlank (main.c sets
+// it).
+extern volatile bool g_frame_presented;
 
 // Sets up g_display now, in VBlank, with interrupts disabled.
 void Display_Start(void);

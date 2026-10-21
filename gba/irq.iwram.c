@@ -2,9 +2,11 @@
 #include "audio.h"
 #include "display.h"
 #include "gba_hw.h"
+#include "snes_hw.h"
 
 volatile uint32_t g_vblank_count IWRAM_BSS;
 const DisplayFrame *volatile g_display IWRAM_BSS;
+volatile bool g_frame_presented IWRAM_BSS;
 static int next_segment IWRAM_BSS;
 
 static void SetSegment(const DisplayFrame *d, const DisplaySegment *s) {
@@ -83,6 +85,14 @@ static void VBlank(void) {
   Audio_VBlank();
   audio_kicked = false;
   StartAudioTimer(kAudioDelay);
+  // A frame of the game taking longer, with the screen turned off (as it
+  // loads a room's graphics, NMI off): off on the GBA too, not the last
+  // frame with its graphics going.
+  if (!g_frame_presented && (g_snes_hw.r.inidisp & 0x80)) {
+    g_display = 0;
+    REG_DISPCNT = kDispcntForcedBlank;
+  }
+  g_frame_presented = false;
   // Every frame, as a frame of the game can take more than one of the
   // GBA's.
   Display_Start();

@@ -3,6 +3,7 @@
 
 #include "audio.h"
 #include "convert.h"
+#include "display.h"
 #include "gba_hw.h"
 #include "input.h"
 #include "render.h"
@@ -138,6 +139,7 @@ void gba_main(void) {
     VBlankIntrWait();
     uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
+    g_frame_presented = true;
     uint32_t t4 = Cycles(), a4 = g_audio_cycles;
     Audio_Kick();
 #if SM_ROOM_TOUR
