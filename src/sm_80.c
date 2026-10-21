@@ -1659,8 +1659,18 @@ static void DrawTwoTimerDigits(uint16 a, uint16 k) {  // 0x809F95
   DrawTimerSpritemap(k + 8, kTimerDigitsSpritemapPtr[a & 0xF]);
 }
 
+#if SM_GBA
+// The GBA shows gameplay lower down the SNES's screen as Samus goes, and
+// sprites with it: the timer stays where it is on the screen.
+int Render_GameplayYOffset(void);
+#endif
+
 static void DrawTimerSpritemap(uint16 a, uint16 j) {  // 0x809FB3
-  DrawSpritemap(0x80, j, a + HIBYTE(timer_x_pos), HIBYTE(timer_y_pos), 2560);
+  uint16 y = HIBYTE(timer_y_pos);
+#if SM_GBA
+  y += Render_GameplayYOffset();
+#endif
+  DrawSpritemap(0x80, j, a + HIBYTE(timer_x_pos), y, 2560);
 }
 
 CoroutineRet StartGameplay_Async(void) {  // 0x80A07B

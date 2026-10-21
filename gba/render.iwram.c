@@ -106,14 +106,10 @@ static int back;
 static bool hud;
 // Outside gameplay (the title, menus, the pause screen), the SNES screen
 // squashed into the GBA's: 6 of each 8 lines (the SNES's 224 lines make
-// 168, less 8 at the top and bottom). Which two of each 8 (squash_drops:
-// a | b << 4), and how many lines off the top, SquashAnalysis works out
-// from what's on screen, so that text stays legible. kSquashLine[g] is the
-// SNES line on GBA line g, and sprites are scaled to match.
+// 168, less 4 at the top and bottom; see SetSquashLines). kSquashLine[g]
+// is the SNES line on GBA line g, and sprites are scaled to match.
 enum { kSquashTop = 4 };
 static bool squash;
-static int squash_top = kSquashTop;
-static uint8_t squash_drops[kSnesLines / 8];
 static uint8_t kSquashLine[kGbaLines];
 // Whether lines on show use Mode 7, and one that uses another mode, or -1.
 static bool frame_mode7;
@@ -169,7 +165,7 @@ static struct {
   int blank_tile;
   int brightness;
   uint32_t fixed_math;
-  bool mode7, bg3_palettes, split_bg2, obj_mirrored;
+  bool mode7, bg3_palettes, split_bg2, squashed;
   uint8_t subtract_palettes;
 } conv = {.blank_tile = -1, .brightness = -1};
 
@@ -181,26 +177,82 @@ static int SnesLine(int g) {
   return g < kGbaHudLines ? g + kHudBlankLines : g + kHudBlankLines + y_offset;
 }
 
-ROM_CODE static bool SquashDrops(int s) {
-  int d = squash_drops[s >> 3];
-  return (s & 7) == (d & 15) || (s & 7) == d >> 4;
+static int Luma(uint16_t color);
+
+// The lines that go, squashed: those that show rows 0 and 4 of the text's
+// layer's tiles (BG3's where it's on the main screen, or else BG1's), by
+// each line's registers and scrolling, so that they move with the text.
+// They're merged into rows 1 and 3 as the tiles are converted
+// (Convert_Tiles4bppSquashed), and text loses none of its strokes. And
+// kSquashTop of the rest off the top. Changes sprites' places, which go
+// with the lines.
+ROM_CODE static void SetSquashLines(void) {
+  // Unless which of each 4 lines go changed, at a line of each 8, as is
+  // usual, it's as it was.
+  static uint32_t sampled[2];
+  uint32_t now[2] = {0, 0};
+  for (int s = 4; s < kSnesLines; s += 8) {
+    int bg = line_states[line_state[s]].tm & 4 ? 2 : 0;
+    now[s >> 7] = now[s >> 7] << 2 | ((s + 1 + (line_ofs[s][bg] >> 16)) & 3);
+  }
+  if (now[0] == sampled[0] && now[1] == sampled[1])
+    return;
+  sampled[0] = now[0], sampled[1] = now[1];
+  bool changed = false;
+  int state = -1, bg = 0;
+  for (int s = 0, g = -kSquashTop; g < kGbaLines && s < kSnesLines; s++) {
+    if (line_state[s] != state) {
+      state = line_state[s];
+      bg = line_states[state].tm & 4 ? 2 : 0;
+    }
+    // (Line s shows row (s + 1 + VOFS) & 7.)
+    if (!((s + 1 + (line_ofs[s][bg] >> 16)) & 3))
+      continue;
+    if (g >= 0) {
+      changed |= kSquashLine[g] != s;
+      kSquashLine[g] = s;
+    }
+    g++;
+  }
+  if (changed)
+    g_snes_hw.oam_dirty = true;
 }
 
-// The lines squash_drops says go, and |top| of the rest off the top.
-ROM_CODE static void SetSquashLines(int top) {
-  for (int s = 0, g = -top; g < kGbaLines; s++) {
-    if (SquashDrops(s))
-      continue;
-    if (g >= 0)
-      kSquashLine[g] = s;
-    g++;
+ROM_CODE static void SetSquashRanks(void) {
+  // BG palette 0's colors by brightness, for merging rows: once a screen,
+  // when its colors aren't dark (as they fade in; then they may change, as
+  // the game animates them, but not their order, as a rule), and if it's
+  // another order, the tiles again.
+  static uint32_t rank_key;
+  const PpuRegs *r = LINE_REGS(kSnesLines / 2);
+  uint32_t key = r->tm | r->bgsc[0] << 8 | r->bgsc[1] << 16 | r->bgsc[2] << 24;
+  if (key != rank_key) {
+    static uint8_t rank[16];
+    uint8_t luma[16], now[16];
+    int most = 0;
+    for (int c = 0; c < 16; c++) {
+      luma[c] = Luma(g_cgram[c]);
+      most = luma[c] > most ? luma[c] : most;
+    }
+    if (most >= 16) {
+      rank_key = key;
+      for (int c = 0; c < 16; c++) {
+        now[c] = 0;
+        for (int d = 0; d < 16; d++)
+          now[c] += luma[d] < luma[c] || (luma[d] == luma[c] && d > c);
+      }
+      if (memcmp(now, rank, sizeof(rank))) {
+        memcpy(rank, now, sizeof(rank));
+        Convert_SetSquashRanks(rank);
+        conv.bg12_base = conv.bg3_base = 0xffff;
+      }
+    }
   }
 }
 
 ROM_CODE void Render_Init(void) {
-  for (int i = 0; i < kSnesLines / 8; i++)
-    squash_drops[i] = 3 | 7 << 4;
-  SetSquashLines(kSquashTop);
+  for (int g = 0; g < kGbaLines; g++)
+    kSquashLine[g] = g + kSquashTop;
   REG_DISPCNT = kDispcntForcedBlank;
   DmaFill32(GBA_VRAM, 0, 0x18000);
   for (int i = 0; i < 128; i++)
@@ -589,12 +641,21 @@ static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
   return true;
 }
 
-static void UpdateYOffset(void) {
+ROM_CODE int Render_GameplayYOffset(void) {
+  return hud ? y_offset : 0;
+}
+
+ROM_CODE static void UpdateYOffset(void) {
   int target;
   if (hud) {
-    // Samus in the middle of the gameplay area, as far as it goes.
-    int samus_y = (int16_t)(samus_y_pos - layer1_y_pos);
-    target = samus_y - (kHudLines + (kGbaLines - kGbaHudLines) / 2);
+    // Samus in the middle of the gameplay area, as far as it goes: by her
+    // feet, standing's 21 lines below her middle (which moves as she
+    // crouches or curls up), and only once she's 12 lines from where she
+    // would be (not as she ducks, or walks over a bump).
+    int feet = (int16_t)(samus_y_pos + samus_y_radius - layer1_y_pos);
+    int middle = kHudLines + (kGbaLines - kGbaHudLines) / 2 + y_offset;
+    int away = feet - 21 - middle;
+    target = y_offset + (away > 12 ? away - 12 : away < -12 ? away + 12 : 0);
     target = target < 0 ? 0 : target > kMaxYOffset ? kMaxYOffset : target;
   } else {
     target = kMaxYOffset / 2;
@@ -713,28 +774,6 @@ ROM_CODE static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8
   return error;
 }
 
-// Working memory of SubtractWeight (in gameplay) and SquashAnalysis
-// (outside it), which never run at once; each starts over when the other
-// has had it.
-enum { kWeightSamples = 40, kCached = 64, kEdge = 16 };
-static union {
-  struct {
-    uint8_t pixels[3][kWeightSamples], mains[kWeightSamples];
-    uint16_t main_colors[kWeightSamples], sub_colors[kWeightSamples];
-    uint8_t opaque_at[kWeightSamples];
-  } weight;
-  struct {
-    // By line, the tiles of text that would lose something if it went.
-    uint8_t loss[kSnesLines];
-    // What tiles had, by their VRAM address, palette, flips and layer type.
-    uint16_t cached_tile[kCached];
-    uint8_t cached_attr[kCached], cached_peaks[kCached];
-    // Lines 0 to kEdge - 1 and kSnesLines - kEdge on: their pixels.
-    uint16_t edge[2 * kEdge];
-  } squash;
-} scratch;
-static uint32_t subtract_key;
-static bool squash_fresh = true;
 
 // For the line |r|, which subtracts the sub screen, by a few dozen of its
 // pixels on show and the main screen's there: the GBA's way that comes
@@ -755,11 +794,12 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
   // all, from the cartridge): frames 0-4 take 8 samples each, 5 looks at
   // them, 6-8 search a channel each, 9 says what's best; 10-15 rest. If the
   // registers change partway, it starts over.
-  enum { kColumns = 8, kRows = 5, kSamples = kWeightSamples, kPerFrame = 8 };
+  enum { kColumns = 8, kRows = 5, kSamples = kColumns * kRows, kPerFrame = 8 };
   static uint8_t phase;
-  uint8_t(*pixels)[kSamples] = scratch.weight.pixels, *mains = scratch.weight.mains;
-  uint16_t *main_colors = scratch.weight.main_colors, *sub_colors = scratch.weight.sub_colors;
-  uint8_t *opaque_at = scratch.weight.opaque_at;
+  static uint32_t key;
+  static uint8_t pixels[3][kSamples], mains[kSamples];
+  static uint16_t main_colors[kSamples], sub_colors[kSamples];
+  static uint8_t opaque_at[kSamples];
   static int best, weight, darkened, averaged, added_back, darkest[3], brightest[3];
   static uint16_t mean, top;
   static bool add_back;
@@ -770,8 +810,8 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
   static bool fresh = true;
   if (game_state != 8)
     fresh = true;
-  if (now != subtract_key) {
-    subtract_key = now;
+  if (now != key) {
+    key = now;
     phase = 0;
     fresh = true;
   }
@@ -950,292 +990,32 @@ ROM_CODE static void KeepLayersOn(DisplaySegment *segs, int n) {
   }
 }
 
-// Of the rows of a tile (as SNES bit planes, a byte each), their pixels
-// whose colors are among |bright| (by index, a bit each), as bits: 8 at a
-// time, a color at a time. (A pixel's that color where each plane, or its
-// inverse, has it: 2bpp's planes 2 and 3 are 0, so their inverses do.)
-ROM_CODE static void Ink(int rows[8], const uint32_t planes[8], uint32_t bright) {
-  for (int y = 0; y < 8; y++)
-    rows[y] = 0;
-  for (int c = 1; bright >> c; c++) {
-    if (!(bright >> c & 1))
-      continue;
-    uint32_t invert = (c & 1 ? 0 : 0xff) | (c & 2 ? 0 : 0xff00) | (c & 4 ? 0 : 0xff0000) |
-                      (c & 8 ? 0 : 0xff000000);
-    for (int y = 0; y < 8; y++) {
-      uint32_t w = planes[y] ^ invert;
-      w &= w >> 16;
-      rows[y] |= w & w >> 8 & 0xff;
-    }
-  }
-}
-
-ROM_CODE static int CountBits(int bits) {
-  static const uint8_t kBits[16] = {0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
-  return kBits[bits & 15] + kBits[bits >> 4];
-}
-
-// Tile rows' that would (bits, from the top), for a row of tiles from
-// SNES line |first|.
-ROM_CODE static void CountPeaks(int first, int peaks) {
-  for (int y = 0; y < 8; y++, peaks >>= 1) {
-    int s = first + y;
-    if ((peaks & 1) && s >= 0 && s < kSnesLines && scratch.squash.loss[s] < 255)
-      scratch.squash.loss[s]++;
-  }
-}
-
-// Of SNES lines 8 * |i| on, the two that lose least go, if less than those
-// that do now. Returns 1 if they changed, | 2 if any would lose anything.
-ROM_CODE static int SquashDecide(int i) {
-  const uint8_t *l = &scratch.squash.loss[i * 8];
-  int d = squash_drops[i], best = l[d & 15] + l[d >> 4];
-  for (int a = 0; a < 8; a++) {
-    for (int b = a + 1; b < 8; b++) {
-      if (l[a] + l[b] < best)
-        best = l[a] + l[b], d = a | b << 4;
-    }
-  }
-  int result = (d != squash_drops[i]) | ((l[0] | l[1] | l[2] | l[3] | l[4] | l[5] | l[6] | l[7]) != 0) << 1;
-  squash_drops[i] = d;
-  return result;
-}
-
-// Which two of each 8 SNES lines squash drops (each 8 its own), and how
-// many of the rest go off the top: those that lose least of the text on
-// screen. A line of a tile would lose its pixels brighter than those above
-// and below it: text's thin strokes across (not its outlines and shadows,
-// darker than what they're next to). What counts is the tiles that would
-// lose a run of them, of tiles with those on a few rows (text's strokes,
-// not pictures', which are on most, or scattered; pictures lose about as
-// much whichever lines go); and of the lines at the top and bottom, all
-// they show. The tiles are the main screen's, by each row's registers.
-// A few tiles a frame, when anything changed (and it's not Mode 7); it
-// changes only for less lost, so that it doesn't flit between two.
-ROM_CODE static void SquashAnalysis(void) {
-  enum { kRows = kSnesLines / 8 };
-  // Where it's got to: a row of tiles (the one with line row * 8 + 4), a
-  // column of BG1 (0-32), BG2 (33-65) or BG3 (66-98).
-  static uint8_t row = kRows, column;
-  // What SquashDecide said, so far.
-  static uint8_t decided;
-  static bool changed = true, running;
-  static uint32_t key[4];
-  uint16_t *edge = scratch.squash.edge;
-  // Changes to VRAM, the colors or the scrolling (as text appears, or
-  // pictures move) wait |hold| frames after it last finished: twice what
-  // it took (up to four seconds), so that it takes a third of the frames at
-  // most; after a new screen's first look, or a change, half a second at
-  // most (more of it may have appeared). Changes to the layers don't wait,
-  // and start it over.
-  static uint8_t hold, took;
-  // Of each palette, its colors' brightness, 0-3 (by a quarter of its
-  // brightest), as the colors (by index, a bit each) with 2 and with 1 in
-  // it: BG1 and BG2's, BG3's. Worked out as tiles need them, since the
-  // colors last changed (bits: BG1 and BG2's palettes, BG3's).
-  static uint16_t levels[2][8][2], known;
-  uint16_t *cached_tile = scratch.squash.cached_tile;
-  uint8_t *cached_attr = scratch.squash.cached_attr, *cached_peaks = scratch.squash.cached_peaks;
-  const int line = kSnesLines / 2;
-  const PpuRegs *r = LINE_REGS(line);
-  uint32_t now_key[4] = {r->tm | r->bgsc[0] << 8 | r->bgsc[1] << 16 | r->bgsc[2] << 24,
-                         r->bgnba[0] | r->bgnba[1] << 8, line_ofs[line][0] ^ line_ofs[line][1] << 3,
-                         line_ofs[line][2]};
-  bool moved = now_key[0] != key[0] || now_key[1] != key[1];
-  for (int i = 0; i < 4; i++)
-    changed |= now_key[i] != key[i], key[i] = now_key[i];
-  changed |= g_snes_hw.cgram_dirty;
-  for (int i = 0; i < kVramChunks / 32 && !changed; i++)
-    changed = g_vram_dirty[i] != 0;
-  if ((r->bgmode & 7) != 1 || squash_fresh) {
-    // (After SubtractWeight had the working memory, too.)
-    running = false;
-    hold = 0;
-    changed = true;
-    squash_fresh = false;
-    if ((r->bgmode & 7) != 1)
-      return;
-  }
-  static bool first_look;
-  if (moved || !running) {
-    if (hold && !moved) {
-      hold--;
-      return;
-    }
-    if (!changed)
-      return;
-    first_look = moved;
-    took = 0;
-    running = true;
-    changed = false;
-    row = column = 0;
-    decided = 0;
-    memset(scratch.squash.loss, 0, sizeof(scratch.squash.loss));
-    memset(cached_tile, 0xff, sizeof(scratch.squash.cached_tile));
-    memset(edge, 0, sizeof(scratch.squash.edge));
-  }
-  if (g_snes_hw.cgram_dirty || (!row && !column)) {
-    known = 0;
-    memset(cached_tile, 0xff, sizeof(scratch.squash.cached_tile));
-  }
-  // A budget a frame: 16 for a tile, 4 for a blank one, 1 for the blank
-  // one again (most of a screen of text), one as before or one in a
-  // palette that's all black.
-  static uint16_t blank = 0xffff;
-  if (!row && !column)
-    blank = 0xffff;
-  for (int budget = 24; budget > 0 && row < kRows; budget--) {
-    // The layers by that line's registers.
-    int at = row * 8 + 4, bg = column / 33, j = column % 33;
-    if (++column == 99) {
-      column = 0;
-      // Lines row * 8 - 8 on are all counted, from rows of tiles row - 2 to
-      // row: those can go now.
-      if (++row >= 2) {
-        int d = SquashDecide(row - 2);
-        decided |= d;
-        if (d & 1)
-          SetSquashLines(squash_top);
-      }
-    }
-    const PpuRegs *regs = LINE_REGS(at);
-    if ((regs->bgmode & 7) != 1 || !(regs->tm & (1 << bg)))
-      continue;
-    uint8_t sc = regs->bgsc[bg];
-    int vofs = VOFS(at, bg), hofs = HOFS(at, bg);
-    // The row of tiles there, and the SNES line of its first row; column j.
-    int by = (vofs + 1 + at) & 0x3ff, first = at - (by & 7);
-    by &= ~7;
-    int bx = ((hofs & ~7) + j * 8) & 0x3ff;
-    int screen = (bx >> 8) & (sc & 1);
-    screen += (by >> 8) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
-    uint16_t e =
-        g_vram[((sc & 0xfc) << 8 | screen << 10 | ((by >> 3) & 31) << 5 | ((bx >> 3) & 31)) &
-               0x7fff];
-    int nba = (bg == 2 ? regs->bgnba[1] : regs->bgnba[0] >> (bg * 4)) & 15;
-    int words = bg == 2 ? 8 : 16;
-    uint16_t at_tile = ((nba << 12) + (e & 0x3ff) * words) & 0x7fff;
-    if (at_tile == blank)
-      continue;
-    int p = (e >> 10) & 7, two = bg == 2;
-    // Rows near the top and bottom count their pixels too, for how many
-    // lines go off; others are as the same tile was, in the same colors and
-    // way up, last (as text's letters, and patterns, repeat).
-    bool edge_row = first < kEdge || first + 8 > kSnesLines - kEdge;
-    int slot = (at_tile >> 3 ^ e >> 10) & (kCached - 1);
-    uint8_t attr = (e >> 10 & 0x27) | two << 3;
-    if (!edge_row && cached_tile[slot] == at_tile && cached_attr[slot] == attr) {
-      CountPeaks(first, cached_peaks[slot]);
-      continue;
-    }
-    if (!(known & 1 << (two * 8 + p))) {
-      known |= 1 << (two * 8 + p);
-      int n = two ? 4 : 16, most = 16;
-      const uint16_t *cgram = &g_cgram[p * n];
-      for (int c = 1; c < n; c++)
-        most = Luma(cgram[c]) > most ? Luma(cgram[c]) : most;
-      levels[two][p][0] = levels[two][p][1] = 0;
-      for (int c = 1; c < n; c++) {
-        int l = Luma(cgram[c]) * 4, level = (l > most) + (l > 2 * most) + (l > 3 * most);
-        levels[two][p][0] |= (level >> 1) << c;
-        levels[two][p][1] |= (level & 1) << c;
-      }
-    }
-    const uint16_t *level = levels[two][p];
-    if (!(level[0] | level[1]))
-      continue;
-    budget -= 3;
-    const uint16_t *t = &g_vram[at_tile];
-    uint32_t planes[8], any = 0;
-    for (int y = 0; y < 8; y++) {
-      int ty = e & 0x8000 ? 7 - y : y;
-      planes[y] = t[ty] | (words == 16 ? (uint32_t)t[ty + 8] << 16 : 0);
-      any |= planes[y];
-    }
-    if (!any) {
-      blank = at_tile;
-      continue;
-    }
-    // Each pixel's brightness, as bits 1 and 0 of 8 at a time.
-    int hi[10] = {0}, lo[10] = {0};
-    Ink(hi + 1, planes, level[0]);
-    Ink(lo + 1, planes, level[1]);
-    budget -= 12;
-    // Its rows with runs of pixels brighter than those above and below: a
-    // few, for text's strokes; most, for a picture's, which doesn't count
-    // (nor do a picture's scattered pixels).
-    int peaks = 0;
-    for (int y = 1; y <= 8; y++) {
-      int up = (hi[y] & ~hi[y - 1]) | (~(hi[y] ^ hi[y - 1]) & lo[y] & ~lo[y - 1]);
-      int down = (hi[y] & ~hi[y + 1]) | (~(hi[y] ^ hi[y + 1]) & lo[y] & ~lo[y + 1]);
-      peaks |= (CountBits(up & down & 0xff) >= 2) << (y - 1);
-    }
-    if (CountBits(peaks) > 4)
-      peaks = 0;
-    cached_tile[slot] = at_tile;
-    cached_attr[slot] = attr;
-    cached_peaks[slot] = peaks;
-    CountPeaks(first, peaks);
-    for (int y = 1; y <= 8; y++) {
-      int s = first + y - 1;
-      if (s >= 0 && s < kEdge)
-        edge[s] += CountBits(hi[y] | lo[y]);
-      else if (s >= kSnesLines - kEdge && s < kSnesLines)
-        edge[s - kSnesLines + 2 * kEdge] += CountBits(hi[y] | lo[y]);
-    }
-  }
-  if (took < 120)
-    took++;
-  if (row < kRows)
+// Squashed outside gameplay: switched while the screen's dark, between
+// gameplay and the pause screen, the title or a cutscene (a frame of one
+// shown as the other would be squashed, or not, wrongly), or at most a
+// second after the game state did.
+ROM_CODE static void SetSquash(void) {
+  static uint8_t waited;
+  bool want = game_state < 7 || game_state > 11;
+  if (want == squash) {
+    waited = 0;
     return;
-  running = false;
-  hold = 2 * took;
-  decided |= SquashDecide(kRows - 1);
-  bool any = decided & 2, moved_lines = decided & 1;
-  // Nothing on show yet (as when the screen's still black): the next change
-  // needn't wait.
-  if (!any)
-    hold = 0;
-  // Of the 168 lines left, 8 don't fit: the fewest pixels off the top and
-  // bottom, and if it's the same, as near even as can be.
-  uint32_t cost[9] = {0};
-  for (int top = 0; top <= 8; top++) {
-    int n = 0;
-    for (int s = 0; n < top; s++) {
-      if (!SquashDrops(s))
-        cost[top] += edge[s], n++;
-    }
-    n = 0;
-    for (int s = kSnesLines - 1; n < 8 - top; s--) {
-      if (!SquashDrops(s))
-        cost[top] += edge[s - kSnesLines + 2 * kEdge], n++;
-    }
   }
-  int top = squash_top;
-  for (int i = 0; i <= 8; i++) {
-    int d = i > kSquashTop ? i - kSquashTop : kSquashTop - i;
-    int dt = top > kSquashTop ? top - kSquashTop : kSquashTop - top;
-    if (cost[i] < cost[top] || (cost[i] == cost[top] && d < dt))
-      top = i;
-  }
-  if (first_look || top != squash_top || moved_lines)
-    hold = hold < 30 ? hold : 30;
-  if (top != squash_top || moved_lines) {
-    squash_top = top;
-    SetSquashLines(top);
-    g_snes_hw.oam_dirty = true;
+  const PpuRegs *r = LINE_REGS(kSnesLines / 2);
+  if ((r->inidisp & 0x80) || !(r->inidisp & 15) || ++waited >= 60) {
+    squash = want;
+    waited = 0;
   }
 }
 
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh, line_ofs);
 
-  squash = game_state < 7 || game_state > 11;
+  SetSquash();
   if (squash) {
-    SquashAnalysis();
-    subtract_key = ~0u;
-  } else {
-    squash_fresh = true;
+    SetSquashLines();
+    if (g_snes_hw.cgram_dirty)
+      SetSquashRanks();
   }
   // The HUD: BG3 alone, and below it, other layers or another BG3 (in
   // rooms with fog, BG3 alone again, the room on the sub screen, and
@@ -1495,8 +1275,8 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
     warned_bg2_base = bg2_base;
   }
   if (bg12_base != conv.bg12_base || bg3_base != conv.bg3_base || obj0 != conv.obj_base[0] ||
-      obj1 != conv.obj_base[1] || squash != conv.obj_mirrored) {
-    conv.obj_mirrored = squash;
+      obj1 != conv.obj_base[1] || squash != conv.squashed) {
+    conv.squashed = squash;
     conv.bg12_base = bg12_base;
     conv.bg3_base = bg3_base;
     conv.obj_base[0] = obj0;
@@ -1507,6 +1287,7 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
 
   volatile uint32_t *vram32 = (volatile uint32_t *)GBA_VRAM;
   volatile uint32_t *obj32 = (volatile uint32_t *)GBA_OBJ_VRAM;
+
   for (uint32_t w = 0; w < kVramChunks / 32; w++) {
     uint32_t bits = dirty[w];
     while (bits) {
@@ -1518,12 +1299,13 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
       if (bg12) {
         off = (addr - bg12_base) & 0x7fff;
         if (off < 0x4000)
-          Convert_Tiles4bpp(vram32 + (off >> 4) * 8, src, 1);
+          (squash ? Convert_Tiles4bppSquashed : Convert_Tiles4bpp)(vram32 + (off >> 4) * 8, src, 1);
       }
       if (bg3) {
         off = (addr - bg3_base) & 0x7fff;
         if (off < kBg3Tiles * 8)
-          Convert_Tiles2bpp(vram32 + 0x8000 / 4 + (off >> 3) * 8, src, 2);
+          (squash ? Convert_Tiles2bppSquashed : Convert_Tiles2bpp)(vram32 + 0x8000 / 4 + (off >> 3) * 8,
+                                                                 src, 2);
       }
       for (int t = 0; t < 2; t++) {
         off = (addr - conv.obj_base[t]) & 0x7fff;
@@ -1652,10 +1434,10 @@ ROM_CODE static void SetSquashMatrices(void) {
 //   the GBA flips by a scale of -1 about the middle, which takes columns
 //   width..1, not width - 1..0. UpdateTiles puts each tile flipped at 31 -
 //   its column, and those, in reverse order, are the sprite flipped.
-static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, int shape) {
+ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, int shape) {
   uint8_t attr = e[3];
   int height = kObjHeight[shape], y = e[1] >= kSnesLines ? e[1] - 256 : e[1];
-  int middle = (((y + height / 2) * 3) >> 2) - squash_top;
+  int middle = (((y + height / 2) * 3) >> 2) - kSquashTop;
   int column = e[2] & 15;
   if (height == 8) {
     o[0] = ((middle - 4) & 0xff) | (shape >> 2) << 14;
@@ -1710,6 +1492,19 @@ static void UpdateOam(void) {
   }
 }
 
+// With no line showing BG1-BG3 (as a door loads the next room's graphics),
+// their tiles and maps aren't converted: if VRAM changed, they're all
+// converted again when lines show them.
+ROM_CODE static void ForgetConverted(const uint32_t *dirty) {
+  for (int i = 0; i < kVramChunks / 32; i++) {
+    if (dirty[i]) {
+      conv.bg12_base = conv.bg3_base = 0xffff;
+      conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
+      return;
+    }
+  }
+}
+
 void Render_Present(void) {
   bool mode7 = frame_mode7, text = text_line >= 0;
   // The registers of a line with a tiled background mode, if any, for
@@ -1733,6 +1528,8 @@ void Render_Present(void) {
   UpdateTiles(r, dirty, text && !mode7, text);
   if (text)
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
+  else
+    ForgetConverted(dirty);
   UpdateOam();
 
   // From now on, the VBlank interrupt sets up this frame's registers: from

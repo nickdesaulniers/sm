@@ -3,6 +3,9 @@
 // compiler-rt helpers are Thumb, see cmake/compiler-rt.cmake.)
 #include "convert.h"
 
+#include <stdbool.h>
+#include <string.h>
+
 #include "gba_hw.h"
 
 // Spreads a byte's bits a nibble apart, the leftmost pixel (bit 7) into
@@ -47,6 +50,68 @@ void Convert_Tile4bppAndMirrored(volatile uint32_t *dst, volatile uint32_t *mirr
     w = w >> 16 | w << 16;
     w = (w >> 8 & 0x00ff00ff) | (w & 0x00ff00ff) << 8;
     mirrored[r] = (w >> 4 & 0x0f0f0f0f) | (w & 0x0f0f0f0f) << 4;
+  }
+}
+
+// For tiles squashed, the colors by brightness, 0-15 (0, transparent,
+// least): 4bpp tiles' in BG palette 0, where the menus' text is; 2bpp
+// tiles' (BG3's) by the colors' order in its palettes as a rule: 2, the
+// HUD's letters, over 1, the intro's letters and the HUD's shadows, over 3,
+// outlines and backgrounds.
+static uint8_t squash_rank[16];
+static const uint8_t kRank2bpp[16] = {0, 2, 3, 1};
+
+ROM_CODE void Convert_SetSquashRanks(const uint8_t rank[16]) {
+  memcpy(squash_rank, rank, sizeof(squash_rank));
+  squash_rank[0] = 0;
+}
+
+// A row of pixels' ranks, a nibble each.
+ROM_CODE static uint32_t Ranks(uint32_t row, const uint8_t *rank) {
+  uint32_t ranks = 0;
+  for (int x = 0; x < 32; x += 4)
+    ranks |= (uint32_t)rank[row >> x & 15] << x;
+  return ranks;
+}
+
+// Of two rows' ranks, a nibble each, those where |a|'s is higher: 15 in
+// those nibbles. (Four at a time, in bytes, so that a subtraction has a
+// bit to borrow from.)
+ROM_CODE static uint32_t Higher(uint32_t a, uint32_t b) {
+  uint32_t mask = 0;
+  for (int shift = 0; shift < 8; shift += 4) {
+    uint32_t x = (a >> shift & 0x0f0f0f0f) | 0x10101010, y = (b >> shift & 0x0f0f0f0f) + 0x01010101;
+    mask |= ((x - y) >> 4 & 0x01010101) * 15 << shift;
+  }
+  return mask;
+}
+
+// Merges row 0 of a converted tile into row 1, and row 4 into row 3: their
+// pixels show where they're brighter (by |rank|, transparent least), so
+// that text keeps its strokes over its shadows and outlines. Outside
+// gameplay, the lines showing rows 0 and 4 don't show (see render.c's
+// SetSquashLines): the rows next to the 8x8 fonts' middle bars, and next
+// to the 16-pixel ones' top bars and before their middle ones.
+ROM_CODE static void MergeSquashedRows(volatile uint32_t *dst, const uint8_t *rank) {
+  for (int r = 0; r < 8; r += 4) {
+    int into = r ? r - 1 : 1;
+    uint32_t kept = dst[into], gone = dst[r];
+    uint32_t wins = Higher(Ranks(gone, rank), Ranks(kept, rank));
+    dst[into] = (kept & ~wins) | (gone & wins);
+  }
+}
+
+ROM_CODE void Convert_Tiles4bppSquashed(volatile uint32_t *dst, const uint16_t *src, int count) {
+  for (; count > 0; count--, src += 16, dst += 8) {
+    Convert_Tiles4bpp(dst, src, 1);
+    MergeSquashedRows(dst, squash_rank);
+  }
+}
+
+ROM_CODE void Convert_Tiles2bppSquashed(volatile uint32_t *dst, const uint16_t *src, int count) {
+  for (; count > 0; count--, src += 8, dst += 8) {
+    Convert_Tiles2bpp(dst, src, 1);
+    MergeSquashedRows(dst, kRank2bpp);
   }
 }
 

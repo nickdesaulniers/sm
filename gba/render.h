@@ -10,3 +10,7 @@ void Render_Init(void);
 void Render_CaptureFrame(void);
 // In VBlank: updates the GBA's video memory and registers.
 void Render_Present(void);
+// How many lines below the SNES's the GBA shows gameplay, under its HUD
+// (which follows Samus): for sprites that stay put on the screen, as the
+// escape timer.
+int Render_GameplayYOffset(void);
