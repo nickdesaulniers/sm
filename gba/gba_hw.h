@@ -122,7 +122,7 @@ static inline void DmaCopy32(volatile void *dst, const void *src, uint32_t bytes
   REG_DMACNT(3) = (bytes >> 2) | kDma32 | kDmaEnable;
 }
 
-static inline void DmaFill32(volatile void *dst, uint32_t value, uint32_t bytes) {
+ROM_CODE static inline void DmaFill32(volatile void *dst, uint32_t value, uint32_t bytes) {
   static volatile uint32_t fill;
   fill = value;
   REG_DMASAD(3) = (uintptr_t)&fill;

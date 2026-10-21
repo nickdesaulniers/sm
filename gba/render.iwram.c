@@ -671,7 +671,7 @@ ROM_CODE static void UpdateYOffset(void) {
     for (uint32_t bits_ = (all) ? ~0u : (dirty)[((addr) >> 9) + w_], k;                    \
          bits_ && ((k = w_ * 32 + __builtin_ctz(bits_)), 1); bits_ &= bits_ - 1)
 
-static void SetSplit(bool split) {
+ROM_CODE static void SetSplit(bool split) {
   split_bg2 = split;
   bg12_layers[0] = split ? 4 : 6;
   bg12_layers[1] = split ? 10 : 8;

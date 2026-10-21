@@ -296,6 +296,19 @@ static void CopyBytes(void *dst, const uint8_t *src, uint32_t bytes) {
   }
 }
 
+// Whether the |n| words at |src| (bytes) are those at |a|, a pair at a
+// time; false (not known) when they aren't 4-byte aligned or n is odd.
+static bool SameWords(const uint16_t *a, const uint8_t *src, uint32_t n) {
+  if ((((uintptr_t)a | (uintptr_t)src) & 3) | (n & 1))
+    return false;
+  const uint32_t *a32 = (const uint32_t *)a, *b32 = (const uint32_t *)src;
+  for (n >>= 1; n; n--) {
+    if (*a32++ != *b32++)
+      return false;
+  }
+  return true;
+}
+
 // DMA from the A bus to the PPU's memories without going through WriteBBus
 // a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
 // the game does almost all its DMA. Returns false for anything else.
@@ -354,9 +367,14 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
       while (words) {
         uint32_t n = 0x8000 - (p & 0x7fff);
         n = n < words ? n : words;
+        // Only the chunks that change are dirty: the game uploads Samus's
+        // and the enemies' tiles every frame, mostly the same as before.
+        for (uint32_t q = p & ~15; q < (uint32_t)p + n; q += 16) {
+          uint32_t lo = q < p ? p : q, hi = q + 16 < p + n ? q + 16 : p + n;
+          if (!SameWords(&g_vram[lo & 0x7fff], src + (lo - p) * 2, hi - lo))
+            MarkVramDirty(q);
+        }
         CopyBytes(&g_vram[p & 0x7fff], src, n * 2);
-        for (uint32_t q = p & ~15; q < (uint32_t)p + n; q += 16)
-          MarkVramDirty(q);
         src += n * 2;
         p += n;
         words -= n;
