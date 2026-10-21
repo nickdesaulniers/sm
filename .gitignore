@@ -22,3 +22,4 @@ SDL2.dll
 /sm.gba
 *.sav
 /build-tourperf/
+/build-perfrooms/

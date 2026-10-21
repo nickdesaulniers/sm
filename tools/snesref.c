@@ -131,9 +131,8 @@ int main(int argc, char** argv) {
     const uint8_t* line_state = sym(argv[1], "line_state");
     // The windows' edges, by line (see SnesHw_RunDisplay).
     const uint8_t* line_wh = sym(argv[1], "line_wh");
-    // The scrolling, by line: scrolls[line_scroll[line]].
-    const uint16_t* scrolls = sym(argv[1], "ppu_scrolls");
-    const uint8_t* line_scroll = sym(argv[1], "line_scroll");
+    // The scrolling, by line: BGnHOFS | BGnVOFS << 16.
+    const uint32_t* line_ofs = sym(argv[1], "line_ofs");
 
     static Snes snes;
     Ppu* ppu = ppu_init(&snes);
@@ -147,7 +146,12 @@ int main(int argc, char** argv) {
     ppu->lastBrightnessMult = 0xff;
     ppu_runLine(ppu, 0);
     for (int y = 0; y < 224; y++) {
-        set_regs(ppu, &states[line_state[y]], hw->obsel, &scrolls[line_scroll[y] * 8]);
+        uint16_t scroll[8];
+        for (int i = 0; i < 4; i++) {
+            scroll[i] = line_ofs[y * 4 + i] & 0xffff;
+            scroll[4 + i] = line_ofs[y * 4 + i] >> 16;
+        }
+        set_regs(ppu, &states[line_state[y]], hw->obsel, scroll);
         for (int i = 0; i < 4; i++)
             ppu_write(ppu, 0x26 + i, line_wh[y * 4 + i]);
         ppu_runLine(ppu, y + 1);

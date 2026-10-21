@@ -33,7 +33,7 @@ void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
 }
 
 // A SNES 2bpp tile is 8 words: rows of bitplanes 0 and 1.
-void Convert_Tiles2bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
+ROM_CODE void Convert_Tiles2bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 8, dst += 8) {
     for (int r = 0; r < 8; r++) {
       uint32_t p01 = src[r];

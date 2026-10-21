@@ -117,9 +117,9 @@ button of the same name (B goes back).
   rooms are approximated, and power bombs' explosions brighten the screen
   rather than turning it yellow.
 - **Speed.** Norfair's heat shimmer and Maridia's water rewrite the
-  scrolling on every line, which still costs too much: most of their rooms
-  run at 25-40 fps. So do some of Ceres station's rooms, the X-ray scope and
-  big power bomb explosions.
+  scrolling on every line: their rooms run at 50-55 fps on average, some of
+  Norfair's busiest at under 40. Some of Ceres station's rooms, the X-ray
+  scope and big power bomb explosions slow down too.
 
 ## The PC version
 

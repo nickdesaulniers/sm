@@ -67,6 +67,21 @@ static void FindRooms(void) {
       }
     }
   }
+#ifdef SM_TOUR_ONLY
+  // Just these rooms (and the landing site, where Samus starts), as
+  // -DSM_TOUR_ONLY=0xb3a5,0xd913: to measure them.
+  static const uint16_t kOnly[] = {SM_TOUR_ONLY};
+  int kept = 1;
+  for (int i = 1; i < tour_count; i++) {
+    for (unsigned j = 0; j < sizeof(kOnly) / sizeof(*kOnly); j++) {
+      if (tour_rooms[i] == kOnly[j]) {
+        tour_rooms[kept] = tour_rooms[i];
+        tour_doors[kept++] = tour_doors[i];
+      }
+    }
+  }
+  tour_count = kept;
+#endif
   printf("tour: %d rooms\n", tour_count);
 }
 

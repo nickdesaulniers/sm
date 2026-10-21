@@ -74,6 +74,11 @@ typedef struct SnesHw {
 
   // What changed since render.c last looked (and g_vram_dirty).
   bool cgram_dirty, oam_dirty, regs_dirty;
+  // The scroll registers (but Mode 7's, in PpuRegs's states with BG1's),
+  // which are by line (see SnesHw_RunDisplay); and those the CPU wrote since
+  // it last looked: bits 0-3 BG1-BG4's HOFS, 4-7 their VOFS.
+  bool scroll_dirty;
+  uint8_t scroll_written;
 } SnesHw;
 
 // In IWRAM: the game's register writes and HDMA go through it all the time.
@@ -101,10 +106,10 @@ enum { kSnesLines = 224 };
 // each change: the number of states. But for the windows' edges (WH0-WH3,
 // as a word), which HDMA often changes every line: they're
 // line_windows[line], and the states' are the last line's.
-// The scrolling (BGnHOFS, then BGnVOFS) has states of its own:
-// scrolls[line_scroll[line]].
+// The scrolling is by line too: line_ofs[line][n] is BGn+1's, HOFS |
+// VOFS << 16, as in the GBA's BGnHOFS and BGnVOFS.
 int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
-                      uint16_t (*scrolls)[8], uint8_t *line_scroll);
+                      uint32_t (*line_ofs)[4]);
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);

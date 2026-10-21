@@ -255,8 +255,13 @@ The port isn't finished. The same tour, run slowly enough to time each
 room once it settles, showed what the screenshots couldn't:
 
 - Norfair's heat shimmer and Maridia's water rewrite a background's
-  scrolling on every line. Emulating the SNES's HDMA line by line for them
-  still costs too much, and most of those rooms run at 25-40 fps.
+  scrolling on every line, from tables in ROM of one entry per line. At
+  first the port replayed the SNES's HDMA for them a line at a time, at
+  25-40 fps. Now each table is read once and cached ("baked") as the lines
+  it writes on and where their values are in RAM, and each frame those
+  channels fill the lines' scroll values in one tight pass. That brought
+  those areas to 50-55 fps on average, but some of Norfair's busiest rooms
+  still run under 40.
 - The X-ray scope, big power bomb explosions and a few rooms on Ceres
   station slow the game down too.
 - The GBA's 8-bit sound has a hiss the SNES never had.

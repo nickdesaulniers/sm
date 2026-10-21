@@ -135,7 +135,12 @@ static void load_syms(const char* path) {
         exit(1);
     }
     char line[512];
-    int cap = 0;
+    int cap = 4096;
+    // Below every symbol: the BIOS, as in VBlankIntrWait's halt.
+    syms = realloc(syms, cap * sizeof *syms);
+    syms[nsyms].addr = 0;
+    snprintf(syms[nsyms].name, sizeof syms[nsyms].name, "(bios)");
+    syms[nsyms++].cycles = 0;
     while (fgets(line, sizeof line, f)) {
         unsigned addr;
         char type, name[256];

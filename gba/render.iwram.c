@@ -83,12 +83,11 @@ typedef struct LineRegs {
 static PpuRegs line_states[kSnesLines];
 static uint8_t line_state[kSnesLines];
 static uint32_t line_wh[kSnesLines];  // WH0-WH3, by line
-// BGnHOFS and BGnVOFS, in place of the states': ppu_scrolls[line_scroll[line]].
-static uint16_t ppu_scrolls[kSnesLines][8];
-static uint8_t line_scroll[kSnesLines];
+// BGnHOFS | BGnVOFS << 16, by line, in place of the states'.
+static uint32_t line_ofs[kSnesLines][4];
 #define LINE_REGS(s) (&line_states[line_state[s]])
-#define HOFS(s, bg) ppu_scrolls[line_scroll[s]][bg]
-#define VOFS(s, bg) ppu_scrolls[line_scroll[s]][4 + (bg)]
+#define HOFS(s, bg) (line_ofs[s][bg] & 0xffff)
+#define VOFS(s, bg) (line_ofs[s][bg] >> 16)
 // Two of each, for the frame on show and the next. (One of the streams in
 // EWRAM, for room in IWRAM: HBlank DMA reads only 16 bytes a line.)
 static uint32_t stream0[kGbaLines + 1][4] IWRAM_BSS, stream1[kGbaLines + 1][4];
@@ -487,6 +486,17 @@ static uint32_t LineWindows(int s) {
   return WindowH(wh & 0xff, (wh >> 8) & 0xff) | (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
 }
 
+// The stream of a line (not in frames with Mode 7): its scrolling, as the
+// GBA's, for its SNES line |s|.
+static void LineStream(LineRegs *l, int s, int g) {
+  // (The SNES shows a background's row VOFS + 1 on its first line.)
+  const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
+  l->stream[0] = ofs[2] + add;
+  l->stream[1] = ofs[split_bg2] + add;
+  l->stream[2] = ofs[0] + add;
+  l->stream[3] = ofs[1] + add;
+}
+
 // Whether two lines' registers are the same, but for the scrolling: then
 // so are their GBA registers but for the stream. (Maridia's water and
 // Norfair's heat have different scrolling on every line.)
@@ -533,26 +543,26 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   Windows(l, r, ColorMath(&l->ctl, r));
 scrolling:;
   // (The SNES shows a background's row VOFS + 1 on its first line.)
-  int dy = s + 1 - g;
-  uint16_t ofs[8];
-  const uint16_t *scroll = ppu_scrolls[line_scroll[s]];
-  ofs[0] = scroll[2] + kXOffset;
-  ofs[1] = scroll[6] + dy;
-  ofs[2] = scroll[split] + kXOffset;
-  ofs[3] = scroll[4 + split] + dy;
-  ofs[4] = scroll[0] + kXOffset;
-  ofs[5] = scroll[4] + dy;
-  ofs[6] = scroll[1] + kXOffset;
-  ofs[7] = scroll[5] + dy;
   // The scrolling is the stream, but in frames with Mode 7, whose stream
   // is BG2's transformation.
-  for (int i = 0; i < 4; i++) {
-    uint32_t w = ofs[2 * i] | (uint32_t)ofs[2 * i + 1] << 16;
-    l->stream[i] = frame_mode7 ? 0 : w;
-    ((uint32_t *)l->ctl.ofs)[i] = frame_mode7 ? w : 0;
+  if (!frame_mode7) {
+    LineStream(l, s, g);
+    return;
   }
-  if (frame_mode7)
-    l->stream[0] = l->stream[1] = 0x100;  // BG2's identity, for what it's worth
+  const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
+  uint32_t *out = (uint32_t *)l->ctl.ofs;
+  out[0] = ofs[2] + add;
+  out[1] = ofs[split] + add;
+  out[2] = ofs[0] + add;
+  out[3] = ofs[1] + add;
+  l->stream[0] = l->stream[1] = 0x100;  // BG2's identity, for what it's worth
+  l->stream[2] = l->stream[3] = 0;
+}
+
+// Whether two lines' scrolling is the same.
+static bool SameOfs(int a, int b) {
+  const uint32_t *x = line_ofs[a], *y = line_ofs[b];
+  return x[0] == y[0] && x[1] == y[1] && x[2] == y[2] && x[3] == y[3];
 }
 
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
@@ -675,6 +685,20 @@ ROM_CODE static int SubtractError(uint16_t m, uint16_t s, uint16_t add, uint16_t
   return error;
 }
 
+// How far off adding back would be, in a channel, with |v| subtracted in
+// the palette, at SubtractWeight's 40 samples: their main screen's values
+// (|m|), the sub screen's (|c|, or 32 where it's transparent, and nothing's
+// added back) and what the SNES makes of them (|want|).
+ROM_CODE static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8_t *want, int v) {
+  int error = 0;
+  for (int k = 0; k < 40; k++) {
+    int got = (m[k] > v ? m[k] - v : 0) + (v > c[k] ? v - c[k] : 0);
+    got = got > 31 ? 31 : got;
+    error += got > want[k] ? got - want[k] : want[k] - got;
+  }
+  return error;
+}
+
 // For the line |r|, which subtracts the sub screen, by a few dozen of its
 // pixels on show and the main screen's there: the GBA's way that comes
 // closest, of
@@ -687,10 +711,10 @@ ROM_CODE static int SubtractError(uint16_t m, uint16_t s, uint16_t add, uint16_t
 //   and BG3 adding back what's too much, by its colors: the color, channel
 //   by channel, that's closest (subtract_color, with the BG3 palettes it
 //   uses, subtract_palettes).
-// Every fourth frame: the colors and the scrolling change slowly.
+// Every sixteenth frame: the colors and the scrolling change slowly.
 ROM_CODE static int SubtractWeight(const PpuRegs *r) {
   static uint8_t phase;
-  if (phase++ & 3)
+  if (phase++ & 15)
     return subtract_weight;
   uint8_t sub = r->ts & ~r->tm & 7, main = r->tm & 3;
   subtract_color = 0;
@@ -781,17 +805,26 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
   }
   // Adding back: by channel, the color between BG3's darkest and
   // brightest that's closest.
+  // (A ternary search: the error falls, then rises.)
   for (int ch = 0; ch < 15 && add_back; ch += 5) {
-    int best_error = 0x7fffffff, best_s = 0;
-    for (int v = darkest[ch / 5]; v <= brightest[ch / 5]; v++) {
-      int error = 0;
-      for (int k = 0; k < kSamples; k++) {
-        int m = main_colors[k] >> ch & 31, c = sub_colors[k] >> ch & 31;
-        int got = (m > v ? m - v : 0) + (opaque_at[k] && v > c ? v - c : 0);
-        int want = m > c ? m - c : 0;
-        got = got > 31 ? 31 : got;
-        error += got > want ? got - want : want - got;
-      }
+    uint8_t m[kSamples], c[kSamples], want[kSamples];
+    for (int k = 0; k < kSamples; k++) {
+      m[k] = main_colors[k] >> ch & 31;
+      c[k] = opaque_at[k] ? sub_colors[k] >> ch & 31 : 32;
+      int w = m[k] - (opaque_at[k] ? c[k] : 0);
+      want[k] = w > 0 ? w : 0;
+    }
+    int lo = darkest[ch / 5], hi = brightest[ch / 5];
+    while (hi - lo > 2) {
+      int third = (hi - lo) / 3;
+      if (AddBackError(m, c, want, lo + third) <= AddBackError(m, c, want, hi - third))
+        hi = hi - third;
+      else
+        lo = lo + third;
+    }
+    int best_error = 0x7fffffff, best_s = lo;
+    for (int v = lo; v <= hi; v++) {
+      int error = AddBackError(m, c, want, v);
       if (error < best_error)
         best_error = error, best_s = v;
     }
@@ -837,7 +870,7 @@ ROM_CODE static void KeepLayersOn(DisplaySegment *segs, int n) {
 }
 
 void Render_CaptureFrame(void) {
-  SnesHw_RunDisplay(line_states, line_state, line_wh, ppu_scrolls, line_scroll);
+  SnesHw_RunDisplay(line_states, line_state, line_wh, line_ofs);
 
   squash = game_state < 7 || game_state > 11;
   // The HUD: BG3 alone, and below it, other layers or another BG3 (in
@@ -892,17 +925,18 @@ void Render_CaptureFrame(void) {
   DisplaySegment *segs = segments[back];
   int num_segs = 0;
   LineRegs l;
-  int prev_state = -1, prev_dy = 0, prev_scroll = -1;
+  int prev_state = -1, prev_dy = 0, prev_s = 0;
   bool windows = false;
   built_regs = NULL;
   for (int g = 0; g < kGbaLines; g++) {
     int s = SnesLine(g), state = line_state[s];
     const PpuRegs *r = &line_states[state];
-    bool mode7 = (r->bgmode & 7) == 7;
-    if (state == prev_state && s - g == prev_dy && (mode7 || line_scroll[s] == prev_scroll)) {
-      if (mode7)
-        StepLineMode7(&l);
-    } else {
+    bool mode7 = (r->bgmode & 7) == 7, same = state == prev_state && s - g == prev_dy;
+    if (same && mode7) {
+      StepLineMode7(&l);
+    } else if (same && !frame_mode7) {
+      LineStream(&l, s, g);
+    } else if (!same || !SameOfs(s, prev_s)) {
       BuildLine(&l, r, s, g);
       if (!num_segs || (num_segs < kMaxSegments && !SameSegment(&segs[num_segs - 1], &l.ctl))) {
         segs[num_segs] = l.ctl;
@@ -917,7 +951,7 @@ void Render_CaptureFrame(void) {
     }
     prev_state = state;
     prev_dy = s - g;
-    prev_scroll = line_scroll[s];
+    prev_s = s;
   }
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
@@ -949,7 +983,7 @@ void Render_CaptureFrame(void) {
 // The color math with the fixed color that line |m| does, which the
 // palette does in its place (see ColorMath): its CGADSUB and the color, or
 // 0 for none.
-static uint32_t FixedMath(const PpuRegs *m) {
+ROM_CODE static uint32_t FixedMath(const PpuRegs *m) {
   int region = (m->cgwsel >> 4) & 3;
   bool sub = m->cgwsel & 2;
   if ((sub && !((m->cgadsub & 0x80) && (subtract_color & 0x8000))) || !(m->cgadsub & 0x3f) ||
