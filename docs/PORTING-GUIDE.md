@@ -122,7 +122,7 @@ work:
   room normally and the effect layer on top, blended.
 - **Effect added to some main layers only:** move the effect layer between
   them in priority, shifting the others and the sprites.
-- **Subtracting:** the GBA can't. Three approximations, picked each frame by
+- **Subtracting:** the GBA can't. Three approximations, picked every few frames by
   their error at a few dozen sampled pixels (main and sub screen, per
   channel, clamped at 0 as the SNES does):
   - darken under the sub layer: EVA = 0, EVB < 16;

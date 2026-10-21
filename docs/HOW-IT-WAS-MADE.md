@@ -237,7 +237,7 @@ frame and blacks them out behind the HUD instead.
 The subtraction took more cunning. The GBA can only add, but subtraction
 can be split in two. The palette subtracts one colour from the whole room,
 and the shadow layer, drawn on top, adds back the difference between that
-colour and its own. Every frame, the renderer samples forty points on
+colour and its own. Every fourth frame, the renderer samples forty points on
 screen. It works out which of three tricks comes closest there, and which
 colour to subtract, channel by channel. The first sampling grid stepped down
 the screen in multiples of eight lines, so every sample landed on the same
