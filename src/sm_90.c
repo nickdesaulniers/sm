@@ -4317,10 +4317,16 @@ static Func_U8 *const kRunSwitchedToHudHandler[6] = {  // 0x90C4B5
 };
 #if SM_GBA
 // The GBA has no X and Y buttons, so its controls pick the item directly,
-// as in the GBA Metroids: see gba/input.c.
+// as in the GBA Metroids: see gba/input.c. Demos and the intro play back
+// the SNES's buttons, though, so for them, the SNES's way.
 uint16 GbaWantedHudItem(void);
+static void HandleSwitchingHudSelectionByButtons(void);
 
 void HandleSwitchingHudSelection(void) {
+  if (demo_enable & 0x8000) {
+    HandleSwitchingHudSelectionByButtons();
+    return;
+  }
   uint16 r18 = hud_item_index;
   uint16 want = GbaWantedHudItem();
   samus_auto_cancel_hud_item_index = 0;
@@ -4342,8 +4348,11 @@ void HandleSwitchingHudSelection(void) {
     hud_item_changed_this_frame = 1;
   }
 }
+
+static void HandleSwitchingHudSelectionByButtons(void) {
 #else
 void HandleSwitchingHudSelection(void) {
+#endif
   uint16 v0;
   uint16 r22 = 0;
   uint16 r18 = hud_item_index;
@@ -4383,7 +4392,6 @@ LABEL_13:
     hud_item_changed_this_frame = 1;
   }
 }
-#endif
 
 static uint8 SwitchToHudHandler_Nothing(void) {  // 0x90C545
   flare_counter = 0;
