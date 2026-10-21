@@ -513,7 +513,6 @@ void Samus_Func9(void);
 uint16 Samus_GetTop_R20(void);
 uint16 Samus_GetBottom_R18(void);
 void Samus_GrabbedByDraygonFrameHandler(void);
-static void Samus_HandleAnimDelay(void);
 void Samus_HandleMovement_DrainedCrouching(void);
 void Samus_InitJump(void);
 void Samus_InitWallJump(void);
