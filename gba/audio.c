@@ -8,7 +8,8 @@
 // (SpcRam_Read). In place of the DSP, the driver's writes to its registers
 // set up the GBA's mixer: its voices play the samples make_cartridge.py
 // decoded, at 10512 Hz, with the DSP's envelopes and echo. No pitch
-// modulation, nor interpolation.
+// modulation, and only samples played slower than half that rate are
+// interpolated (audio_mix.S).
 #include "audio.h"
 
 #include <stdio.h>
@@ -19,8 +20,6 @@
 #include "sm_rtl.h"
 #include "spc_player.h"
 
-// In IWRAM, with the DSP's registers and envelopes: the driver works on
-// them 500 times a second.
 static SpcPlayer player;
 
 // The APU's RAM: the blocks of the ROM the game uploaded to it, newest
@@ -32,6 +31,12 @@ typedef struct AramBlock {
 enum { kMaxAramBlocks = 32 };
 static AramBlock aram[kMaxAramBlocks];
 static int aram_count;
+// The bytes the last read found, as far as no newer block covers them:
+// the driver reads on from where it read, mostly.
+static struct {
+  uint16_t addr, length;
+  const uint8_t *src;
+} aram_cache;
 
 static void AddAramBlock(uint16_t dest, uint16_t length, const uint8_t *src) {
   // Older blocks this one covers are gone.
@@ -46,14 +51,20 @@ static void AddAramBlock(uint16_t dest, uint16_t length, const uint8_t *src) {
   }
   aram[n++] = (AramBlock){dest, length, src};
   aram_count = n;
+  aram_cache.length = 0;
+}
+
+static int FindAramBlockIndex(uint16_t addr) {
+  for (int i = aram_count - 1; i >= 0; i--) {
+    if ((uint16_t)(addr - aram[i].dest) < aram[i].length)
+      return i;
+  }
+  return -1;
 }
 
 static const AramBlock *FindAramBlock(uint16_t addr) {
-  for (int i = aram_count - 1; i >= 0; i--) {
-    if ((uint16_t)(addr - aram[i].dest) < aram[i].length)
-      return &aram[i];
-  }
-  return NULL;
+  int i = FindAramBlockIndex(addr);
+  return i < 0 ? NULL : &aram[i];
 }
 
 void SpcRam_Upload(const uint8 *data) {
@@ -66,17 +77,42 @@ void SpcRam_Upload(const uint8 *data) {
   }
 }
 
+static uint8 SpcRam_ReadUncached(uint16 addr) {
+  int i = FindAramBlockIndex(addr);
+  if (i < 0)
+    return 0;
+  // Of its block, the bytes around |addr| no newer one covers.
+  const AramBlock *b = &aram[i];
+  int start = b->dest, end = b->dest + b->length;
+  if (end > 0x10000)
+    end = 0x10000;
+  for (int j = i + 1; j < aram_count; j++) {
+    int s = aram[j].dest, e = aram[j].dest + aram[j].length;
+    if (e <= addr && e > start)
+      start = e;
+    else if (s > addr && s < end)
+      end = s;
+  }
+  aram_cache.addr = start;
+  aram_cache.length = end - start;
+  aram_cache.src = b->src + (start - b->dest);
+  return b->src[(uint16_t)(addr - b->dest)];
+}
+
 uint8 SpcRam_Read(uint16 addr) {
-  const AramBlock *b = FindAramBlock(addr);
-  return b ? b->src[(uint16_t)(addr - b->dest)] : 0;
+  uint16_t offset = addr - aram_cache.addr;
+  if (offset < aram_cache.length)
+    return aram_cache.src[offset];
+  return SpcRam_ReadUncached(addr);
 }
 
 static uint16_t SpcRam_Read16(uint16_t addr) {
   return SpcRam_Read(addr) | SpcRam_Read(addr + 1) << 8;
 }
 
-// The DSP: its registers, and each voice's envelope.
-static uint8_t dsp[128] IWRAM_BSS;
+// The DSP: its registers, and each voice's envelope. (In EWRAM: the
+// mixer's code needs IWRAM's room more.)
+static uint8_t dsp[128];
 
 enum { kAttack, kDecay, kSustain, kGain, kRelease };
 typedef struct Envelope {
@@ -84,7 +120,7 @@ typedef struct Envelope {
   uint16_t level;  // 0-0x7FF
   uint16_t counter;
 } Envelope;
-static Envelope envelopes[8] IWRAM_BSS;
+static Envelope envelopes[8];
 // In 8.8 fixed point: the DSP's samples (32 kHz) since the envelopes ran.
 static uint32_t envelope_time;
 
@@ -206,8 +242,9 @@ __attribute__((target("arm"), section(".iwram.text")))
 void Audio_DspWrite(uint8 reg, uint8 value) {
   reg &= 0x7f;
   // The driver rewrites most registers unchanged, 500 times a second; KON
-  // and KOF act whatever they were.
-  if (dsp[reg] == value && reg != 0x4c && reg != 0x5c)
+  // and KOF act whatever they were, but for none (as the driver writes
+  // them each tick).
+  if (reg == 0x4c || reg == 0x5c ? !value : dsp[reg] == value)
     return;
   dsp[reg] = value;
   int v = reg >> 4;
@@ -220,12 +257,12 @@ void Audio_DspWrite(uint8 reg, uint8 value) {
   DspWriteChanged(reg, value);
 }
 
-// One step of an envelope, as src/snes/dsp.c's dsp_handleGain.
-static void EnvelopeStep(Envelope *e, int v) {
-  int level = e->level;
+// One step of an envelope, as src/snes/dsp.c's dsp_handleGain: its level
+// after |level|. |r| is its voice's registers.
+static int EnvelopeStep(Envelope *e, const uint8_t *r, int level) {
   switch (e->state) {
   case kAttack:
-    level += (dsp[v * 16 + 5] & 0xf) == 0xf ? 1024 : 32;
+    level += (r[5] & 0xf) == 0xf ? 1024 : 32;
     if (level >= 0x7e0)
       e->state = kDecay;
     if (level > 0x7ff)
@@ -233,14 +270,14 @@ static void EnvelopeStep(Envelope *e, int v) {
     break;
   case kDecay:
     level -= ((level - 1) >> 8) + 1;
-    if (level < (((dsp[v * 16 + 6] >> 5) + 1) << 8))
+    if (level < (((r[6] >> 5) + 1) << 8))
       e->state = kSustain;
     break;
   case kSustain:
     level -= ((level - 1) >> 8) + 1;
     break;
   case kGain:
-    switch ((dsp[v * 16 + 7] >> 5) & 3) {
+    switch ((r[7] >> 5) & 3) {
     case 0: level = level >= 32 ? level - 32 : 0; break;
     case 1: level -= ((level - 1) >> 8) + 1; break;
     case 2: level = level + 32 > 0x7ff ? 0x7ff : level + 32; break;
@@ -248,11 +285,10 @@ static void EnvelopeStep(Envelope *e, int v) {
     }
     break;
   }
-  e->level = level < 0 ? 0 : level;
+  return level < 0 ? 0 : level;
 }
 
-static unsigned EnvelopeRate(const Envelope *e, int v) {
-  const uint8_t *r = &dsp[v * 16];
+static unsigned EnvelopeRate(const Envelope *e, const uint8_t *r) {
   switch (e->state) {
   case kAttack: return kRates[(r[5] & 0xf) * 2 + 1];
   case kDecay: return kRates[((r[5] >> 4) & 7) * 2 + 16];
@@ -262,35 +298,46 @@ static unsigned EnvelopeRate(const Envelope *e, int v) {
 }
 
 // Runs the envelopes for |n| of the DSP's samples, and sets the mixer's
-// volumes from them.
+// volumes from them, and whether it has echo to mix. (Thumb code, from
+// the cartridge, 250 times a second: with pointers, not indexes, as it has
+// few registers.)
 static void RunEnvelopes(unsigned n) {
-  for (int v = 0; v < 8; v++) {
-    AudioVoice *voice = &g_audio_voices[v];
-    Envelope *e = &envelopes[v];
+  AudioMix *m = &g_audio_mix;
+  bool echo = m->echo_l || m->echo_r || m->feedback;
+  AudioVoice *voice = g_audio_voices;
+  Envelope *e = envelopes;
+  const uint8_t *r = dsp;
+  for (int v = 0; v < 8; v++, voice++, e++, r += 16) {
     if (!voice->on)
       continue;
+    int level = e->level;
     if (e->state == kRelease) {
-      e->level = e->level > 8 * n ? e->level - 8 * n : 0;
-      if (!e->level)
+      level -= 8 * n;
+      if (level <= 0) {
+        level = 0;
         voice->on = false;
-    } else if (e->state == kGain && !(dsp[v * 16 + 7] & 0x80)) {
-      e->level = (dsp[v * 16 + 7] & 0x7f) * 16;
+      }
+    } else if (e->state == kGain && !(r[7] & 0x80)) {
+      level = (r[7] & 0x7f) * 16;
     } else {
-      unsigned rate = EnvelopeRate(e, v);
+      unsigned rate = EnvelopeRate(e, r);
       if (rate) {
         // (No division: the GBA does it in software, slowly.)
         unsigned t = e->counter + n;
         for (; t >= rate; t -= rate)
-          EnvelopeStep(e, v);
+          level = EnvelopeStep(e, r, level);
         e->counter = t;
       }
     }
-    // Sample, envelope (/2048) and volume (/128): at the scale of a
-    // sample, /4 (see AudioVoice).
-    int env = e->level;
-    int l = (int8_t)dsp[v * 16 + 0] * env >> 13, r = (int8_t)dsp[v * 16 + 1] * env >> 13;
-    voice->vol = (int32_t)((uint32_t)r << 16) + l;
+    e->level = level;
+    // Volume (/128) times envelope (/2048), in 8 bits (see AudioVoice), so
+    // that quiet voices keep their envelopes and fades. (In 5, as they
+    // were, Ceres's were 1s to 4s, stepping as they faded.)
+    int left = (int8_t)r[0] * level >> 11, right = (int8_t)r[1] * level >> 11;
+    voice->vol = (int32_t)((uint32_t)right << 16) + left;
+    echo |= voice->on & voice->echo;
   }
+  m->echo_on = echo;
 }
 
 void Audio_Init(void) {

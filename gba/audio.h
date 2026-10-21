@@ -29,8 +29,11 @@ typedef struct AudioVoice {
   // In samples, 16.16: where it's at, how far it goes a sample, where it
   // ends, and how far back it loops from there (0: it doesn't).
   uint32_t pos, step, end, loop_len;
-  // Its volume times its envelope, /4 so that eight voices' samples (-128
-  // to 127) times them fit in 16 bits: right << 16 + left.
+  // Its volume times its envelope, /2048, both sides in a word: right <<
+  // 16 + left. Its samples (-128 to 127) times it are at half the scale of
+  // the SNES's 16-bit samples. The voices' sums fit in 16 bits until three
+  // or four times as loud as what plays unclipped: the title's music and
+  // Ridley's fight get to 9700.
   int32_t vol;
   bool on, noise, echo;
 } AudioVoice;
@@ -46,6 +49,9 @@ typedef struct AudioMix {
   // Whether the voices' echo goes into the echo buffer (FLG), and how many
   // pairs of the mixer's samples it delays them (EDL).
   bool echo_writes;
+  // Whether there's echo to mix: echo or feedback volume, or voices with
+  // echo on (audio.c works it out with the envelopes).
+  bool echo_on;
   uint16_t echo_len;
 } AudioMix;
 

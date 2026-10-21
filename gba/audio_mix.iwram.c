@@ -8,14 +8,16 @@
 #include <string.h>
 
 AudioVoice g_audio_voices[8] IWRAM_BSS;
-int8_t g_audio_buffers[2][kAudioBuffers][kAudioFrameSamples];
+// (Words, for the DMA, as silence's.)
+int8_t g_audio_buffers[2][kAudioBuffers][kAudioFrameSamples] __attribute__((aligned(4)));
 volatile uint8_t g_audio_play IWRAM_BSS, g_audio_queued IWRAM_BSS;
 
 AudioMix g_audio_mix IWRAM_BSS;
 
-static int8_t silence[kAudioFrameSamples];
+// (In ROM: the DMA reads it as well from there, and EWRAM is full.)
+static const int8_t silence[kAudioFrameSamples] __attribute__((aligned(4)));
 // The echo: the voices' echo, delayed (in EWRAM: up to 5 KB), both sides
-// in a word, in the units of the voices' sums (/4 of the DSP's).
+// in a word, in the units of the voices' sums (/2 of the DSP's).
 static uint32_t echo_buf[kAudioEchoMax];
 static uint16_t echo_pos IWRAM_BSS;
 typedef struct EchoState {
@@ -25,6 +27,8 @@ typedef struct EchoState {
 static EchoState echo_state IWRAM_BSS;
 void Audio_EchoPairs(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
 void Audio_MixVoice(int32_t *sum, int n, AudioVoice *v);
+void Audio_OutputDry(int8_t *left, int8_t *right, const int32_t *sums, int n, const int32_t vol[4]);
+void Audio_OutputEcho(int8_t *left, int8_t *right, const int32_t *sums, int n, const int32_t vol[4]);
 // As audio_mix.S has them.
 _Static_assert(offsetof(AudioVoice, vol) == 20 && offsetof(AudioVoice, on) == 24, "AudioVoice");
 _Static_assert(offsetof(EchoState, last) == 16, "EchoState");
@@ -84,13 +88,11 @@ static void Noise(int8_t *out, int n) {
 
 void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   const AudioMix *m = &g_audio_mix;
-  bool echo = m->echo_l || m->echo_r || m->feedback;
-  for (int v = 0; v < 8; v++)
-    echo |= g_audio_voices[v].on & g_audio_voices[v].echo;
+  bool echo = m->echo_on;
   // Both sides in a word, left in the low half: a multiply a sample. With
-  // the echo on, the voices with echo add to |wet|, the others to |dry|.
-  // (|wet| is followed by the echo's output: see Echo.)
-  int32_t dry[kAudioChunk], wet[2 * kAudioChunk], *echo_out = wet + kAudioChunk;
+  // the echo on, the voices with echo add to |wet|, the others to |dry|;
+  // the echo's output follows (see Echo).
+  int32_t sums[3 * kAudioChunk], *dry = sums, *wet = sums + kAudioChunk;
   int8_t noise_samples[kAudioChunk];
   bool noise_done = false;
   for (int i = 0; i < n; i++)
@@ -111,48 +113,18 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
         sum[i] += noise_samples[i] * vol;
       continue;
     }
-    if (!vol) {
-      // Silent (its envelope or volume at 0: of the voices mixed, 30% in
-      // Norfair, 42% in Maridia): it plays on, unheard, as on the SNES.
-      // Its |n| steps, as Audio_MixVoice takes them.
-      uint32_t pos = voice->pos + voice->step * n;
-      if (pos >= voice->end) {
-        if (!voice->loop_len)
-          voice->on = false;
-        while (pos >= voice->end && voice->loop_len)
-          pos -= voice->loop_len;
-      }
-      voice->pos = pos;
-      continue;
-    }
     Audio_MixVoice(sum, n, voice);
   }
-  // The voices' sum, *4, is at the scale of the SNES's 16-bit samples; the
-  // master and echo volumes are /128. Four times as loud as that: the GBA's
-  // 8 bits are few.
-  int master_l = m->master_l, master_r = m->master_r;
+  // The voices' sums are at half the scale of the SNES's (see AudioVoice),
+  // and the master and echo volumes are /128: /8192 makes the SNES's 16
+  // bits /128, twice as loud as its top 8 bits, as the GBA's 8 are few.
+  int32_t vol[4] = {m->master_l, m->master_r, m->echo_l, m->echo_r};
   if (!echo) {
-    for (int i = 0; i < n; i++) {
-      int32_t s = dry[i];
-      int l = (int16_t)s, r = (s - l) >> 16;
-      l = (l * master_l) >> 11;
-      r = (r * master_r) >> 11;
-      left[i] = l < -128 ? -128 : l > 127 ? 127 : l;
-      right[i] = r < -128 ? -128 : r > 127 ? 127 : r;
-    }
+    Audio_OutputDry(left, right, sums, n, vol);
     return;
   }
   Echo(wet, n);
-  int echo_l = m->echo_l, echo_r = m->echo_r;
-  for (int i = 0; i < n; i++) {
-    int32_t d = dry[i] + wet[i], e = echo_out[i];
-    int dl = (int16_t)d, dr = (d - dl) >> 16;
-    int el = (int16_t)e, er = (e - el) >> 16;
-    int l = (dl * master_l + el * echo_l) >> 11;
-    int r = (dr * master_r + er * echo_r) >> 11;
-    left[i] = l < -128 ? -128 : l > 127 ? 127 : l;
-    right[i] = r < -128 ? -128 : r > 127 ? 127 : r;
-  }
+  Audio_OutputEcho(left, right, sums, n, vol);
 }
 
 uint32_t g_audio_underruns IWRAM_BSS;
