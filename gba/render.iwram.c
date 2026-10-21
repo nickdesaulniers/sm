@@ -80,7 +80,7 @@ typedef struct LineRegs {
 
 // The PPU's registers for each SNES line: line_states[line_state[line]],
 // with a state for each time they change down the screen.
-static PpuRegs line_states[kSnesLines];
+static PpuRegs line_states[kSnesLines] __attribute__((aligned(4)));
 static uint8_t line_state[kSnesLines];
 static uint32_t line_wh[kSnesLines];  // WH0-WH3, by line
 // BGnHOFS | BGnVOFS << 16, by line, in place of the states'.
@@ -570,9 +570,12 @@ _Static_assert(sizeof(PpuRegs) == 64 && offsetof(PpuRegs, hofs) == 10 &&
                    offsetof(PpuRegs, vofs) + sizeof(((PpuRegs *)0)->vofs) == 26,
                "SameButScrolling's layout");
 static bool SameButScrolling(const PpuRegs *a, const PpuRegs *b) {
-  const uint16_t *x = (const uint16_t *)a, *y = (const uint16_t *)b;
-  for (int i = 0; i < 32; i++) {
-    if (x[i] != y[i] && (i < 5 || i >= 13))
+  // A word at a time (line_states is aligned): halfwords 0-4 and 13-31.
+  const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
+  if (x[0] != y[0] || x[1] != y[1] || (x[2] ^ y[2]) & 0xffff || (x[6] ^ y[6]) >> 16)
+    return false;
+  for (int i = 7; i < 16; i++) {
+    if (x[i] != y[i])
       return false;
   }
   return true;
@@ -1026,15 +1029,25 @@ void Render_CaptureFrame(void) {
          HOFS(kHudLines + 8, 2) != HOFS(8, 2) || VOFS(kHudLines + 8, 2) != VOFS(8, 2));
   UpdateYOffset();
 
-  // The BG3 maps the lines use, in slots.
+  // The BG3 maps the lines use (in slots), whether any line is Mode 7's,
+  // and a line of text (not Mode 7), the middle one if it can be. A line
+  // with the state of the one before tells nothing new.
   uint8_t first = LINE_REGS(SnesLine(0))->bgsc[2];
   uint8_t second = first;
-  for (int g = 1; g < kGbaLines; g++) {
-    uint8_t sc = LINE_REGS(SnesLine(g))->bgsc[2];
-    if (sc != first) {
-      second = sc;
-      break;
-    }
+  frame_mode7 = false;
+  text_line = -1;
+  for (int g = 0, prev = -1; g < kGbaLines; g++) {
+    int s = SnesLine(g), state = line_state[s];
+    if (state == prev && g != kGbaLines / 2)
+      continue;
+    prev = state;
+    const PpuRegs *r = &line_states[state];
+    if (second == first)
+      second = r->bgsc[2];
+    if ((r->bgmode & 7) == 7)
+      frame_mode7 = true;
+    else if (text_line < 0 || g == kGbaLines / 2)
+      text_line = s;
   }
   if (first != bg3_slot_sc[0] && first != bg3_slot_sc[1]) {
     // Keep the other one where it is.
@@ -1043,14 +1056,6 @@ void Render_CaptureFrame(void) {
   if (second != bg3_slot_sc[0] && second != bg3_slot_sc[1])
     bg3_slot_sc[first == bg3_slot_sc[0] ? 1 : 0] = second;
 
-  frame_mode7 = false;
-  text_line = -1;
-  for (int g = 0; g < kGbaLines; g++) {
-    if ((LINE_REGS(SnesLine(g))->bgmode & 7) == 7)
-      frame_mode7 = true;
-    else if (text_line < 0 || g == kGbaLines / 2)
-      text_line = SnesLine(g);
-  }
   if (text_line >= 0 && !frame_mode7)
     ChooseSplit(LINE_REGS(text_line));
   else
