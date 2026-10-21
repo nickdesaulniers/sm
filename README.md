@@ -127,10 +127,10 @@ GBA's buttons. They can't be changed there: only END and RESET do anything.
   scope's cone and power bombs. The GBA can't subtract colors, so darkened
   rooms are approximated, and power bombs' explosions brighten the screen
   rather than turning it yellow.
-- **Speed.** Timed in every room, none runs below 50 fps, and all but
-  about two dozen at 60. Ridley's fight on Ceres station runs at about 50 fps,
-  doors take longer than on the SNES, and the X-ray scope and big power
-  bomb explosions slow the game down.
+- **Speed.** Timed in every room, none runs below 59 fps. Ridley's fight
+  on Ceres station averages 58 fps but dips to about 50, doors take longer
+  than on the SNES, and the X-ray scope and big power bomb explosions slow
+  the game down.
 
 ## The PC version
 

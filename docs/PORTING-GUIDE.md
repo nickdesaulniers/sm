@@ -287,9 +287,13 @@ the test's, not the port's.
   decompilation's single-file functions `static` stopped the compiler
   keeping copies nobody called. `-O2`, `-Os`, `-Oz` and LTO were all
   slower: LTO's cross-file inlining doesn't fit in IWRAM.
-- The synchronous main loop (game, render, wait for VBlank, present) means
-  a frame even slightly over budget waits a second VBlank. Smooth out
-  spikes, not just averages.
+- In a synchronous main loop (game, capture, wait for VBlank, present), a
+  frame even slightly over budget waits for a second VBlank. Don't wait
+  for the next VBlank interrupt if one began since the last present and
+  there's still time in it to present (`gba/main.c`'s `WaitForVBlank`).
+  Slow frames then borrow from fast ones: in Ridley's Ceres fight that was
+  47 fps to 58 without saving a cycle. Profile "time in the BIOS" as a
+  symptom: idle time in a game that can't keep up is time lost to waiting.
 
 ## 7. Pitfalls that cost the most
 

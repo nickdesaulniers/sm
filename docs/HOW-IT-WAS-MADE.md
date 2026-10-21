@@ -8,7 +8,7 @@ amounts to two 8-bit DACs and a timer.
 
 This is the first progress report, and it covers everything: two days in
 which the port went from a black screen to every room of the game, the
-bosses included, at or near 60 frames per second. That's 55 commits on the
+bosses included, at or near 60 frames per second. That's nearly 60 commits on the
 `gba-port` branch. Some of them are big features, some fix bugs that took
 an afternoon to find and a line to fix, and a few are the tools that made
 the rest checkable. One fixes the same bug twice, a day apart.
@@ -418,6 +418,32 @@ The HUD's tiles put it all in front. Now BG3 goes in front only where the
 map rows a part of the screen shows have priority tiles. Re-running the
 tour after both fixes, no room's ranking moved.
 
+### 3c1c6b3 - Late, but not a whole frame late
+
+Ridley's fight in Ceres was painful: 47 fps on average, and down to 35 in
+its worst seconds. The profiler showed something odd. Over a fifth of the
+CPU's time went to sleeping in the BIOS, waiting for VBlank, in a fight
+that couldn't keep up.
+
+The main loop runs a frame of the game, captures the picture, waits for
+VBlank, then presents the picture. Game, picture and sound together took
+about 257,000 cycles a frame on average, under the 280,000 there are. But
+some frames went a little over, finishing a few lines into VBlank, and the
+wait was for the *next* VBlank interrupt. A frame a few hundred cycles late
+waited a whole frame more.
+
+There's time to spare inside VBlank, though. It lasts 68 lines, and
+presenting a frame takes about 23 of them. Now, if a VBlank has begun since
+the last frame was presented and it's before line 192, the frame is
+presented right away. `Render_Present` already knew how to start the
+display partway through VBlank. The slow frames now borrow a little time
+from the fast ones that follow, as long as they fit on average.
+
+Ridley's fight went from 47.4 fps to 57.9 on average, and its worst second
+from 35.6 to 49.3. Across the whole tour, the rooms taking more than 60
+VBlanks for 60 frames went from 24 to 6, and the slowest room went from
+55.4 fps to 59.0. Not a single cycle of work was saved.
+
 ## Other changes
 
 - **23234ee** The build makes `sm-engine.gba` with none of the game's data,
@@ -445,13 +471,13 @@ tour after both fixes, no room's ranking moved.
 
 ## What's left
 
-Timed over the whole tour, settled in each room: 24 rooms take more than 60
-VBlanks for 60 frames, 7 take more than 61, and none runs below 50 fps. The
-slowest, Maridia's `d4c2`, runs at 55.4. That's with Samus standing still,
-though, and some things are still slow:
+Timed over the whole tour, settled in each room: 6 rooms take more than 60
+VBlanks for 60 frames, none more than 61, so none runs below 59 fps. That's
+with Samus standing still, though, and some things are still slow:
 
-- Ridley's fight in Ceres runs at about 50 fps on average, between 37 and
-  58 from second to second.
+- Ridley's fight in Ceres runs at 58 fps on average, but its worst seconds
+  drop to 49. It needs real savings, not just better timing: sound takes
+  about 62,000 cycles a frame there, and the picture 115,000.
 - A door still takes 145 GBA frames where the SNES takes 105.
 - The X-ray scope and big power bomb explosions slow the game down.
 
