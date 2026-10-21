@@ -22,6 +22,20 @@ static void VBlankIntrWait(void) {
   __asm__ volatile("swi 0x05" ::: "r0", "r1", "r2", "r3", "memory");
 }
 
+// Waits for the VBlank to show the next frame in: the next one, unless one
+// began since the last frame was presented (|presented_at|, g_vblank_count
+// then) and there's still time in it for Render_Present (some 23 lines, in
+// Ridley's fight in Ceres). A frame of the game just over the GBA's would
+// wait a whole frame more; this way the time it takes evens out over the
+// frames.
+enum { kLatestPresentLine = 192 };
+static void WaitForVBlank(uint32_t presented_at) {
+  unsigned line = REG_VCOUNT;
+  if (g_vblank_count != presented_at && line >= kGbaLines && line < kLatestPresentLine)
+    return;
+  VBlankIntrWait();
+}
+
 // The stack's low-water mark, to see that gba.ld reserves enough: the stack
 // is painted at the start, and the paint left shows how deep it went.
 extern char __sp_sys[], __stack_size[];
@@ -136,9 +150,11 @@ void gba_main(void) {
     uint32_t t1 = Cycles(), a1 = g_audio_cycles;
     Render_CaptureFrame();
     uint32_t t2 = Cycles(), a2 = g_audio_cycles;
-    VBlankIntrWait();
+    static uint32_t presented_at;
+    WaitForVBlank(presented_at);
     uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
+    presented_at = g_vblank_count;
     g_frame_presented = true;
     uint32_t t4 = Cycles(), a4 = g_audio_cycles;
     Audio_Kick();
