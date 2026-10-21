@@ -30,8 +30,10 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # stops clang inlining memcpy/memset and similar. Instead it links -nostdlib
 # and gba/libc provides the few library functions needed; only that code is
 # built with -fno-builtin. The game casts pointers between types freely, so
-# no strict aliasing (the PC build doesn't either).
-add_compile_options(${GBA_COMPILE_OPTIONS} -fno-strict-aliasing)
+# no strict aliasing (the PC build doesn't either). A section a function and
+# a variable, so that --gc-sections drops those unused (a fifth of the
+# engine), not just unused files.
+add_compile_options(${GBA_COMPILE_OPTIONS} -fno-strict-aliasing -ffunction-sections -fdata-sections)
 add_link_options(${GBA_LINK_OPTIONS})
 include_directories(SYSTEM ${CMAKE_SOURCE_DIR}/gba/libc/include)
 include(cmake/compiler-rt.cmake)
