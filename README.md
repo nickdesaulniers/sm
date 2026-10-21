@@ -2,14 +2,14 @@
 
 <p align="center">
   <img src="docs/images/title.png" width="240" alt="The title screen">
-  <img src="docs/images/ceres.png" width="240" alt="Escaping Ceres station">
-  <img src="docs/images/crateria.png" width="240" alt="Samus at her ship in the rain">
-  <img src="docs/images/brinstar.png" width="240" alt="Brinstar">
+  <img src="docs/images/ceres-explodes.png" width="240" alt="Ceres station explodes as Samus escapes">
+  <img src="docs/images/zebes.png" width="240" alt="Planet Zebes">
+  <img src="docs/images/landing.png" width="240" alt="Samus leaves her ship in the rain">
   <br>
-  <img src="docs/images/norfair.png" width="240" alt="Norfair">
-  <img src="docs/images/wrecked-ship.png" width="240" alt="The Wrecked Ship">
-  <img src="docs/images/maridia.png" width="240" alt="Maridia">
-  <img src="docs/images/tourian.png" width="240" alt="Tourian">
+  <img src="docs/images/kraid.png" width="240" alt="Kraid">
+  <img src="docs/images/botwoon.png" width="240" alt="Botwoon">
+  <img src="docs/images/ridley.png" width="240" alt="Ridley">
+  <img src="docs/images/mother-brain.png" width="240" alt="Mother Brain">
 </p>
 
 Super Metroid, running natively on the Game Boy Advance. The game itself is
