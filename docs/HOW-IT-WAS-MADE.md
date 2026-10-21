@@ -225,16 +225,40 @@ a still background that is an invisible one-pixel shift, and the comparison
 script had been quietly compensating for it. With a background whose scroll
 changes every line, each line showed its neighbor's.
 
-After those fixes, 234 of the 254 rooms match the SNES to within 5%. Most of
-the rest are the places where the GBA's blending can only approximate the
-SNES's subtraction.
+After those fixes, 234 of the 254 rooms matched the SNES to within 5%. The
+rest were Maridia and Tourian, where the room grows dark by subtraction,
+and three stubborn lines just under the HUD.
+
+The three lines turned out to be the hardware. When `DISPCNT` switches a
+background on partway down the screen, the GBA waits three scanlines before
+drawing it. The fix keeps the gameplay layers switched on from the top of the
+frame and blacks them out behind the HUD instead.
+
+The subtraction took more cunning. The GBA can only add, but subtraction
+can be split in two. The palette subtracts one colour from the whole room,
+and the shadow layer, drawn on top, adds back the difference between that
+colour and its own. Every frame, the renderer samples forty points on
+screen. It works out which of three tricks comes closest there, and which
+colour to subtract, channel by channel. The first sampling grid stepped down
+the screen in multiples of eight lines, so every sample landed on the same
+row of its tile, and the samples never saw the thin lines of Maridia's
+shadow pattern. Staggering the samples fixed that. The HUD shares the
+shadow layer's palettes, so the add-back colours are switched in at the
+HUD's bottom edge and switched back at VBlank.
+
+Now 252 of the 254 rooms match the SNES to within 5%, most of them pixel for
+pixel.
 
 ## What's left
 
-The port isn't finished:
+The port isn't finished. The same tour, run slowly enough to time each
+room once it settles, showed what the screenshots couldn't:
 
-- The X-ray scope and big power bomb explosions slow the game down.
-- So do a few rooms on Ceres station.
+- Norfair's heat shimmer and Maridia's water rewrite a background's
+  scrolling on every line. Emulating the SNES's HDMA line by line for them
+  still costs too much, and most of those rooms run at 25-40 fps.
+- The X-ray scope, big power bomb explosions and a few rooms on Ceres
+  station slow the game down too.
 - The GBA's 8-bit sound has a hiss the SNES never had.
 
-But all of Zebes is there, at full speed, in your hands.
+But all of Zebes is there, and most of it at full speed, in your hands.

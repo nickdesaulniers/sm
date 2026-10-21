@@ -122,10 +122,19 @@ work:
   room normally and the effect layer on top, blended.
 - **Effect added to some main layers only:** move the effect layer between
   them in priority, shifting the others and the sprites.
-- **Subtracting:** the GBA can't. Put the sub layer on top with EVA = 0
-  and EVB < 16, which darkens what's beneath it only where the sub layer
-  has pixels. Estimate EVB each frame from sampled pixels (per channel,
-  clamped at 0, as the SNES does).
+- **Subtracting:** the GBA can't. Three approximations, picked each frame by
+  their error at a few dozen sampled pixels (main and sub screen, per
+  channel, clamped at 0 as the SNES does):
+  - darken under the sub layer: EVA = 0, EVB < 16;
+  - subtract the sub screen's average colour in the palette;
+  - for an effect layer covering the screen, subtract a colour S in the
+    palette, and draw the layer on top, with each colour c replaced by
+    S − c, blended additively. This is exact wherever the main colour is at
+    least S.
+
+  Stagger the sample points so they don't all fall on the same row of
+  their tiles. If the effect layer shares palettes with the HUD, switch its
+  colours in mid-frame.
 - **The fixed color:** fold it into the palette.
 - **Windows:** SNES window 1 → WIN0, window 2 → WIN1, with their edges
   in the HBlank stream.
@@ -223,7 +232,16 @@ line.
    break in rooms that use BG3 alone for fog. Compare several registers.
 8. **Test scripts that hang.** A test player who walks into a door can
    bounce between two rooms forever. Pin the player and cancel doors you
-   didn't trigger.
+   didn't trigger. Give them enough health that one hit in a single frame
+   can't kill them.
+9. **Backgrounds enabled mid-frame.** A background switched on in DISPCNT
+   partway down the screen appears three scanlines late. Keep the layers on
+   from line 0 and hide them in the lines above (darken to black with BLDY).
+10. **Testing a stale build.** Check the cartridge's timestamp before
+    trusting a regression or an improvement. One "regression" here came
+    from a build step that never ran.
+11. **Measuring speed during transitions.** Per-room timings that include
+    the room load are noise. Settle in each room first (`SM_TOUR_SETTLE`).
 
 ## 8. Working practice
 
