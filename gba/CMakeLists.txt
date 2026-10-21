@@ -91,6 +91,7 @@ add_executable(sm_gba
     irq_entry.S
     controls_screen.c
     input.c
+    message_boxes.c
     main.c
     tour.c
     rtl.c
