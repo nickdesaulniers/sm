@@ -16,7 +16,15 @@
 
 enum {
   kMaxRooms = 256,  // the doors lead to 254
+#ifdef SM_TOUR_FIRST
+  // Where Samus starts, as -DSM_TOUR_FIRST=0xdf45 for Ceres's elevator
+  // room (a build that starts the game there, -DSM_SKIP_INTRO=ON): Ceres's
+  // rooms aren't through Zebes's doors. With -DSM_TOUR_ONLY=0xe0b5, for
+  // Ridley's fight.
+  kFirstRoom = SM_TOUR_FIRST,
+#else
   kFirstRoom = 0x91f8,  // the landing site
+#endif
   kLastRoom = 0xe0b5,   // Ceres's last: not the debug room after it
 };
 // Frames in each room before the next door (more, to measure each room's
