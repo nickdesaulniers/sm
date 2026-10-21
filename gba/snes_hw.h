@@ -113,3 +113,7 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);
+
+// Writes |words| words of VRAM from |src|, at word address |addr|: the GBA's
+// own pictures (see controls_screen.c), not the game's.
+void SnesHw_WriteVram(uint16_t addr, const uint16_t *src, int words);

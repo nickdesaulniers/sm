@@ -120,6 +120,15 @@ uint16_t Input_ReadJoypad(void) {
     if (keys & kKeyR) joy |= kSnesR;
     return joy;
   }
+  // The SNES's buttons as above do what they do by default: a save could
+  // have others (the controller setting screen won't change them).
+  button_config_shoot_x = kSnesX;
+  button_config_jump_a = kSnesA;
+  button_config_run_b = kSnesB;
+  button_config_itemcancel_y = kSnesY;
+  button_config_itemswitch = kSnesSelect;
+  button_config_aim_up_R = kSnesR;
+  button_config_aim_down_L = kSnesL;
   joy |= kSnesB;
   if (keys & kKeyB) joy |= kSnesX;
   if (keys & kKeyL) {

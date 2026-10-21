@@ -5097,6 +5097,11 @@ static void GameOptionsMenu_7_ControllerSettings(void) {
       return;
     }
   } else if (joypad1_newkeys) {
+#if SM_GBA
+    // The GBA's buttons are fixed: only END and RESET do anything.
+    if (menu_option_index < 7)
+      return;
+#endif
     QueueSfx1_Max6(0x38);
     static Func_V *const kOptionsMenuControllerFuncs[9] = {
       OptionsMenuControllerFunc_0,
@@ -5318,6 +5323,14 @@ static const uint16 g_word_82F6AD[6] = {  // 0x82F587
   0x1f,
 };
 
+#if SM_GBA
+// The GBA's buttons in place of the SNES's: see gba/controls_screen.c.
+void GbaControllerSettingsScreen(void);
+
+static void OptionsMenuFunc6(void) {
+  GbaControllerSettingsScreen();
+}
+#else
 static void OptionsMenuFunc6(void) {
   uint16 v0 = 0, v4;
   do {
@@ -5346,6 +5359,7 @@ static void OptionsMenuFunc6(void) {
     ram3000.pause_menu_map_tilemap[793] = g_word_82F6AD[5];
   }
 }
+#endif
 
 static void OptionsMenuControllerFunc_0(void) {  // 0x82F6B9
   uint16 v0 = 12;

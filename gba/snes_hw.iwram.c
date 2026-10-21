@@ -44,6 +44,13 @@ static inline void MarkVramDirty(uint16_t addr) {
   g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
 }
 
+ROM_CODE void SnesHw_WriteVram(uint16_t addr, const uint16_t *src, int words) {
+  for (int i = 0; i < words; i++) {
+    g_vram[(addr + i) & 0x7fff] = src[i];
+    MarkVramDirty(addr + i);
+  }
+}
+
 ROM_CODE uint8_t SnesHw_ReadA(uint32_t addr) {
   uint8_t bank = addr >> 16;
   uint16_t a = addr;

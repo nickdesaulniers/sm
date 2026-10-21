@@ -104,6 +104,13 @@ charges whenever she runs long enough.
 On the title screen, the menus and the pause screen, each button is the SNES
 button of the same name (B goes back).
 
+The options menu's Controller Setting Mode shows these controls, with the
+GBA's buttons. They can't be changed there: only END and RESET do anything.
+
+<p align="center">
+  <img src="docs/images/controller-settings.png" width="240" alt="Controller Setting Mode, with the GBA's buttons">
+</p>
+
 ## How it differs from the SNES
 
 - **The screen.** The GBA's screen is 240x160, and the SNES's is 256x224.

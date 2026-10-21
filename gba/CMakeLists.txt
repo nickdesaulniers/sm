@@ -89,6 +89,7 @@ add_executable(sm_gba
     audio_mix.iwram.c
     audio_mix.S
     irq_entry.S
+    controls_screen.c
     input.c
     main.c
     tour.c
