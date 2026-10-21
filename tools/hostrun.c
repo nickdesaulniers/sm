@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include "src/sm_rtl.h"
+#include "src/snes/ppu.h"
 #include "src/snes/snes.h"
 #include "src/spc_player.h"
 #include "src/variables.h"
@@ -83,10 +84,18 @@ int main(int argc, char **argv) {
     joy[last] = value;
   fclose(f);
 
-  if (!SnesInit(argv[1])) {
+  Snes *snes = SnesInit(argv[1]);
+  if (!snes) {
     fprintf(stderr, "can't load %s\n", argv[1]);
     return 1;
   }
+  // Somewhere to draw, as main.c has, and drawing on (otherwise these are
+  // what malloc left: the PPU writes through a null pointer, or never
+  // draws).
+  static uint8_t pixels[256 * 4 * 240], my_pixels[256 * 4 * 240];
+  PpuBeginDrawing(snes->snes_ppu, pixels, 256 * 4, 0);
+  PpuBeginDrawing(snes->my_ppu, my_pixels, 256 * 4, 0);
+  snes->disableRender = false;
   g_spc_player = SpcPlayer_Create();
   SpcPlayer_Initialize(g_spc_player);
   coroutine_state_0 = 1;
