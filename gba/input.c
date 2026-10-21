@@ -4,7 +4,7 @@
 //   A       jump (SNES A)
 //   B       shoot (SNES X)
 //   R       hold to ready missiles, or the item Select picked; power bombs
-//           in morph ball
+//           in morph ball; hold to look with the X-ray scope
 //   L       hold to aim diagonally: up, or down with Down held (SNES R, L)
 //   Select  pick what R readies: missiles, super missiles, grapple beam or
 //           X-ray scope, of those Samus has
@@ -113,8 +113,15 @@ uint16_t Input_ReadJoypad(void) {
   if (keys & kKeyStart) joy |= kSnesStart;
   if (keys & kKeyA) joy |= kSnesA;
   bool gameplay = game_state >= 7 && game_state <= 11;
-  if (!gameplay) {
-    if (keys & kKeyB) joy |= kSnesB;
+  // Message boxes come up in gameplay, and are closed with any button, or,
+  // saving, answered with A or B and switched with Select: as elsewhere,
+  // their buttons are the SNES's of the same names, with nothing held for
+  // running (which would close them as soon as a button could). B is the
+  // SNES's X too, so it isn't new to gameplay, and doesn't shoot, once the
+  // box has closed.
+  bool message_box = gameplay && queued_message_box_index != 0;
+  if (!gameplay || message_box) {
+    if (keys & kKeyB) joy |= message_box ? kSnesB | kSnesX : kSnesB;
     if (keys & kKeySelect) joy |= kSnesSelect;
     if (keys & kKeyL) joy |= kSnesL;
     if (keys & kKeyR) joy |= kSnesR;
@@ -129,7 +136,12 @@ uint16_t Input_ReadJoypad(void) {
   button_config_itemswitch = kSnesSelect;
   button_config_aim_up_R = kSnesR;
   button_config_aim_down_L = kSnesL;
-  joy |= kSnesB;
+  // The X-ray scope shines while the run button is held, with it selected:
+  // so, while it's selected, as R holds it, R is the run button. Otherwise
+  // Select picking it would turn it on, and letting go of R wouldn't turn it
+  // off.
+  if (hud_item_index != kItemXray || (keys & kKeyR))
+    joy |= kSnesB;
   if (keys & kKeyB) joy |= kSnesX;
   if (keys & kKeyL) {
     if (keys & kKeyDown)
