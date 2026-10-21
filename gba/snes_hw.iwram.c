@@ -11,7 +11,8 @@
 #include "gba_hw.h"
 #include "sm_rtl.h"
 
-SnesHw g_snes_hw IWRAM_BSS;
+// (Aligned: SameRegs compares its registers' words.)
+SnesHw g_snes_hw IWRAM_BSS __attribute__((aligned(4)));
 uint16_t g_cgram[256];
 uint8_t g_oam[544];
 uint16_t g_vram[kVramWords];

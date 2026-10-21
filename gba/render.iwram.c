@@ -119,8 +119,8 @@ static int y_offset = kMaxYOffset / 2;
 static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
 // How many of each slot's entries, by chunk of 16, have the priority bit.
 // The GBA has no background to spare for BG3's priority tiles (in front of
-// everything, with BGMODE's bit 3) and the others (at the back): a slot
-// with any goes in front.
+// everything, with BGMODE's bit 3) and the others (at the back): lines
+// whose rows have any go in front (Bg3Front).
 static uint8_t bg3_hi[2][128];
 static int bg3_hi_total[2];
 // Likewise for BG1's and BG2's maps (by screen, 64 chunks each), as last
@@ -581,6 +581,36 @@ static bool SameButScrolling(const PpuRegs *a, const PpuRegs *b) {
   return true;
 }
 
+// Whether BG3 goes in front (see bg3_hi), for the line |r| on GBA line |g|
+// (SNES line |s|): if the rows of its map that the lines with its state
+// show from there on have priority tiles. (The HUD's do, and some rooms'
+// BG3 below it in the same map, all behind, doesn't: Phantoon's room's,
+// opaque black.)
+ROM_CODE static bool Bg3Front(const PpuRegs *r, int s, int g) {
+  int slot = Bg3Slot(r->bgsc[2]);
+  if (!(r->bgmode & 8) || !bg3_hi_total[slot])
+    return false;
+  // 64 rows high, the second screen's rows 32-63; wider, both screens'
+  // rows (as UpdateMaps has them: of 64x64, the top two).
+  uint8_t sc = r->bgsc[2];
+  bool tall = (sc & 3) == 2, wide = sc & 1;
+  const uint8_t *hi = bg3_hi[slot];
+  int state = line_state[s];
+  // A line every 8 (a row's height), and the last.
+  for (int t = s;;) {
+    int row = ((t + 1 + VOFS(t, 2)) >> 3) & (tall ? 63 : 31);
+    int c = (row & 32) * 2 + (row & 31) * 2;
+    if (hi[c] | hi[c + 1] | (wide ? hi[64 + c] | hi[65 + c] : 0))
+      return true;
+    int n = 0;
+    while (n < 8 && g + 1 < kGbaLines && line_state[SnesLine(g + 1)] == state)
+      g++, n++;
+    if (!n)
+      return false;
+    t = SnesLine(g);
+  }
+}
+
 // The registers BuildLine last made the GBA's of, but for the scrolling,
 // in this frame.
 static const PpuRegs *built_regs;
@@ -603,7 +633,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   }
   l->ctl.dispcnt = dispcnt;
   int bg3_sb = Bg3Slot(r->bgsc[2]) ? kSbBg3Slot1 : kSbBg3Slot0;
-  int bg3_front = (r->bgmode & 8) && bg3_hi_total[Bg3Slot(r->bgsc[2])];
+  int bg3_front = Bg3Front(r, s, g);
   l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
   // The SNES background split into GBA BG1 and BG2 or BG3.
   l->ctl.bgcnt[1] = (1 - bg3_mid) | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
@@ -618,13 +648,17 @@ scrolling:;
     LineStream(l, s, g);
     return;
   }
+  // (By halfwords: ofs isn't word aligned, and the ARM would store a word
+  // at the word it's in.)
   const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
-  uint32_t *out = (uint32_t *)l->ctl.ofs;
-  out[0] = ofs[2] + add;
-  out[1] = ofs[split] + add;
-  out[2] = ofs[0] + add;
-  out[3] = ofs[1] + add;
-  l->stream[0] = l->stream[1] = 0x100;  // BG2's identity, for what it's worth
+  const uint32_t in[4] = {ofs[2] + add, ofs[split] + add, ofs[0] + add, ofs[1] + add};
+  for (int i = 0; i < 4; i++) {
+    l->ctl.ofs[2 * i] = (uint16_t)in[i];
+    l->ctl.ofs[2 * i + 1] = in[i] >> 16;
+  }
+  // BG2's identity, for what it's worth.
+  l->stream[0] = 0x100;
+  l->stream[1] = 0x100 << 16;
   l->stream[2] = l->stream[3] = 0;
 }
 
