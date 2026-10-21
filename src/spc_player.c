@@ -23,12 +23,12 @@ void Audio_DspWrite(uint8 reg, uint8 value);
 // Two bytes, little-endian (|addr| is evaluated twice).
 #define SPC_RAM16(addr) (SPC_RAM(addr) | SPC_RAM((addr) + 1) << 8)
 
-void Sfx1_HandleCmdFromSnes(SpcPlayer *p);
-void Sfx2_HandleCmdFromSnes(SpcPlayer *p);
-void Sfx3_HandleCmdFromSnes(SpcPlayer *p);
-void Sfx1_Process(SpcPlayer *p);
-void Sfx2_Process(SpcPlayer *p);
-void Sfx3_Process(SpcPlayer *p);
+static void Sfx1_HandleCmdFromSnes(SpcPlayer *p);
+static void Sfx2_HandleCmdFromSnes(SpcPlayer *p);
+static void Sfx3_HandleCmdFromSnes(SpcPlayer *p);
+static void Sfx1_Process(SpcPlayer *p);
+static void Sfx2_Process(SpcPlayer *p);
+static void Sfx3_Process(SpcPlayer *p);
 
 typedef struct MemMap {
   uint16 off, org_off;
@@ -723,7 +723,7 @@ static bool WantWriteKof(SpcPlayer *p, Channel *c) {
   }
 }
 
-void CalcFinalVolume(SpcPlayer *p, Channel *c, uint8 vol) {
+static void CalcFinalVolume(SpcPlayer *p, Channel *c, uint8 vol) {
   int t = (p->master_volume >> 8) * vol >> 8;
   t = t * c->channel_volume_master >> 8;
   t = t * (c->channel_volume >> 8) >> 8;
@@ -1098,7 +1098,7 @@ static void Vector_Reset_Spc(SpcPlayer *p) {
   p->timer_cycles = 0;
 }
 
-void Sfx_Chan_Reset(SpcPlayer *p, SfxRegs *sr, SfxChan *s) {
+static void Sfx_Chan_Reset(SpcPlayer *p, SfxRegs *sr, SfxChan *s) {
   s->disable = 0xff;
   s->update_adsr = 0;
   sr->enabled_voices &= s->channel_mask;
@@ -1136,7 +1136,7 @@ static const uint8 kSfx1Conf[] = {
   2, 2
 };
 
-void Sfx1_HandleCmdFromSnes(SpcPlayer *p) {
+static void Sfx1_HandleCmdFromSnes(SpcPlayer *p) {
   uint8 a = p->input_ports[1];
   p->input_ports[1] = 255;
   if (a == 255 || a == 0 || a != 1 && a != 2 && p->sfx1.priority) {
@@ -1216,7 +1216,7 @@ static const uint8 kSfx2Conf[] = {
   0, 3, 3, 3, 3, 0, 3, 2, 2, 2, 2, 1, 1, 1, 2
 };
 
-void Sfx2_HandleCmdFromSnes(SpcPlayer *p) {
+static void Sfx2_HandleCmdFromSnes(SpcPlayer *p) {
   uint8 a = p->input_ports[2];
   p->input_ports[2] = 255;
   if (a == 255 || a == 0 || a != 0x71 && a != 0x7e && p->sfx2.priority) {
@@ -1269,7 +1269,7 @@ static const uint8 kSfx3Conf[] = {
   5, 2, 2, 5, 2, 2, 2, 2, 2, 2, 2, 4, 2, 4, 2
 };
 
-void Sfx3_HandleCmdFromSnes(SpcPlayer *p) {
+static void Sfx3_HandleCmdFromSnes(SpcPlayer *p) {
   uint8 a = p->input_ports[3];
   p->input_ports[3] = 255;
   if (a == 255 || a == 0 || a != 1 && (p->sfx3.some_value == 2 || a != 2 && p->sfx3.priority)) {
@@ -1322,11 +1322,11 @@ void Sfx3_HandleCmdFromSnes(SpcPlayer *p) {
   }
 }
 
-uint8 SfxChan_GetByte(SpcPlayer *p, SfxChan *s) {
+static uint8 SfxChan_GetByte(SpcPlayer *p, SfxChan *s) {
   return SPC_RAM(s->ptr + s->ptr_idx++);
 }
 
-void Sfx_RunChan(SpcPlayer *p, SfxRegs *sr, SfxChan *s) {
+static void Sfx_RunChan(SpcPlayer *p, SfxRegs *sr, SfxChan *s) {
   if (s->disable == 0xff)
     return;
   if (--s->instr_timer == 0) {
@@ -1423,11 +1423,11 @@ next:
   WritePitchInner(p, &p->channel[s->voice_index >> 1], s->note << 8 | s->subnote);
 }
 
-void Sfx1_Init(SpcPlayer *p);
-void Sfx2_Init(SpcPlayer *p);
-void Sfx3_Init(SpcPlayer *p);
+static void Sfx1_Init(SpcPlayer *p);
+static void Sfx2_Init(SpcPlayer *p);
+static void Sfx3_Init(SpcPlayer *p);
 
-void Sfx1_Process(SpcPlayer *p) {
+static void Sfx1_Process(SpcPlayer *p) {
   if (p->sfx1.init_flag != 0xff) {
     Sfx1_Init(p);
     for (int i = 0; i < 4; i++) {
@@ -1442,7 +1442,7 @@ void Sfx1_Process(SpcPlayer *p) {
     Sfx_RunChan(p, &p->sfx1, &p->sfx_chans_1[i]);
 }
 
-void Sfx2_Process(SpcPlayer *p) {
+static void Sfx2_Process(SpcPlayer *p) {
   if (p->sfx2.init_flag != 0xff) {
     Sfx2_Init(p);
     for (int i = 0; i < 2; i++) {
@@ -1457,7 +1457,7 @@ void Sfx2_Process(SpcPlayer *p) {
     Sfx_RunChan(p, &p->sfx2, &p->sfx_chans_2[i]);
 }
 
-void Sfx3_Process(SpcPlayer *p) {
+static void Sfx3_Process(SpcPlayer *p) {
   if (p->sfx3.init_flag != 0xff) {
     Sfx3_Init(p);
     for (int i = 0; i < 2; i++) {
@@ -1472,7 +1472,7 @@ void Sfx3_Process(SpcPlayer *p) {
     Sfx_RunChan(p, &p->sfx3, &p->sfx_chans_3[i]);
 }
 
-void Sfx_Init(SpcPlayer *p, SfxRegs *sr, SfxChan *channels, int which_sfx) {
+static void Sfx_Init(SpcPlayer *p, SfxRegs *sr, SfxChan *channels, int which_sfx) {
   int num = (which_sfx == 0) ? 4 : 2;
   static const uint16 kSomeAddrs[3][3] = {
     {0x3a6, 0x3aa, 0x3af},
@@ -1520,15 +1520,15 @@ void Sfx_Init(SpcPlayer *p, SfxRegs *sr, SfxChan *channels, int which_sfx) {
   }
 }
 
-void Sfx1_Init(SpcPlayer *p) {
+static void Sfx1_Init(SpcPlayer *p) {
   Sfx_Init(p, &p->sfx1, p->sfx_chans_1, 0);
 }
 
-void Sfx2_Init(SpcPlayer *p) {
+static void Sfx2_Init(SpcPlayer *p) {
   Sfx_Init(p, &p->sfx2, p->sfx_chans_2, 1);
 }
 
-void Sfx3_Init(SpcPlayer *p) {
+static void Sfx3_Init(SpcPlayer *p) {
   Sfx_Init(p, &p->sfx3, p->sfx_chans_3, 2);
 }
 
@@ -1650,7 +1650,7 @@ static DspRegWriteHistory my_write_hist;
 static SpcPlayer my_spc, my_spc_snapshot;
 static int loop_ctr;
 
-bool CompareSpcImpls(SpcPlayer *p, SpcPlayer *p_org, Apu *apu) {
+static bool CompareSpcImpls(SpcPlayer *p, SpcPlayer *p_org, Apu *apu) {
   SpcPlayer_CopyVariablesToRam(p);
   memcpy(p->ram + 0x18, apu->ram + 0x18, 2); //lfsr_value
   memcpy(p->ram + 0x110, apu->ram + 0x110, 256-16);  // stack
@@ -1706,7 +1706,7 @@ bool CompareSpcImpls(SpcPlayer *p, SpcPlayer *p_org, Apu *apu) {
 
 extern bool g_debug_apu_cycles;
 
-void RunAudioPlayer(void) {
+static void RunAudioPlayer(void) {
   if(SDL_Init(SDL_INIT_AUDIO) != 0) {
     printf("Failed to init SDL: %s\n", SDL_GetError());
     return;

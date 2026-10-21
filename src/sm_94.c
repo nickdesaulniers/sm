@@ -855,7 +855,7 @@ static uint8 BlockColl_Vert_BombBlock(CollInfo *ci) {  // 0x94934C
     return v1;
 }
 
-uint8 BlockColl_Horiz_Door(CollInfo *ci) {  // 0x94938B
+static uint8 BlockColl_Horiz_Door(CollInfo *ci) {  // 0x94938B
   door_transition_function = FUNC16(DoorTransitionFunction_HandleElevator);
   uint8 door_bts = BTS[cur_block_index];
   uint16 v0 = *(uint16 *)RomPtr_8F(door_list_pointer + 2 * (door_bts & 0x7F));
@@ -870,7 +870,7 @@ uint8 BlockColl_Horiz_Door(CollInfo *ci) {  // 0x94938B
   }
 }
 
-uint8 BlockColl_Vert_Door(CollInfo *ci) {  // 0x9493CE
+static uint8 BlockColl_Vert_Door(CollInfo *ci) {  // 0x9493CE
   door_transition_function = FUNC16(DoorTransitionFunction_HandleElevator);
   uint8 door_bts = BTS[cur_block_index];
   uint16 v0 = *(uint16 *)RomPtr_8F(door_list_pointer + 2 * (door_bts & 0x7F));
@@ -1346,7 +1346,7 @@ void BlockInsideDetection(void) {  // 0x949B60
   }
 }
 
-void CalculateBlockAt(uint16 r26, uint16 r28, uint16 r30, uint16 r32) {  // 0x949C1D
+static void CalculateBlockAt(uint16 r26, uint16 r28, uint16 r30, uint16 r32) {  // 0x949C1D
   int16 v0;
   int16 v1;
   uint16 temp_collision_DD4;
@@ -1392,7 +1392,7 @@ static const int8 kBlockFunc_9C73_Tab1[18] = {
    0, -1,
 };
 
-uint16 BlockFunc_9C73(uint16 v0) {
+static uint16 BlockFunc_9C73(uint16 v0) {
   int v1 = v0 >> 1;
   if ((projectile_type[v1] & 0xF00) != 0) {
     return kBlockFunc_9C73_Tab1[2 * (HIBYTE(projectile_type[v1]) & 0xF) + 1];
@@ -1564,7 +1564,7 @@ static void BlockBombedReact(CollInfo *ci, uint16 v0) {
   while (kBlockBombedReact[(level_data[cur_block_index] & 0xF000) >> 12](ci) & 0x80) {}
 }
 
-void BlockFunc_A06A(uint16 k) {  // 0x94A06A
+static void BlockFunc_A06A(uint16 k) {  // 0x94A06A
   int16 v2;
   int16 v3;
 
@@ -2467,7 +2467,7 @@ LABEL_39:
   return 1;
 }
 
-uint8 BlockFunc_AEE3(void) {  // 0x94AEE3
+static uint8 BlockFunc_AEE3(void) {  // 0x94AEE3
   if (((grapple_beam_unkD26 ^ grapple_beam_end_angle16) & 0x8000) != 0) {
     grapple_beam_unkD38 = 0;
     return 1;
@@ -2498,7 +2498,7 @@ uint16 GrappleInstr_Goto(uint16 j) {  // 0x94B0F4
   return *(uint16 *)RomPtr_94(j);
 }
 
-uint16 CallGrappleInstr(uint32 ea, uint16 j) {
+static uint16 CallGrappleInstr(uint32 ea, uint16 j) {
   switch (ea) {
   case fnGrappleInstr_Goto: return GrappleInstr_Goto(j);  // 0x94b0f4
   default: return Unreachable();
