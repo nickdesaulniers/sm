@@ -754,13 +754,21 @@ static Func_V *const kBlockColl_SpikeBlock[16] = {  // 0x94904B
   SetCarry_Spikeblk,
 };
 
+// A spike block's reaction, by its BTS. (Past the ROM's table, the SNES
+// would take the next code's bytes for addresses: nothing, here.)
+static void BlockColl_SpikeBlock(void) {
+  uint8 bts = BTS[cur_block_index];
+  if (bts < 16)
+    kBlockColl_SpikeBlock[bts]();
+}
+
 static uint8 BlockColl_Horiz_SpikeBlock(CollInfo *ci) {
-  kBlockColl_SpikeBlock[BTS[cur_block_index]]();
+  BlockColl_SpikeBlock();
   return BlockColl_Horiz_SolidShootGrappleBlock(ci);
 }
 
 static uint8 BlockColl_Vert_SpikeBlock(CollInfo *ci) {  // 0x94905D
-  kBlockColl_SpikeBlock[BTS[cur_block_index]]();
+  BlockColl_SpikeBlock();
   return BlockColl_Vert_SolidShootGrappleBlock(ci);
 }
 
@@ -1137,7 +1145,10 @@ static Func_V *const kBlockInsideReact_SpikeAir[16] = {  // 0x9498CC
 };
 
 static uint8 BlockInsideReact_SpikeAir(CollInfo *ci) {
-  kBlockInsideReact_SpikeAir[BTS[cur_block_index]]();
+  // (Past the table: see BlockColl_SpikeBlock.)
+  uint8 bts = BTS[cur_block_index];
+  if (bts < 16)
+    kBlockInsideReact_SpikeAir[bts]();
   return 0;
 }
 
@@ -2020,7 +2031,8 @@ static uint8 BlockReactGrapple_GrappleBlock(CollInfo *ci) {  // 0x94A7D1
     0xd0d8,
   };
   grapple_beam_flags &= ~0x8000;
-  if (BTS[cur_block_index] & 0x80)
+  // (Past the table, too: see BlockColl_SpikeBlock.)
+  if (BTS[cur_block_index] >= 4)
     return 0;
   else
     return SpawnPLM(kBlockReactGrapple_GrappleBlockPlm[BTS[cur_block_index]]);
@@ -2045,7 +2057,8 @@ static uint8 BlockReactGrapple_SpikeBlock(CollInfo *ci) {  // 0x94A7FD
     0xd0e4,
     0xd0e4,
   };
-  if (BTS[cur_block_index] & 0x80)
+  // (Past the table, too: see BlockColl_SpikeBlock.)
+  if (BTS[cur_block_index] >= 16)
     return 0;
   else
     return SpawnPLM(kBlockReactGrapple_SpikeBlockPlm[BTS[cur_block_index]]);

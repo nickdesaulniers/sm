@@ -69,3 +69,21 @@ wrong, but UBSan reports the index out of bounds.
 **Fix:** declare it `uint8 menu_tilemap[2048]`, and fill it as itself in
 `FileSelectMenu_1_LoadFileSelectMenuBG2` (this branch, the commit that added this entry). The
 C still matches the original frame by frame.
+
+## 5. Tables indexed by a block's BTS, past their end
+
+**Where:** `src/sm_94.c`: `BlockInsideReact_SpikeAir`,
+`BlockColl_Horiz_SpikeBlock` and `BlockColl_Vert_SpikeBlock`, and
+`BlockReactGrapple_GrappleBlock` and `BlockReactGrapple_SpikeBlock`.
+
+**What:** each indexes a table of handlers (or PLMs) by the block's BTS
+byte, which can be anything: the C's tables have 16 entries (the grapple
+block's 4), and the ROM's are as short (the spike air table at
+`$94:98CC` is 8 entries: the next function starts 16 bytes on), so a
+larger BTS reads past the table, where the SNES would take the next
+code's bytes for addresses. In C it's undefined; on the GBA, with Samus
+held inside a block in a Maridia room by a test that walks every room,
+it called a null pointer and reset (which pointer depended on the build).
+
+**Fix:** a BTS past the table does nothing (commit on this branch, with
+this entry).

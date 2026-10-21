@@ -23,6 +23,10 @@
 // instruction with an
 // address in [LO, HI), to see where in a function they go.
 //
+// With TRAP0=1 too, if the CPU goes to address 0 or the cartridge's entry
+// (a call through a null pointer, which resets the GBA), it prints the 64
+// instructions before, with their functions and LR, and stops.
+//
 // With DUMP=FRAME:PREFIX, it writes the GBA's memory after that frame
 // (counted like SHOTS) to PREFIX.ewram, PREFIX.iwram, .io, .pal, .vram and
 // .oam: for tools/snesref.c, and for looking into.
@@ -179,8 +183,21 @@ static unsigned long long profile_frame(struct mCore* core) {
     struct ARMCore* cpu = core->cpu;
     uint32_t start_frame = core->frameCounter(core);
     uint64_t last = mTimingGlobalTime(core->timing), start = last;
+    // The last instructions run, for TRAP0.
+    static uint32_t ring[64], ring_lr[64];
+    static unsigned ring_at;
     while (core->frameCounter(core) == start_frame) {
         uint32_t pc = cpu->gprs[15] - (cpu->executionMode == MODE_ARM ? 4 : 2);
+        if (getenv("TRAP0") && (pc == 0 || pc == 0x08000000)) {
+            printf("trap: pc 0 at frame %u\n", core->frameCounter(core));
+            for (unsigned k = 0; k < 64; k++) {
+                uint32_t a = ring[(ring_at + k) % 64];
+                printf("trap: %08x %s (lr %08x %s)\n", a, find_sym(a)->name,
+                       ring_lr[(ring_at + k) % 64], find_sym(ring_lr[(ring_at + k) % 64])->name);
+            }
+            exit(1);
+        }
+        ring[ring_at % 64] = pc, ring_lr[ring_at % 64] = cpu->gprs[14], ring_at++;
         core->step(core);
         uint64_t now = mTimingGlobalTime(core->timing);
         find_sym(pc)->cycles += now - last;
