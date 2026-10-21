@@ -1492,17 +1492,20 @@ static void UpdateOam(void) {
   }
 }
 
-// With no line showing BG1-BG3 (as a door loads the next room's graphics),
-// their tiles and maps aren't converted: if VRAM changed, they're all
-// converted again when lines show them.
-ROM_CODE static void ForgetConverted(const uint32_t *dirty) {
-  for (int i = 0; i < kVramChunks / 32; i++) {
-    if (dirty[i]) {
-      conv.bg12_base = conv.bg3_base = 0xffff;
-      conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
-      return;
-    }
-  }
+// VRAM's changes on frames with no line showing BG1-BG3 (as a door loads
+// the next room's graphics, or in Mode 7), for when lines show them: then
+// their tiles and maps are converted.
+static uint32_t later_dirty[kVramChunks / 32];
+
+ROM_CODE static void KeepForLater(const uint32_t *dirty) {
+  for (int i = 0; i < kVramChunks / 32; i++)
+    later_dirty[i] |= dirty[i];
+}
+
+ROM_CODE static void AddFromBefore(uint32_t *dirty) {
+  for (int i = 0; i < kVramChunks / 32; i++)
+    dirty[i] |= later_dirty[i];
+  memset(later_dirty, 0, sizeof(later_dirty));
 }
 
 void Render_Present(void) {
@@ -1525,11 +1528,13 @@ void Render_Present(void) {
   int blank_before = conv.blank_tile;
   if (mode7)
     UpdateTilesMode7(dirty);
+  if (text)
+    AddFromBefore(dirty);
+  else
+    KeepForLater(dirty);
   UpdateTiles(r, dirty, text && !mode7, text);
   if (text)
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
-  else
-    ForgetConverted(dirty);
   UpdateOam();
 
   // From now on, the VBlank interrupt sets up this frame's registers: from
