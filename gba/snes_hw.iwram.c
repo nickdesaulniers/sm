@@ -539,7 +539,7 @@ static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_
   return SnesHw_ReadA(bank << 16 | addr);
 }
 
-static void HdmaDecode(void) {
+ROM_CODE static void HdmaDecode(void) {
   hdma_count = 0;
   hdma_dirty = false;
   for (int i = 0; i < 8; i++) {
@@ -798,12 +798,17 @@ static void HdmaSkipLines(int lines) {
     hdma[k].c->ntrl -= lines;
 }
 
-// But for the windows' edges (bytes 47-50: the top of word 11 and the
-// bottom of word 12).
-_Static_assert(offsetof(PpuRegs, wh) == 47, "PpuRegs.wh");
+// But for the scrolling (bytes 10-25: the top of word 2, words 3-5 and the
+// bottom of word 6), which has states of its own, and the windows' edges
+// (bytes 47-50: the top of word 11 and the bottom of word 12).
+_Static_assert(offsetof(PpuRegs, hofs) == 10 && offsetof(PpuRegs, vofs) == 18 &&
+                   offsetof(PpuRegs, wh) == 47 && sizeof(PpuRegs) == 64,
+               "PpuRegs's layout");
 static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
   const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
-  for (unsigned i = 0; i < 11; i++) {
+  if (x[0] != y[0] || x[1] != y[1] || ((x[2] ^ y[2]) & 0xffff) || ((x[6] ^ y[6]) & 0xffff0000))
+    return false;
+  for (unsigned i = 7; i < 11; i++) {
     if (x[i] != y[i])
       return false;
   }
@@ -814,11 +819,12 @@ static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
   return !((x[11] ^ y[11]) & 0x00ffffff) && !((x[12] ^ y[12]) & 0xff000000);
 }
 
-int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows) {
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
+                      uint16_t (*scrolls)[8], uint8_t *line_scroll) {
   SnesHw *h = &g_snes_hw;
   SnesHw_HdmaInit();
   HdmaWindows(line_windows);
-  int n = 0;
+  int n = 0, m = 0;
   h->regs_dirty = true;
   // A line shows the registers as HDMA and the IRQ at the end of the line
   // before it left them (as src/snes/snes.c draws a frame).
@@ -839,9 +845,20 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
       h->regs_dirty = false;
       if (!n || !SameRegs(&states[n - 1], &h->r))
         states[n++] = h->r;
+      // The scrolling: Maridia's water and Norfair's heat change it every
+      // line, the rest seldom.
+      const uint16_t *ofs = h->r.hofs, *last = scrolls[m ? m - 1 : 0];
+      if (!m || ofs[0] != last[0] || ofs[1] != last[1] || ofs[2] != last[2] || ofs[3] != last[3] ||
+          ofs[4] != last[4] || ofs[5] != last[5] || ofs[6] != last[6] || ofs[7] != last[7]) {
+        for (int i = 0; i < 8; i++)
+          scrolls[m][i] = ofs[i];
+        m++;
+      }
     }
-    for (int end = v + quiet; v < end; v++)
+    for (int end = v + quiet; v < end; v++) {
       line_state[v] = n - 1;
+      line_scroll[v] = m - 1;
+    }
   }
   return n;
 }

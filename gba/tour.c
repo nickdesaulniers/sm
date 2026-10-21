@@ -78,7 +78,7 @@ bool Tour_BeforeFrame(void) {
     tour_next = 1;  // past the landing site, where Samus is
   }
   // Samus can't die on the way.
-  samus_health = samus_max_health;
+  samus_health = samus_max_health = 1499;
   if (game_state == kGameState_9_HitDoorBlock && !tour_door)
     game_state = kGameState_8_MainGameplay;  // a door she touched: not the tour's
   if (game_state != kGameState_8_MainGameplay) {

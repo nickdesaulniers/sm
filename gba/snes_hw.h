@@ -101,7 +101,10 @@ enum { kSnesLines = 224 };
 // each change: the number of states. But for the windows' edges (WH0-WH3,
 // as a word), which HDMA often changes every line: they're
 // line_windows[line], and the states' are the last line's.
-int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows);
+// The scrolling (BGnHOFS, then BGnVOFS) has states of its own:
+// scrolls[line_scroll[line]].
+int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
+                      uint16_t (*scrolls)[8], uint8_t *line_scroll);
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);

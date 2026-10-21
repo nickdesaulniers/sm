@@ -83,7 +83,12 @@ typedef struct LineRegs {
 static PpuRegs line_states[kSnesLines];
 static uint8_t line_state[kSnesLines];
 static uint32_t line_wh[kSnesLines];  // WH0-WH3, by line
+// BGnHOFS and BGnVOFS, in place of the states': ppu_scrolls[line_scroll[line]].
+static uint16_t ppu_scrolls[kSnesLines][8];
+static uint8_t line_scroll[kSnesLines];
 #define LINE_REGS(s) (&line_states[line_state[s]])
+#define HOFS(s, bg) ppu_scrolls[line_scroll[s]][bg]
+#define VOFS(s, bg) ppu_scrolls[line_scroll[s]][4 + (bg)]
 // Two of each, for the frame on show and the next. (One of the streams in
 // EWRAM, for room in IWRAM: HBlank DMA reads only 16 bytes a line.)
 static uint32_t stream0[kGbaLines + 1][4] IWRAM_BSS, stream1[kGbaLines + 1][4];
@@ -507,7 +512,7 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
     return;
   }
   int split = split_bg2;
-  if (!frame_mode7 && built_regs && SameButScrolling(built_regs, r))
+  if (!frame_mode7 && built_regs && (built_regs == r || SameButScrolling(built_regs, r)))
     goto scrolling;
   built_regs = r;
   uint16_t dispcnt = frame_mode7 ? kDispcntMode1 : kDispcntMode0;
@@ -530,14 +535,15 @@ scrolling:;
   // (The SNES shows a background's row VOFS + 1 on its first line.)
   int dy = s + 1 - g;
   uint16_t ofs[8];
-  ofs[0] = r->hofs[2] + kXOffset;
-  ofs[1] = r->vofs[2] + dy;
-  ofs[2] = r->hofs[split] + kXOffset;
-  ofs[3] = r->vofs[split] + dy;
-  ofs[4] = r->hofs[0] + kXOffset;
-  ofs[5] = r->vofs[0] + dy;
-  ofs[6] = r->hofs[1] + kXOffset;
-  ofs[7] = r->vofs[1] + dy;
+  const uint16_t *scroll = ppu_scrolls[line_scroll[s]];
+  ofs[0] = scroll[2] + kXOffset;
+  ofs[1] = scroll[6] + dy;
+  ofs[2] = scroll[split] + kXOffset;
+  ofs[3] = scroll[4 + split] + dy;
+  ofs[4] = scroll[0] + kXOffset;
+  ofs[5] = scroll[4] + dy;
+  ofs[6] = scroll[1] + kXOffset;
+  ofs[7] = scroll[5] + dy;
   // The scrolling is the stream, but in frames with Mode 7, whose stream
   // is BG2's transformation.
   for (int i = 0; i < 4; i++) {
@@ -596,7 +602,7 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
     // The columns the GBA shows, 128 pixels wide, two to a screen (in all
     // the rows, and both screens of a map two screens high).
     int wide = sc & 1, n = 0;
-    int first = (r->hofs[bg] + kXOffset) >> 7, last = (r->hofs[bg] + kXOffset + 239) >> 7;
+    int first = (HOFS(text_line, bg) + kXOffset) >> 7, last = (HOFS(text_line, bg) + kXOffset + 239) >> 7;
     for (int j = first; j <= last; j++) {
       int col = j & (wide ? 3 : 1);
       n += bg12_hi_cols[bg][col];
@@ -612,7 +618,7 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
 // line |r|'s registers, or 0 where it's transparent.
 ROM_CODE static int BgPixel(const PpuRegs *r, int bg, int x, int line) {
   uint8_t sc = r->bgsc[bg];
-  int bx = (r->hofs[bg] + x) & 0x3ff, by = (r->vofs[bg] + line + 1) & 0x3ff;
+  int bx = (HOFS(line, bg) + x) & 0x3ff, by = (VOFS(line, bg) + line + 1) & 0x3ff;
   int screen = (bx >> 8) & (sc & 1);
   screen += (by >> 8) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
   uint16_t e = g_vram[((sc & 0xfc) << 8 | screen << 10 | ((by >> 3) & 31) << 5 | ((bx >> 3) & 31)) &
@@ -831,7 +837,7 @@ ROM_CODE static void KeepLayersOn(DisplaySegment *segs, int n) {
 }
 
 void Render_CaptureFrame(void) {
-  SnesHw_RunDisplay(line_states, line_state, line_wh);
+  SnesHw_RunDisplay(line_states, line_state, line_wh, ppu_scrolls, line_scroll);
 
   squash = game_state < 7 || game_state > 11;
   // The HUD: BG3 alone, and below it, other layers or another BG3 (in
@@ -840,7 +846,7 @@ void Render_CaptureFrame(void) {
   const PpuRegs *top = LINE_REGS(8), *below = LINE_REGS(kHudLines + 8);
   hud = !squash && top->tm == 4 &&
         (below->tm != 4 || below->cgadsub != top->cgadsub || below->bgsc[2] != top->bgsc[2] ||
-         below->hofs[2] != top->hofs[2] || below->vofs[2] != top->vofs[2]);
+         HOFS(kHudLines + 8, 2) != HOFS(8, 2) || VOFS(kHudLines + 8, 2) != VOFS(8, 2));
   UpdateYOffset();
 
   // The BG3 maps the lines use, in slots.
@@ -886,14 +892,15 @@ void Render_CaptureFrame(void) {
   DisplaySegment *segs = segments[back];
   int num_segs = 0;
   LineRegs l;
-  int prev_state = -1, prev_dy = 0;
+  int prev_state = -1, prev_dy = 0, prev_scroll = -1;
   bool windows = false;
   built_regs = NULL;
   for (int g = 0; g < kGbaLines; g++) {
     int s = SnesLine(g), state = line_state[s];
     const PpuRegs *r = &line_states[state];
-    if (state == prev_state && s - g == prev_dy) {
-      if ((r->bgmode & 7) == 7)
+    bool mode7 = (r->bgmode & 7) == 7;
+    if (state == prev_state && s - g == prev_dy && (mode7 || line_scroll[s] == prev_scroll)) {
+      if (mode7)
         StepLineMode7(&l);
     } else {
       BuildLine(&l, r, s, g);
@@ -910,6 +917,7 @@ void Render_CaptureFrame(void) {
     }
     prev_state = state;
     prev_dy = s - g;
+    prev_scroll = line_scroll[s];
   }
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
@@ -1154,7 +1162,7 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
     uint8_t sc = r->bgsc[bg];
     bool split = bg == split_bg2;
     // A 64x64 map's top or bottom row, by the middle line (Kraid's room).
-    int row = (sc & 3) == 3 ? ((r->vofs[bg] + text_line) >> 8) & 1 : 0;
+    int row = (sc & 3) == 3 ? ((VOFS(text_line, bg) + text_line) >> 8) & 1 : 0;
     bool moved = sc != conv.bgsc[bg] || row != conv.bg_row[bg];
     bool changed = moved || (split && force_split) || split_changed;
     if (moved) {

@@ -61,8 +61,9 @@ static void write_word(Ppu* ppu, uint8_t adr, uint16_t v) {
     ppu_write(ppu, adr, v >> 8);
 }
 
-// Sets the PPU's registers to a line's.
-static void set_regs(Ppu* ppu, const PpuRegs* r, uint8_t obsel) {
+// Sets the PPU's registers to a line's: its state's, and its scrolling
+// (BGnHOFS, then BGnVOFS).
+static void set_regs(Ppu* ppu, const PpuRegs* r, uint8_t obsel, const uint16_t* scroll) {
     ppu_write(ppu, 0x00, r->inidisp);
     ppu_write(ppu, 0x01, obsel);
     ppu_write(ppu, 0x05, r->bgmode);
@@ -72,14 +73,14 @@ static void set_regs(Ppu* ppu, const PpuRegs* r, uint8_t obsel) {
     ppu_write(ppu, 0x0b, r->bgnba[0]);
     ppu_write(ppu, 0x0c, r->bgnba[1]);
     for (int i = 0; i < 4; i++) {
-        write_word(ppu, 0x0d + 2 * i, r->hofs[i]);
-        write_word(ppu, 0x0e + 2 * i, r->vofs[i]);
+        write_word(ppu, 0x0d + 2 * i, scroll[i]);
+        write_word(ppu, 0x0e + 2 * i, scroll[4 + i]);
     }
     // Mode 7's scroll shares BG1's registers: rewrite BG1's after.
     write_word(ppu, 0x0d, r->m7hofs);
     write_word(ppu, 0x0e, r->m7vofs);
-    ppu->bgLayer[0].hScroll = r->hofs[0];
-    ppu->bgLayer[0].vScroll = r->vofs[0];
+    ppu->bgLayer[0].hScroll = scroll[0];
+    ppu->bgLayer[0].vScroll = scroll[4];
     ppu_write(ppu, 0x1a, r->m7sel);
     for (int i = 0; i < 6; i++)
         write_word(ppu, 0x1b + i, r->m7[i]);
@@ -130,6 +131,9 @@ int main(int argc, char** argv) {
     const uint8_t* line_state = sym(argv[1], "line_state");
     // The windows' edges, by line (see SnesHw_RunDisplay).
     const uint8_t* line_wh = sym(argv[1], "line_wh");
+    // The scrolling, by line: scrolls[line_scroll[line]].
+    const uint16_t* scrolls = sym(argv[1], "ppu_scrolls");
+    const uint8_t* line_scroll = sym(argv[1], "line_scroll");
 
     static Snes snes;
     Ppu* ppu = ppu_init(&snes);
@@ -143,7 +147,7 @@ int main(int argc, char** argv) {
     ppu->lastBrightnessMult = 0xff;
     ppu_runLine(ppu, 0);
     for (int y = 0; y < 224; y++) {
-        set_regs(ppu, &states[line_state[y]], hw->obsel);
+        set_regs(ppu, &states[line_state[y]], hw->obsel, &scrolls[line_scroll[y] * 8]);
         for (int i = 0; i < 4; i++)
             ppu_write(ppu, 0x26 + i, line_wh[y * 4 + i]);
         ppu_runLine(ppu, y + 1);

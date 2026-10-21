@@ -16,8 +16,9 @@ Super Metroid, running natively on the Game Boy Advance. The game itself is
 the [snesrev/sm](https://github.com/snesrev/sm) decompilation, the SNES game's
 code rewritten as C. This port compiles that C for the GBA's ARM7TDMI and
 replaces the SNES's graphics, sound and input with the GBA's own. Nothing is
-emulated: the game runs at 60 frames per second in most places. The GBA's
-16.8 MHz CPU has no time to spare for an emulator.
+emulated: the GBA's 16.8 MHz CPU has no time to spare for an emulator. Most
+of Crateria, Brinstar, the Wrecked Ship and Tourian run at 60 frames per
+second.
 
 The port includes none of the game's data. You build the cartridge from your
 own copy of the SNES ROM.
@@ -115,8 +116,10 @@ button of the same name (B goes back).
   scope's cone and power bombs. The GBA can't subtract colors, so darkened
   rooms are approximated, and power bombs' explosions brighten the screen
   rather than turning it yellow.
-- **Speed.** A few places drop below 60 fps: some of Ceres station's rooms,
-  the X-ray scope, and big power bomb explosions.
+- **Speed.** Norfair's heat shimmer and Maridia's water rewrite the
+  scrolling on every line, which still costs too much: most of their rooms
+  run at 25-40 fps. So do some of Ceres station's rooms, the X-ray scope and
+  big power bomb explosions.
 
 ## The PC version
 
