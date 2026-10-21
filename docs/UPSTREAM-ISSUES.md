@@ -67,8 +67,8 @@ past that array's 1024 entries. It's all within `g_ram`, so nothing goes
 wrong, but UBSan reports the index out of bounds.
 
 **Fix:** declare it `uint8 menu_tilemap[2048]`, and fill it as itself in
-`FileSelectMenu_1_LoadFileSelectMenuBG2` (this branch, the commit that added this entry). The
-C still matches the original frame by frame.
+`FileSelectMenu_1_LoadFileSelectMenuBG2` (commit f6c58ee). The C still
+matches the original frame by frame.
 
 ## 5. Tables indexed by a block's BTS, past their end
 
@@ -85,5 +85,4 @@ code's bytes for addresses. In C it's undefined; on the GBA, with Samus
 held inside a block in a Maridia room by a test that walks every room,
 it called a null pointer and reset (which pointer depended on the build).
 
-**Fix:** a BTS past the table does nothing (commit on this branch, with
-this entry).
+**Fix:** a BTS past the table does nothing (commit be704b4).

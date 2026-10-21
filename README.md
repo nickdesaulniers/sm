@@ -18,9 +18,8 @@ Super Metroid, running natively on the Game Boy Advance. The game itself is
 the [snesrev/sm](https://github.com/snesrev/sm) decompilation, the SNES game's
 code rewritten as C. This port compiles that C for the GBA's ARM7TDMI and
 replaces the SNES's graphics, sound and input with the GBA's own. Nothing is
-emulated: the GBA's 16.8 MHz CPU has no time to spare for an emulator. Most
-of Crateria, Brinstar, the Wrecked Ship and Tourian run at 60 frames per
-second.
+emulated: the GBA's 16.8 MHz CPU has no time to spare for an emulator.
+Almost every room runs at or near 60 frames per second.
 
 The port includes none of the game's data. You build the cartridge from your
 own copy of the SNES ROM.
@@ -71,8 +70,8 @@ python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
 
 ## Reading more
 
-- [How this port was made](docs/HOW-IT-WAS-MADE.md): from a black screen to
-  every room of the game, and the bugs found on the way.
+- [Progress report](docs/HOW-IT-WAS-MADE.md): from a black screen to every
+  room of the game, the notable changes and the bugs found on the way.
 - [Issues to report upstream](docs/UPSTREAM-ISSUES.md): bugs found in the
   decompilation while porting it, with their fixes.
 - [Porting a SNES game to the GBA](docs/PORTING-GUIDE.md): a guide for agents
@@ -128,10 +127,10 @@ GBA's buttons. They can't be changed there: only END and RESET do anything.
   scope's cone and power bombs. The GBA can't subtract colors, so darkened
   rooms are approximated, and power bombs' explosions brighten the screen
   rather than turning it yellow.
-- **Speed.** Norfair's heat shimmer and Maridia's water rewrite the
-  scrolling on every line: their rooms run at 50-55 fps on average, some of
-  Norfair's busiest at under 40. Some of Ceres station's rooms, the X-ray
-  scope and big power bomb explosions slow down too.
+- **Speed.** Timed in every room, none runs below 50 fps, and all but
+  about two dozen at 60. Ridley's fight on Ceres station runs at about 50 fps,
+  doors take longer than on the SNES, and the X-ray scope and big power
+  bomb explosions slow the game down.
 
 ## The PC version
 

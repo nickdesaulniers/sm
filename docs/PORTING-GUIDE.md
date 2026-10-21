@@ -38,6 +38,16 @@ DMA and HDMA. Make it fast later; don't rewrite the game to avoid it.
   doesn't switch between ARM and Thumb. **ARM-mode code must never call
   these helpers**: keep division out of `*.iwram.c`, and check with
   `llvm-nm` when in doubt.
+- **Treat every compiler-rt call as expensive**, in Thumb too. The ARM7TDMI
+  has no divide instruction, so `/` and `%` are a software loop (plus a
+  `__clzsi2` call). As the Linux kernel advises, rethink the algorithm
+  instead: shifts for powers of two, stepping or accumulating instead of
+  dividing, a reciprocal multiply (`a / b` as the top word of `a * ceil(2^32
+  / b)`, exact for 16-bit `a` and 8-bit `b`: `gba/rtl.c`'s SNES divider),
+  or a table worked out at build time (`tools/gen_fade_table.py`). A divide
+  by 3 in a hot loop once cost a million cycles every two seconds. After
+  each build, check the disassembly of hot functions for `bl __udivsi3`,
+  `__aeabi_*` or `__clzsi2`.
 - **Thumb by default, ARM for hot code.** Everything is `-mthumb` except
   `*.iwram.c`, which is `-marm` and linked into IWRAM. ARM runs well from
   the 32-bit, zero-wait-state IWRAM, while Thumb suits the 16-bit cartridge
@@ -77,6 +87,14 @@ the GBA, so the compiler emits byte loads. Your own code that reads ROM
 data must do the same, or read bytes explicitly, as `gba/tour.c` does:
 SNES data structures sit at odd addresses.
 
+The same trap waits in the port's own code, for **stores**. Casting a
+`uint16_t` array to `uint32_t *` and storing through it compiles to `str`,
+and if the array isn't 4-byte aligned (a member at offset 22 of a struct of
+halfwords, say) the ARM7TDMI doesn't fault: it stores at the word below, two
+bytes early. In Ceres's Mode 7 rooms that scrolled the HUD 264 lines down.
+Store by halfwords, or give the struct `__attribute__((aligned(4)))` when
+you compare or copy it by words.
+
 ### Backgrounds
 
 - SNES Mode 1 maps to GBA Mode 0. One 4bpp SNES layer is split into two
@@ -88,10 +106,20 @@ SNES data structures sit at odd addresses.
   second layer's priority tiles. Count priority tiles while converting maps.
 - **Equal priorities:** on the GBA, the lower-numbered background wins a
   tie. Any time you raise a layer to priority 0, check what else is there.
+- **The 2bpp layer's priority bit.** With BGMODE's bit 3, SNES BG3's
+  priority tiles go in front of everything and the rest behind everything,
+  and there's no GBA background left to split it. Decide per part of the
+  screen, by the map rows it shows: the HUD's rows have priority tiles, but
+  a room's BG3 below it in the same map may be an opaque black fill meant
+  to be behind (Phantoon's room, the pause screen). Deciding per map put
+  that fill in front of everything.
 - SNES Mode 7 maps to GBA Mode 1's affine BG2, with a tiled layer kept for
   the HUD in the same frame.
 - Convert tiles and maps incrementally, from a dirty bitmap of SNES VRAM
-  in 16-entry chunks. Full reconversion is far too slow.
+  in 16-entry chunks. Full reconversion is far too slow. Mark a chunk dirty
+  only when its contents change: games re-upload sprite tiles every frame,
+  mostly unchanged. And keep changes made on frames that show no tiled
+  layer (Mode 7, a door's blank frames) for the next frame that does.
 - 64x64 maps don't fit the screenblocks you'll have left. Convert the half
   on screen.
 - **The SNES's first visible line shows background row VOFS + 1.** Add 1
@@ -109,6 +137,16 @@ only real changes. Then:
   *n* affects line *n* + 1.
 - Registers that change at a few lines, such as the HUD's bottom edge, go
   in "segments" set by the VCount interrupt.
+- Keep per-line scrolling apart from the other registers' states.
+  Wavy-water and heat-shimmer effects write a scroll register on every
+  line, and a full register state per line costs most of a frame.
+- Don't emulate HDMA tables that only scroll: read each table once and
+  cache what it writes on which lines and where in RAM the values are, then
+  fill the lines in one pass each frame (`gba/snes_hw.iwram.c`'s `Baked`).
+  Games slide such tables by an entry or two a frame while the camera
+  moves, so a cache keyed on the start address misses every frame. Slide
+  the cached lines instead and bake only the new ones. Check any such
+  shortcut against the line-by-line walk over every room.
 
 ### Color math and windows
 
@@ -148,9 +186,16 @@ each sprite tile row so that rows that wrap around still show correctly.
 ### Screen size
 
 The GBA's screen is 240x160 and the SNES's is 256x224. Crop 1:1 during
-gameplay, following the player, with the HUD pinned. On menus and text
-screens, squash by dropping the same rows of each tile so text stays
-readable.
+gameplay, following the player, with the HUD pinned. Follow the player's
+feet, with some slack, or crouching moves the screen. On menus and text
+screens, squash by dropping two rows of each tile row: the lines that show
+rows 0 and 4 of the text layer's tiles (by each line's scrolling, and the
+VOFS + 1 rule). Merge each dropped row into its neighbor as the tiles are
+converted, keeping the brighter pixel, so letters keep their bars. Leave
+8-line sprites (mostly text) unscaled. When the GBA flips a scaled sprite,
+it flips about the middle and takes columns `width..1`, so store flipped
+copies of the tiles and use an unflipped matrix. Switch between crop and
+squash only while the screen is dark.
 
 ### Sound
 
@@ -160,6 +205,16 @@ readable.
 - Decode BRR samples to PCM at cartridge-build time.
 - Run the mixer from a timer interrupt after VBlank, not from the game
   loop, so a slow game frame doesn't cascade into slow sound frames.
+- Keep a voice's volume times its envelope in 8 bits or more. In 5 bits,
+  quiet voices fade in coarse steps and lose a third of their loudness.
+- Interpolate samples played well below the mixer's rate. Held samples
+  make a staircase that buzzes in the 1-5 kHz range, where the SNES (which
+  interpolates) has next to nothing.
+- Step each envelope state at its own rate, even within a mixing chunk. A
+  note's attack running on at its rate through decay and sustain makes
+  notes fade too soon.
+- Advance silent voices (envelope or volume at 0) without mixing them:
+  they were 28% of the voices mixed here.
 
 ### Input
 
@@ -175,8 +230,10 @@ against ground truth headlessly. Build these tools early.
 
 - **A headless runner** (`tools/mgba/smrun.c`, on libmgba): it scripts
   buttons (`KEYS`), takes screenshots at frames or on log lines (`SHOTS`,
-  `SHOT_ON`), dumps memory (`DUMP`), records audio (`AUDIO`), and profiles
-  cycles by function and instruction (`PROFILE`, `PCS`).
+  `SHOT_ON`), dumps memory (`DUMP`), records audio (`AUDIO`), profiles
+  cycles by function and instruction (`PROFILE`, `PCS`), and shows the
+  instructions before a jump to address 0 (`TRAP0`), for null function
+  pointers.
 - **A logic oracle** (`tools/hostrun.c`): the cartridge built with
   `-DSM_TRACE=ON` logs the joypad and a hash of game state each frame.
   `hostrun` replays that joypad on the PC build, which is itself verified
@@ -195,11 +252,21 @@ against ground truth headlessly. Build these tools early.
   the game's sound requests through the original driver and an emulated
   DSP, then compare the loudness envelopes and spectra.
 - **Shortcuts:** `-DSM_SKIP_INTRO`, `-DSM_START_ZEBES` and `-DSM_TEST_ITEMS`
-  get to the interesting state in seconds.
+  get to the interesting state in seconds. `-DSM_TOUR_ONLY=0x...,0x...`
+  tours only some rooms, `-DSM_TOUR_SETTLE` stays longer in each (bosses
+  need seconds to wake), and `-DSM_TOUR_FIRST` starts elsewhere (Ceres).
+- **Sanitizers on the PC build:** ASan and UBSan on the PC build and
+  `hostrun` find the game's out-of-bounds indexing before it bites the GBA.
 
 When the comparison tool and the port disagree, suspect both. The
 comparison script once silently compensated for the renderer's off-by-one
 line.
+
+When a picture looks wrong, render the same frame's dump with `snesref`
+before debugging the renderer. The tour forces doors that the game would
+have locked, and leaving a boss fight that way (Kraid's) corrupts the next
+rooms' graphics on the SNES too. Bugs that show in `snesref`'s picture are
+the test's, not the port's.
 
 ## 6. Performance
 
@@ -213,6 +280,16 @@ line.
 - Precompute everything that can be computed at cartridge-build time.
 - Cache derived state keyed on its inputs (window regions, palette by
   brightness), and convert only what changed.
+- Spread occasional heavy work over frames. Here the subtraction
+  estimate samples a slice per frame over 16 frames, never all at once.
+- Measure before keeping a "known good" option. Here `-ffunction-sections`
+  with `--gc-sections` shrank the engine by a fifth, and making the
+  decompilation's single-file functions `static` stopped the compiler
+  keeping copies nobody called. `-O2`, `-Os`, `-Oz` and LTO were all
+  slower: LTO's cross-file inlining doesn't fit in IWRAM.
+- The synchronous main loop (game, render, wait for VBlank, present) means
+  a frame even slightly over budget waits a second VBlank. Smooth out
+  spikes, not just averages.
 
 ## 7. Pitfalls that cost the most
 
@@ -221,11 +298,13 @@ line.
    `memcpy` corrupts them. The symptom, Samus unable to climb slopes, was
    far from the cause. Find such cases with an overlap-checking `memcpy`
    on the PC build, and fix the game source with `memmove`.
-2. **Misaligned reads** of ROM structures (see §4).
+2. **Misaligned reads** of ROM structures, and misaligned word stores in
+   your own code (see §4).
 3. **The VOFS + 1 rule** (see §4).
 4. **Priority ties** between GBA backgrounds (see §4).
 5. **Division in ARM code** links compiler-rt's Thumb helpers into ARM
-   callers. The result is wrong returns, not link errors.
+   callers. The result is wrong returns, not link errors. In Thumb it works,
+   but slowly (see §2).
 6. **IWRAM creep.** Every feature costs bytes. Check `__iwram_bss_end`
    after each change.
 7. **Detecting the HUD by heuristics.** Rules like "BG3 alone means HUD"
@@ -241,7 +320,17 @@ line.
     trusting a regression or an improvement. One "regression" here came
     from a build step that never ran.
 11. **Measuring speed during transitions.** Per-room timings that include
-    the room load are noise. Settle in each room first (`SM_TOUR_SETTLE`).
+    the room load are noise, and so is the camera's scroll to the player
+    after it, which can take seconds with pauses. The tour times 60 frames
+    once the camera has stood still for 60 (`tour: speed` in its log).
+12. **Tables indexed past their end.** The game indexes handler tables by
+    level data that can exceed them. The SNES reads the next code's bytes;
+    the port called a null pointer, at a place that depended on the
+    build's layout. If a crash moves when unrelated code changes, suspect
+    this.
+13. **One rule, two places.** The BG3 priority rule that fixed the pause
+    screen (§4) broke Phantoon's room a day later. When a heuristic fixes
+    one screen, ask which other screen it decides for.
 
 ## 8. Working practice
 
