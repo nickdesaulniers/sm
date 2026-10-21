@@ -23,3 +23,4 @@ SDL2.dll
 *.sav
 /build-tourperf/
 /build-perfrooms/
+/build-astats/
