@@ -32,6 +32,24 @@ void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
   }
 }
 
+// As Convert_Tiles4bpp, a tile, and at |mirrored|, the tile flipped left to
+// right (for sprites outside gameplay: see render.c's SquashSprite).
+void Convert_Tile4bppAndMirrored(volatile uint32_t *dst, volatile uint32_t *mirrored,
+                                 const uint16_t *src) {
+  // (Unrolled, it would take 400 more bytes of IWRAM.)
+#pragma clang loop unroll(disable)
+  for (int r = 0; r < 8; r++) {
+    uint32_t p01 = src[r], p23 = src[r + 8];
+    uint32_t w = expand[p01 & 0xff] | expand[p01 >> 8] << 1 | expand[p23 & 0xff] << 2 |
+                 expand[p23 >> 8] << 3;
+    dst[r] = w;
+    // Its nibbles (pixels) in reverse order.
+    w = w >> 16 | w << 16;
+    w = (w >> 8 & 0x00ff00ff) | (w & 0x00ff00ff) << 8;
+    mirrored[r] = (w >> 4 & 0x0f0f0f0f) | (w & 0x0f0f0f0f) << 4;
+  }
+}
+
 // A SNES 2bpp tile is 8 words: rows of bitplanes 0 and 1.
 ROM_CODE void Convert_Tiles2bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 8, dst += 8) {

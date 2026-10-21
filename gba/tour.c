@@ -15,7 +15,7 @@
 #include "variables.h"
 
 enum {
-  kMaxRooms = 320,
+  kMaxRooms = 256,  // the doors lead to 254
   kFirstRoom = 0x91f8,  // the landing site
   kLastRoom = 0xe0b5,   // Ceres's last: not the debug room after it
 };
