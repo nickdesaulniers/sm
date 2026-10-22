@@ -1069,10 +1069,11 @@ ROM_CODE static void KeepLayersOn(DisplaySegment *segs, int n) {
 // Squashed outside gameplay: switched while the screen's dark, between
 // gameplay and the pause screen, the title or a cutscene (a frame of one
 // shown as the other would be squashed, or not, wrongly), or at most a
-// second after the game state did.
+// second after the game state did. Pausing fades the room out (12), and
+// unpausing fades it back in (17, 18), as gameplay: the room unsquashed.
 ROM_CODE static void SetSquash(void) {
   static uint8_t waited;
-  bool want = game_state < 7 || game_state > 11;
+  bool want = game_state < 7 || (game_state > 12 && game_state < 17) || game_state > 18;
   if (want == squash) {
     waited = 0;
     return;
