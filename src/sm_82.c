@@ -157,6 +157,9 @@ static void DrawBabyMetroid(uint16 k);
 static void FinishProcessingGameOverBabyMetroidAsm(void);
 static uint8 AdvancePaletteFadeForAllPalettes_0xc(void);
 static uint8 AdvancePaletteFadeForAllPalettes(void);
+#if SM_GBA
+static const uint8 *FadeStep(uint16 a);
+#endif
 static uint16 CalculateNthTransitionColorFromXtoY(uint16 a, uint16 k, uint16 j);
 static uint16 CalculateNthTransitionColorComponentFromXtoY(uint16 a, uint16 k, uint16 j);
 static uint8 sub_82DB0C(uint16 a);
@@ -3588,6 +3591,22 @@ uint8 AdvanceGradualColorChangeOfPalette(uint16 k, uint16 j) {  // 0x82D9B8
 
 static uint8 AdvancePaletteFadeForAllPalettes(void) {  // 0x82DA02
   if ((uint16)(palette_change_denom + 1) >= palette_change_num) {
+#if SM_GBA
+    // The same, with the step's table looked up once, not for each color.
+    const uint8 *t = FadeStep(palette_change_num);
+    if (t) {
+      for (int i = 0; i < 0x100; i++) {
+        uint16 k = palette_buffer[i], j = target_palettes[i];
+        if (j != k)
+          palette_buffer[i] = t[(k & 0x1F) << 5 | (j & 0x1F)] |
+                              t[(k >> 5 & 0x1F) << 5 | (j >> 5 & 0x1F)] << 5 |
+                              t[(k >> 10 & 0x1F) << 5 | (j >> 10 & 0x1F)] << 10;
+      }
+      g_word_7EC404 = 0x1FE;
+      ++palette_change_num;
+      return 0;
+    }
+#endif
     for (int i = 0; i < 0x200; i += 2) {
       g_word_7EC404 = i;
       int v2 = i >> 1;
@@ -4649,12 +4668,16 @@ static void LoadLevelScrollAndCre(void) {  // 0x82EA73
   int8 v11;
   int8 v12;
 
+#if SM_GBA
+  Fill16(level_data, 0x8000, 12800);
+#else
   for (int i = 6398; i >= 0; i -= 2) {
     level_data[i >> 1] = 0x8000;
     level_data[(i >> 1) + 3200 * 1] = 0x8000;
     level_data[(i >> 1) + 3200 * 2] = 0x8000;
     level_data[(i >> 1) + 3200 * 3] = 0x8000;
   }
+#endif
   DecompressToMem(Load24(&room_compr_level_data_ptr), (uint8 *)&ram7F_start);
 
   uint16 size = ram7F_start;

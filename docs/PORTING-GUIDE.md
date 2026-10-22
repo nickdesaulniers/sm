@@ -335,6 +335,14 @@ the test's, not the port's.
 13. **One rule, two places.** The BG3 priority rule that fixed the pause
     screen (§4) broke Phantoon's room a day later. When a heuristic fixes
     one screen, ask which other screen it decides for.
+14. **Faster loads move the game's timeline.** The sound driver runs by the
+    clock, and the game waits for it (the music queue, in door transitions),
+    so a shorter load can leave a wait a frame longer, and a test script's
+    button presses, at fixed frames, land elsewhere in the title screen.
+    Every later picture then differs from one taken before in the phase of
+    what blinks, the minimap's marker first, and nothing else. For a change
+    that speeds a load up, compare what it replaced on every call of a tour
+    (the decompressed bytes, the fade's colors) rather than pictures.
 
 ## 8. Working practice
 

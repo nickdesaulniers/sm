@@ -367,6 +367,22 @@ ROM_CODE static void DmaBytes(SnesDmaChannel *c, uint32_t count) {
   }
 }
 
+// Bytes to one half of each VRAM word: Mode 7's maps and tiles, say, as
+// seldom happens (155 uploads in the room tour). (In ROM, for room in IWRAM.)
+ROM_CODE static void VramHalves(const uint8_t *src, uint32_t count, bool high) {
+  SnesHw *h = &g_snes_hw;
+  uint16_t p = h->vram_ptr, inc = h->vram_inc;
+  for (uint32_t i = 0; i < count; i++, p += inc) {
+    uint16_t *w = &g_vram[p & 0x7fff];
+    *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
+    if (!(p & 15) || inc != 1)
+      MarkVramDirtyCounted(p);
+  }
+  MarkVramDirtyCounted(h->vram_ptr);
+  MarkVramDirtyCounted(p - 1);
+  h->vram_ptr = p;
+}
+
 // DMA from the A bus to the PPU's memories without going through WriteBBus
 // a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
 // the game does almost all its DMA. Returns false for anything else.
@@ -430,18 +446,7 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
     h->vram_ptr = p;
   } else if ((c->bbad == 0x18 || c->bbad == 0x19) && mode == 0 && no_remap &&
              inc_on_high == (c->bbad == 0x19)) {
-    // Bytes to one half of each word: Mode 7's maps and tiles, say.
-    bool high = c->bbad == 0x19;
-    uint16_t p = h->vram_ptr, inc = h->vram_inc;
-    for (uint32_t i = 0; i < count; i++, p += inc) {
-      uint16_t *w = &g_vram[p & 0x7fff];
-      *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
-      if (!(p & 15) || inc != 1)
-        MarkVramDirtyCounted(p);
-    }
-    MarkVramDirtyCounted(h->vram_ptr);
-    MarkVramDirtyCounted(p - 1);
-    h->vram_ptr = p;
+    VramHalves(src, count, c->bbad == 0x19);
   } else {
     return false;
   }

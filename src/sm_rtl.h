@@ -105,6 +105,14 @@ static inline const uint8 *RomBankBase(uint8 bank) { return RomPtr((bank << 16) 
 #define RomPtrWithBank(bank, addr) RomPtr((uint32_t)(uint8)(bank) << 16 | (uint16_t)(addr))
 #endif
 
+#if SM_GBA
+// For the room loads, faster than the game's own code (gba/decompress.S, rtl.c):
+// DecompressToMem's work, on the ROM's bytes (returns the end of the output),
+uint8 *Decompress(const uint8 *src, uint8 *dst);
+// and a fill of halfwords.
+void Fill16(uint16 *dst, uint16 value, int count);
+#endif
+
 void WriteReg(uint16 reg, uint8 value);
 void WriteRegWord(uint16 reg, uint16 value);
 uint16 ReadRegWord(uint16 reg);
