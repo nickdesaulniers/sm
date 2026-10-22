@@ -1569,16 +1569,37 @@ static void UpdateOam(void) {
 // the next room's graphics, or in Mode 7), for when lines show them: then
 // their tiles and maps are converted.
 static uint32_t later_dirty[kVramChunks / 32];
+static uint32_t later_marks;
 
 ROM_CODE static void KeepForLater(const uint32_t *dirty) {
   for (int i = 0; i < kVramChunks / 32; i++)
     later_dirty[i] |= dirty[i];
+  later_marks += g_vram_dirty_marks;
 }
 
 ROM_CODE static void AddFromBefore(uint32_t *dirty) {
   for (int i = 0; i < kVramChunks / 32; i++)
     dirty[i] |= later_dirty[i];
   memset(later_dirty, 0, sizeof(later_dirty));
+  later_marks = 0;
+}
+
+// About how many lines Render_Present will take, for presenting late in
+// VBlank (main.c): some 20 with nothing to convert (the palette, OAM, a
+// map's rows), and half a line a dirty chunk of VRAM, measured in Ridley's
+// fights; with 6 to spare. (The marks count chunks more than once, and
+// the ones kept from before may not be converted this frame: over, not
+// under.)
+ROM_CODE int Render_PresentLines(void) {
+  return 26 + ((g_vram_dirty_marks + later_marks) >> 1);
+}
+
+// Shows nothing (the backdrop) until the next Display_Start.
+ROM_CODE static void HideUntilPresented(void) {
+  REG_IME = 0;
+  g_display = 0;
+  REG_DISPCNT = kDispcntMode0;
+  REG_IME = 1;
 }
 
 void Render_Present(void) {
@@ -1589,6 +1610,8 @@ void Render_Present(void) {
   uint32_t dirty[kVramChunks / 32];
   memcpy(dirty, g_vram_dirty, sizeof(dirty));
   memset(g_vram_dirty, 0, sizeof(g_vram_dirty));
+  uint32_t marks = g_vram_dirty_marks + later_marks;
+  g_vram_dirty_marks = 0;
 
   if (mode7 != conv.mode7) {
     // Mode 7 and the other modes use the GBA's VRAM differently.
@@ -1596,6 +1619,14 @@ void Render_Present(void) {
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
   }
+  // Converting all of VRAM for a change of mode, or a room's worth of it,
+  // takes frames: the VBlank interrupt would show the last frame's
+  // registers and maps over the new tiles the while (Ceres's doors, with
+  // the screen on: a Mode 7 room's picture scrambled by the next room's
+  // tiles). Nothing, the backdrop (UpdatePalette sets it), until it's done.
+  enum { kHeavyMarks = 512 };
+  if (mode7 != conv.mode7 || marks > kHeavyMarks)
+    HideUntilPresented();
   UpdatePalette(LINE_REGS(SnesLine(0)), LINE_REGS(SnesLine(kGbaLines / 2)), text);
   conv.mode7 = mode7;
   int blank_before = conv.blank_tile;

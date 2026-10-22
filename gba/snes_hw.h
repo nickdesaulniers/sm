@@ -90,6 +90,9 @@ extern uint16_t g_cgram[256];
 extern uint8_t g_oam[544];
 extern uint16_t g_vram[kVramWords];
 extern uint32_t g_vram_dirty[kVramChunks / 32];
+// How many times a chunk was marked since render.c last cleared the
+// bitmap (at least the chunks dirty: a cheap measure of the work ahead).
+extern uint32_t g_vram_dirty_marks;
 
 void SnesHw_Reset(void);
 

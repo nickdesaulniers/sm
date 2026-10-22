@@ -45,10 +45,22 @@ static inline void MarkVramDirty(uint16_t addr) {
   g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
 }
 
+// And counts the chunk (g_vram_dirty_marks) if it wasn't dirty: for the
+// paths that go a word at a time. (A function: they're the rare ones.)
+uint32_t g_vram_dirty_marks IWRAM_BSS;
+__attribute__((noinline)) static void MarkVramDirtyCounted(uint16_t addr) {
+  uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift, bit = 1u << (chunk & 31);
+  uint32_t *w = &g_vram_dirty[chunk >> 5];
+  if (!(*w & bit)) {
+    *w |= bit;
+    g_vram_dirty_marks++;
+  }
+}
+
 ROM_CODE void SnesHw_WriteVram(uint16_t addr, const uint16_t *src, int words) {
   for (int i = 0; i < words; i++) {
     g_vram[(addr + i) & 0x7fff] = src[i];
-    MarkVramDirty(addr + i);
+    MarkVramDirtyCounted(addr + i);
   }
 }
 
@@ -165,7 +177,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     uint16_t a = VramRemap() & 0x7fff;
 
     g_vram[a] = (g_vram[a] & 0xff00) | val;
-    MarkVramDirty(a);
+    MarkVramDirtyCounted(a);
     if (!(h->vmain & 0x80))
       h->vram_ptr += h->vram_inc;
     break;
@@ -174,7 +186,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     uint16_t a = VramRemap() & 0x7fff;
 
     g_vram[a] = (g_vram[a] & 0x00ff) | (val << 8);
-    MarkVramDirty(a);
+    MarkVramDirtyCounted(a);
     if (h->vmain & 0x80)
       h->vram_ptr += h->vram_inc;
     break;
@@ -390,7 +402,7 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
     uint16_t p = h->vram_ptr, inc = h->vram_inc;
     if (inc == 1) {
       // In up to two pieces, as VRAM wraps around.
-      uint32_t words = count / 2;
+      uint32_t words = count / 2, marked = 0;
       while (words) {
         uint32_t n = 0x8000 - (p & 0x7fff);
         n = n < words ? n : words;
@@ -398,18 +410,21 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
         // and the enemies' tiles every frame, mostly the same as before.
         for (uint32_t q = p & ~15; q < (uint32_t)p + n; q += 16) {
           uint32_t lo = q < p ? p : q, hi = q + 16 < p + n ? q + 16 : p + n;
-          if (!SameWords(&g_vram[lo & 0x7fff], src + (lo - p) * 2, hi - lo))
+          if (!SameWords(&g_vram[lo & 0x7fff], src + (lo - p) * 2, hi - lo)) {
             MarkVramDirty(q);
+            marked++;
+          }
         }
         CopyBytes(&g_vram[p & 0x7fff], src, n * 2);
         src += n * 2;
         p += n;
         words -= n;
       }
+      g_vram_dirty_marks += marked;
     } else {
       for (uint32_t i = 0; i < count; i += 2, p += inc) {
         g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
-        MarkVramDirty(p);
+        MarkVramDirtyCounted(p);
       }
     }
     h->vram_ptr = p;
@@ -422,10 +437,10 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
       uint16_t *w = &g_vram[p & 0x7fff];
       *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
       if (!(p & 15) || inc != 1)
-        MarkVramDirty(p);
+        MarkVramDirtyCounted(p);
     }
-    MarkVramDirty(h->vram_ptr);
-    MarkVramDirty(p - 1);
+    MarkVramDirtyCounted(h->vram_ptr);
+    MarkVramDirtyCounted(p - 1);
     h->vram_ptr = p;
   } else {
     return false;

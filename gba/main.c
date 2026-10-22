@@ -24,16 +24,21 @@ static void VBlankIntrWait(void) {
 
 // Waits for the VBlank to show the next frame in: the next one, unless one
 // began since the last frame was presented (|presented_at|, g_vblank_count
-// then) and there's still time in it for Render_Present (some 23 lines, in
-// Ridley's fight in Ceres). A frame of the game just over the GBA's would
-// wait a whole frame more; this way the time it takes evens out over the
-// frames.
-enum { kLatestPresentLine = 192 };
-static void WaitForVBlank(uint32_t presented_at) {
+// then), it's gameplay, and there's still time in it for Render_Present
+// (|lines|, its estimate of what it will take, before the last line's). A
+// frame of the game just over the GBA's would wait a whole frame more;
+// this way the time it takes evens out over the frames. Not when it
+// wouldn't fit: a present running on into the picture shows the old
+// frame's registers and maps over the new frame's tiles (a room's worth,
+// as a door loads one: a frame of garbage).
+enum { kLastLine = 227 };
+static bool WaitForVBlank(uint32_t presented_at, int lines) {
   unsigned line = REG_VCOUNT;
-  if (g_vblank_count != presented_at && line >= kGbaLines && line < kLatestPresentLine)
-    return;
+  if (g_vblank_count != presented_at && game_state == 8 &&
+      line >= kGbaLines && line + lines < kLastLine)
+    return true;
   VBlankIntrWait();
+  return false;
 }
 
 // The stack's low-water mark, to see that gba.ld reserves enough: the stack
@@ -79,8 +84,10 @@ void gba_main(void) {
   uint32_t frames = 0, game_cycles = 0, audio_cycles = 0, render_cycles = 0;
   uint32_t vblanks = g_vblank_count, audio_start = g_audio_cycles;
   // And the frames that took more than one of the GBA's, with the slowest's
-  // work, for players' logs: cheap, as the line's printed anyway.
-  uint32_t slow = 0, worst[4] = {0, 0, 0, 0}, presented_audio = g_audio_cycles;
+  // work, for players' logs: cheap, as the line's printed anyway. And the
+  // frames presented late in VBlank that ran on past it (none, if
+  // Render_PresentLines is right).
+  uint32_t slow = 0, worst[4] = {0, 0, 0, 0}, presented_audio = g_audio_cycles, overran = 0;
   for (;;) {
     g_snes_hw.joy1 = Input_ReadJoypad();
     uint16_t state = game_state;
@@ -155,9 +162,11 @@ void gba_main(void) {
     uint32_t t2 = Cycles(), a2 = g_audio_cycles;
     static uint32_t presented_at;
     uint32_t last_presented = presented_at;
-    WaitForVBlank(presented_at);
+    bool late = WaitForVBlank(presented_at, Render_PresentLines());
     uint32_t t3 = Cycles(), a3 = g_audio_cycles;
     Render_Present();
+    if (late && REG_VCOUNT < kGbaLines)
+      overran++;
     presented_at = g_vblank_count;
     g_frame_presented = true;
     uint32_t t4 = Cycles(), a4 = g_audio_cycles;
@@ -194,9 +203,11 @@ void gba_main(void) {
       if (slow)
         printf("; slow %u, the slowest %u vblanks: game %u, audio %u, render %u", (unsigned)slow,
                (unsigned)worst[3], (unsigned)worst[0], (unsigned)worst[2], (unsigned)worst[1]);
+      if (overran)
+        printf("; %u late presents overran", (unsigned)overran);
       printf("\n");
       vblanks = v;
-      frames = game_cycles = audio_cycles = render_cycles = slow = 0;
+      frames = game_cycles = audio_cycles = render_cycles = slow = overran = 0;
       worst[0] = worst[1] = worst[2] = worst[3] = 0;
     }
   }

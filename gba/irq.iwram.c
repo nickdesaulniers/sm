@@ -86,11 +86,13 @@ static void VBlank(void) {
   audio_kicked = false;
   StartAudioTimer(kAudioDelay);
   // A frame of the game taking longer, with the screen turned off (as it
-  // loads a room's graphics, NMI off): off on the GBA too, not the last
-  // frame with its graphics going.
+  // loads a room's graphics, NMI off): black on the GBA too, not the last
+  // frame with its graphics going. (Not the GBA's forced blank, which
+  // shows white: no layers, and the backdrop black.)
   if (!g_frame_presented && (g_snes_hw.r.inidisp & 0x80)) {
     g_display = 0;
-    REG_DISPCNT = kDispcntForcedBlank;
+    REG_DISPCNT = kDispcntMode0;
+    GBA_BG_PALETTE[0] = 0;
   }
   g_frame_presented = false;
   // Every frame, as a frame of the game can take more than one of the
