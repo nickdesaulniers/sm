@@ -800,8 +800,9 @@ ROM_CODE static int SubtractError(uint16_t m, uint16_t s, uint16_t add, uint16_t
 // How far off adding back would be, in a channel, with |v| subtracted in
 // the palette, at SubtractWeight's 40 samples: their main screen's values
 // (|m|), the sub screen's (|c|, or 32 where it's transparent, and nothing's
-// added back) and what the SNES makes of them (|want|).
-ROM_CODE static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8_t *want, int v) {
+// added back) and what the SNES makes of them (|want|). (In IWRAM: a
+// search runs it a dozen times a frame.)
+static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8_t *want, int v) {
   int error = 0;
   for (int k = 0; k < 40; k++) {
     int got = (m[k] > v ? m[k] - v : 0) + (v > c[k] ? v - c[k] : 0);
@@ -825,19 +826,27 @@ ROM_CODE static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8
 //   by channel, that's closest (subtract_color, with the BG3 palettes it
 //   uses, subtract_palettes).
 // Over sixteen frames, a slice a frame: the colors and the scrolling change
-// slowly.
+// slowly. (No division: see cmake/compiler-rt.cmake.)
 ROM_CODE static int SubtractWeight(const PpuRegs *r) {
-  // A slice a frame, so that no frame does it all (it's some 150k cycles in
-  // all, from the cartridge): frames 0-4 take 8 samples each, 5 looks at
-  // them, 6-8 search a channel each, 9 says what's best; 10-15 rest. If the
+  // A slice a frame, so that no frame does much (it's some 150k cycles in
+  // all, from the cartridge): frames 0-4 take 8 samples each, 5 and 6 look
+  // at them, 7 sees how far off darkening and the average would be, 8-13
+  // search a channel each two, 14 says what's best; 15 rests. If the
   // registers change partway, it starts over.
   enum { kColumns = 8, kRows = 5, kSamples = kColumns * kRows, kPerFrame = 8 };
+  enum {
+    kLook = kSamples / kPerFrame,
+    kErrors = kLook + 2,
+    kSearch,
+    kDecide = kSearch + 6,
+  };
   static uint8_t phase;
   static uint32_t key;
   static uint8_t pixels[3][kSamples], mains[kSamples];
   static uint16_t main_colors[kSamples], sub_colors[kSamples];
   static uint8_t opaque_at[kSamples];
   static int best, weight, darkened, averaged, added_back, darkest[3], brightest[3];
+  static int opaque, bg3, sums[3], left_luma, main_luma, lo, hi;
   static uint16_t mean, top;
   static bool add_back;
   uint8_t sub = r->ts & ~r->tm & 7, main = r->tm & 3;
@@ -871,7 +880,7 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
     }
     return subtract_weight;
   }
-  if (p == kSamples / kPerFrame) {
+  if (p == kLook) {
     // The layer that takes the most away: with the most pixels on show (in
     // front of the others) that aren't black.
     int count[3] = {0, 0, 0};
@@ -888,13 +897,16 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
       if ((sub & (1 << bg)) && (count[bg] > count[best] || !(sub & (1 << best))))
         best = bg;
     }
-    // The main and sub screens' pixels; and of the sub screen's, how many,
-    // how many BG3's, their sums, the darkest and the brightest.
-    int opaque = 0, bg3 = 0, sums[3] = {0, 0, 0};
-    int left_luma = 0, main_luma = 0;
+    opaque = bg3 = left_luma = main_luma = 0;
     for (int c = 0; c < 3; c++)
-      darkest[c] = 31, brightest[c] = 0;
-    for (int k = 0; k < kSamples; k++) {
+      sums[c] = 0, darkest[c] = 31, brightest[c] = 0;
+  }
+  if (p <= kLook + 1) {
+    // The main and sub screens' pixels; and of the sub screen's, how many,
+    // how many BG3's, their sums, the darkest and the brightest: half the
+    // samples a frame.
+    int from_k = p == kLook ? 0 : kSamples / 2;
+    for (int k = from_k; k < from_k + kSamples / 2; k++) {
       int m = mains[k], q = 0, from = 0;
       for (int bg = 0; bg < 3 && !q; bg++) {
         if (sub & (1 << bg))
@@ -918,7 +930,16 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
         darkest[c] = v < darkest[c] ? v : darkest[c];
       }
     }
-    weight = main_luma ? (left_luma << 4) / main_luma : 16;
+    if (p == kLook)
+      return subtract_weight;
+    // (left_luma << 4) / main_luma: at most 16, as what's left is at most
+    // what was there.
+    weight = 16;
+    if (main_luma) {
+      weight = 0;
+      for (int left = left_luma << 4; left >= main_luma; left -= main_luma)
+        weight++;
+    }
     if (r->cgadsub & 0x40)
       weight >>= 1;
     // Where the sub screen's transparent, nothing's subtracted (it's the
@@ -926,10 +947,14 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
     if (opaque < kSamples)
       darkest[0] = darkest[1] = darkest[2] = 0;
     mean = top = 0;
+    _Static_assert(kSamples == 40, "the division by 40");
     for (int c = 0; c < 3; c++)
-      mean |= ((sums[c] + kSamples / 2) / kSamples) << (5 * c);
-    // How far off each would be, at the pixels. (Not halved.)
+      mean |= ((sums[c] + kSamples / 2) * 1639 >> 16) << (5 * c);
     add_back = opaque && bg3 == opaque;
+    return subtract_weight;
+  }
+  if (p == kErrors) {
+    // How far off each would be, at the pixels. (Not halved.)
     darkened = averaged = 0;
     added_back = add_back ? 0 : 0x7fffffff;
     for (int k = 0; k < kSamples; k++) {
@@ -942,11 +967,12 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
     }
     return subtract_weight;
   }
-  if (p <= kSamples / kPerFrame + 3) {
-    // Adding back: a channel a frame, the color between BG3's darkest and
-    // brightest that's closest. (A ternary search: the error falls, then
-    // rises.)
-    int ch = 5 * (p - kSamples / kPerFrame - 1);
+  if (p < kDecide) {
+    // Adding back: a channel each two frames, the color between BG3's
+    // darkest and brightest that's closest. (A ternary search: the error
+    // falls, then rises. Its first few steps in the first frame.)
+    int ch = 5 * ((p - kSearch) >> 1);
+    bool first = !((p - kSearch) & 1);
     if (!add_back)
       return subtract_weight;
     uint8_t m[kSamples], c[kSamples], want[kSamples];
@@ -956,14 +982,17 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
       int w = m[k] - (opaque_at[k] ? c[k] : 0);
       want[k] = w > 0 ? w : 0;
     }
-    int lo = darkest[ch / 5], hi = brightest[ch / 5];
-    while (hi - lo > 2) {
-      int third = (hi - lo) / 3;
+    if (first)
+      lo = darkest[ch / 5], hi = brightest[ch / 5];
+    for (int steps = 0; hi - lo > 2 && (!first || steps < 4); steps++) {
+      int third = (hi - lo) * 11 >> 5;  // (hi - lo) / 3, as they're 5 bits
       if (AddBackError(m, c, want, lo + third) <= AddBackError(m, c, want, hi - third))
         hi = hi - third;
       else
         lo = lo + third;
     }
+    if (first)
+      return subtract_weight;
     int best_error = 0x7fffffff, best_s = lo;
     for (int v = lo; v <= hi; v++) {
       int error = AddBackError(m, c, want, v);
@@ -974,7 +1003,7 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
     top |= best_s << ch;
     return subtract_weight;
   }
-  if (p == kSamples / kPerFrame + 4) {
+  if (p == kDecide) {
     // Darkening, the average or adding back: the one that's least off,
     // over the last few times (40 pixels are only a sample, and the fog
     // moves; they can be close, and the colors would flicker between

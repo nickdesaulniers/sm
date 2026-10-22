@@ -753,6 +753,10 @@ typedef struct BakedTable {
   uint32_t key;   // bank << 16 | address | bytes per line << 24, or 0
   uint32_t used;  // the frame (g_vblank_count) it was last asked for
   uint16_t end;   // the line its ending entry (of 0) starts on, or kNoEnd
+  // The entry the last line is in (or 0, not known), and the line it
+  // starts on: where to go on from when the table slides up a few lines.
+  uint16_t last_a;
+  int16_t last_v;
   uint16_t das[kSnesLines];  // or kNoTransfer
 } BakedTable;
 enum { kNoTransfer = 0xffff, kNoEnd = 0xffff };
@@ -760,19 +764,22 @@ enum { kNoTransfer = 0xffff, kNoEnd = 0xffff };
 extern volatile uint32_t g_vblank_count;
 
 // The lines |from| to |to| of a table in the bank's ROM |table|, from its
-// entry at |a| (line 0), into |das| (from its start), as HdmaInit,
-// SnesHw_HdmaRunLine and HdmaNextEntry run it; and the line its ending
-// entry starts on, if by |to| + 1, into |end|. False if it goes out of the
-// bank's ROM.
-ROM_CODE static bool BakeLines(const uint8_t *table, uint32_t a, int bytes, int from, int to,
-                               uint16_t *das, uint16_t *end) {
-  for (int v = from; v <= to; v++)
-    das[v - from] = kNoTransfer;
+// entry at |a|, which starts on line |v| (by |from|), into |das| (from its
+// start), as HdmaInit, SnesHw_HdmaRunLine and HdmaNextEntry run it; the
+// line its ending entry starts on, if by |to| + 1, into |end|; and the
+// entry |to| is in and the line it starts on, into |last_a| and |last_v|
+// (or 0, if none is). False if it goes out of the bank's ROM.
+ROM_CODE static bool BakeLines(const uint8_t *table, uint32_t a, int v, int bytes, int from,
+                               int to, uint16_t *das, uint16_t *end, uint16_t *last_a,
+                               int16_t *last_v) {
+  for (int w = from; w <= to; w++)
+    das[w - from] = kNoTransfer;
   *end = kNoEnd;
+  *last_a = 0;
   // |v|: the line the entry at |a| starts on. Of its |n| lines, the first
   // transfers, and with a count over 0x80 (as ntrl counts down, its top bit
   // still set) the others.
-  for (int v = 0; v <= to + 1;) {
+  while (v <= to + 1) {
     if (a < 0x8000 || a > 0xfffd)
       return false;  // (out of the bank's ROM)
     const uint8_t *p = table + a;
@@ -784,6 +791,8 @@ ROM_CODE static bool BakeLines(const uint8_t *table, uint32_t a, int bytes, int 
     int n = ntrl & 0x7f ? ntrl & 0x7f : 128;
     bool repeat = ntrl > 0x80;
     uint16_t first = p[1] | p[2] << 8;
+    if (v <= to && to < v + n)
+      *last_a = a, *last_v = v;
     a += 3;
     int j = from > v ? from - v : 0;
     for (; j < n && v + j <= to && (!j || repeat); j++) {
@@ -877,6 +886,8 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
       b = LeastUsed(baked, kBaked, keep, now);
       memcpy(b->das, keep->das, sizeof(b->das));
       b->end = keep->end;
+      b->last_a = keep->last_a;
+      b->last_v = keep->last_v;
     } else {
       b = keep;
     }
@@ -885,19 +896,39 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
       MoveLines(b->das, b->das + slide, kSnesLines - slide);
       if (b->end != kNoEnd) {
         b->end -= slide;
+        b->last_a = 0;
         for (int v = kSnesLines - slide; v < kSnesLines; v++)
           b->das[v] = kNoTransfer;
-      } else if (!BakeLines(d->table, c->a1t, d->bytes, kSnesLines - slide, kSnesLines - 1,
-                            b->das + kSnesLines - slide, &b->end)) {
-        return NULL;
+      } else {
+        // From the entry the last line was in, now |slide| lines up, if
+        // known, rather than through the lines before (Maridia's water's
+        // are of a line an entry).
+        uint32_t a = b->last_a ? b->last_a : c->a1t;
+        int v = b->last_a ? b->last_v - slide : 0;
+        if (!BakeLines(d->table, a, v, d->bytes, kSnesLines - slide, kSnesLines - 1,
+                       b->das + kSnesLines - slide, &b->end, &b->last_a, &b->last_v))
+          return NULL;
       }
     } else {
       slide = -slide;
       MoveLines(b->das + slide, b->das, kSnesLines - slide);
-      uint16_t end;
-      if (!BakeLines(d->table, c->a1t, d->bytes, 0, slide - 1, b->das, &end))
+      uint16_t end, last_a;
+      int16_t last_v;
+      if (!BakeLines(d->table, c->a1t, 0, d->bytes, 0, slide - 1, b->das, &end, &last_a, &last_v))
         return NULL;
       b->end = b->end != kNoEnd && b->end + slide <= kSnesLines ? b->end + slide : kNoEnd;
+      // The last line's entry, now: it's |slide| lines back, and as the
+      // entries are of 3 bytes, the ones before it are at 3 bytes less.
+      if (b->last_a) {
+        uint32_t a = b->last_a;
+        int v = b->last_v;
+        while (v > kSnesLines - 1 - slide) {
+          a -= 3;
+          v -= d->table[a] & 0x7f ? d->table[a] & 0x7f : 128;
+        }
+        b->last_a = a;
+        b->last_v = v + slide;
+      }
     }
     b->key = key;
     b->used = now;
@@ -918,7 +949,8 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
   }
   b = LeastUsed(baked, kBaked, NULL, now);
   b->key = 0;
-  if (!BakeLines(d->table, c->a1t, d->bytes, 0, kSnesLines - 1, b->das, &b->end))
+  if (!BakeLines(d->table, c->a1t, 0, d->bytes, 0, kSnesLines - 1, b->das, &b->end, &b->last_a,
+                 &b->last_v))
     return NULL;
   b->key = key;
   b->used = now;
