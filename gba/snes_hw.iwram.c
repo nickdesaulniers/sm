@@ -40,9 +40,17 @@ ROM_CODE ROM_CODE void SnesHw_Reset(void) {
   g_snes_hw.cgram_dirty = g_snes_hw.oam_dirty = true;
 }
 
+// The chunks that a whole chunk of ROM was last uploaded to and that nothing
+// has written since (so they're still those bytes: ROM doesn't change), by
+// chunk % 32: where in the cartridge, and in bits 25-30 which chunk (/ 32), or
+// 0 for none. The game re-uploads Samus's and the enemies' tiles from ROM
+// every frame; these needn't be compared with it.
+static uint32_t vram_from_rom[32] IWRAM_BSS;
+
 static inline void MarkVramDirty(uint16_t addr) {
   uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift;
   g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
+  vram_from_rom[chunk & 31] = 0;
 }
 
 // And counts the chunk (g_vram_dirty_marks) if it wasn't dirty: for the
@@ -51,6 +59,7 @@ uint32_t g_vram_dirty_marks IWRAM_BSS;
 __attribute__((noinline)) static void MarkVramDirtyCounted(uint16_t addr) {
   uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift, bit = 1u << (chunk & 31);
   uint32_t *w = &g_vram_dirty[chunk >> 5];
+  vram_from_rom[chunk & 31] = 0;
   if (!(*w & bit)) {
     *w |= bit;
     g_vram_dirty_marks++;
@@ -74,7 +83,7 @@ ROM_CODE uint8_t SnesHw_ReadA(uint32_t addr) {
   return *RomFixedPtr(addr);
 }
 
-static void WriteA(uint32_t addr, uint8_t val) {
+ROM_CODE static void WriteA(uint32_t addr, uint8_t val) {
   uint8_t bank = addr >> 16;
   uint16_t a = addr;
   if (bank == 0x7e || bank == 0x7f)
@@ -83,7 +92,7 @@ static void WriteA(uint32_t addr, uint8_t val) {
     g_ram[a] = val;
 }
 
-static uint16_t VramRemap(void) {
+__attribute__((noinline)) static uint16_t VramRemap(void) {
   uint16_t adr = g_snes_hw.vram_ptr;
   switch ((g_snes_hw.vmain >> 2) & 3) {
   case 0: return adr;
@@ -93,23 +102,20 @@ static uint16_t VramRemap(void) {
   }
 }
 
-// The PPU registers below 0x34 that aren't in PpuRegs's states, by bit:
-// OBSEL, the ports to OAM, VRAM and CGRAM, and BG2-BG4's scrolling (in states
-// of its own: BG1's is too, but Mode 7's shares its registers).
-static const uint32_t kNotPpuRegs[2] = {
-  1u << 0x01 | 1u << 0x02 | 1u << 0x03 | 1u << 0x04 | 1u << 0x0f | 1u << 0x10 | 1u << 0x11 |
-      1u << 0x12 | 1u << 0x13 | 1u << 0x14 | 1u << 0x15 | 1u << 0x16 | 1u << 0x17 |
-      1u << 0x18 | 1u << 0x19,
-  1u << (0x21 - 32) | 1u << (0x22 - 32),
-};
+_Static_assert(offsetof(PpuRegs, bgnba[1]) - offsetof(PpuRegs, bgmode) == 7 &&
+                   offsetof(PpuRegs, cgadsub) - offsetof(PpuRegs, wsel) == 14,
+               "WriteBBus: PpuRegs's bytes aren't in the registers' order");
 
-static void WriteBBus(uint8_t adr, uint8_t val) {
+// The registers that aren't WriteBBus's hot ones. Of those, the ones that
+// are fields of PpuRegs and change the picture as it is (INIDISP, M7SEL, the
+// Mode 7 offsets and center, COLDATA, SETINI) set regs_dirty. The others set
+// their own flag: OBSEL and the OAM port oam_dirty, the BG scroll registers
+// scroll_dirty, CGRAM's port cgram_dirty, and VRAM's port its chunk's.
+__attribute__((noinline)) static void WriteBBusRest(uint8_t adr, uint8_t val) {
   SnesHw *h = &g_snes_hw;
   PpuRegs *r = &h->r;
-  if (adr < 0x34 && !((kNotPpuRegs[adr >> 5] >> (adr & 31)) & 1))
-    h->regs_dirty = true;
   switch (adr) {
-  case 0x00: r->inidisp = val; break;
+  case 0x00: r->inidisp = val; h->regs_dirty = true; break;
   case 0x01: h->obsel = val; h->oam_dirty = true; break;
   case 0x02:
     h->oam_addr_reload = (h->oam_addr_reload & 0x200) | (val << 1);
@@ -135,14 +141,10 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     h->oam_dirty = true;
     break;
   }
-  case 0x05: r->bgmode = val; break;
-  case 0x06: r->mosaic = val; break;
-  case 0x07: case 0x08: case 0x09: case 0x0a: r->bgsc[adr - 7] = val; break;
-  case 0x0b: r->bgnba[0] = val; break;
-  case 0x0c: r->bgnba[1] = val; break;
   case 0x0d:
     r->m7hofs = ((val << 8) | h->m7_latch) & 0x1fff;
     h->m7_latch = val;
+    h->regs_dirty = true;
     // fallthrough
   case 0x0f: case 0x11: case 0x13:
     r->hofs[(adr - 0xd) >> 1] = ((val << 8) | (h->bgofs_latch & 0xf8) | (h->bghofs_latch & 7)) & 0x3ff;
@@ -154,6 +156,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
   case 0x0e:
     r->m7vofs = ((val << 8) | h->m7_latch) & 0x1fff;
     h->m7_latch = val;
+    h->regs_dirty = true;
     // fallthrough
   case 0x10: case 0x12: case 0x14:
     r->vofs[(adr - 0xe) >> 1] = ((val << 8) | h->bgofs_latch) & 0x3ff;
@@ -191,15 +194,12 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
       h->vram_ptr += h->vram_inc;
     break;
   }
-  case 0x1a: r->m7sel = val; break;
-  case 0x1b: case 0x1c: case 0x1d: case 0x1e:
-    r->m7[adr - 0x1b] = (val << 8) | h->m7_latch;
-    h->m7_latch = val;
-    break;
+  case 0x1a: r->m7sel = val; h->regs_dirty = true; break;
   case 0x1f: case 0x20:
     // 13-bit signed.
     r->m7[adr - 0x1b] = (int16_t)(((val << 8) | h->m7_latch) << 3) >> 3;
     h->m7_latch = val;
+    h->regs_dirty = true;
     break;
   case 0x21:
     h->cgram_ptr = val;
@@ -214,22 +214,13 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     }
     h->cgram_high = !h->cgram_high;
     break;
-  case 0x23: case 0x24: case 0x25: r->wsel[adr - 0x23] = val; break;
-  case 0x26: case 0x27: case 0x28: case 0x29: r->wh[adr - 0x26] = val; break;
-  case 0x2a: r->wbglog = val; break;
-  case 0x2b: r->wobjlog = val; break;
-  case 0x2c: r->tm = val; break;
-  case 0x2d: r->ts = val; break;
-  case 0x2e: r->tmw = val; break;
-  case 0x2f: r->tsw = val; break;
-  case 0x30: r->cgwsel = val; break;
-  case 0x31: r->cgadsub = val; break;
   case 0x32:
     if (val & 0x20) r->coldata[0] = val & 0x1f;
     if (val & 0x40) r->coldata[1] = val & 0x1f;
     if (val & 0x80) r->coldata[2] = val & 0x1f;
+    h->regs_dirty = true;
     break;
-  case 0x33: r->setini = val; break;
+  case 0x33: r->setini = val; h->regs_dirty = true; break;
   case 0x40: case 0x41: case 0x42: case 0x43:
     RtlApuWrite(0x2100 + adr, val);
     break;
@@ -243,13 +234,40 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
   }
 }
 
+// (A leaf, with no stack frame, for the hot registers: it's inlined into the
+// callers that are ARM.)
+static inline void WriteBBus(uint8_t adr, uint8_t val) {
+  SnesHw *h = &g_snes_hw;
+  PpuRegs *r = &h->r;
+  // The registers that are a byte of PpuRegs as they are, and in its order
+  // (BGMODE-BG34NBA, then W12SEL-CGADSUB), as the game writes them every
+  // frame: no need to go through the switch. (Indexed from the start of the
+  // struct: each run is part of several arrays and fields, not one array.)
+  if (adr - 5u < 8 || adr - 0x23u < 15) {
+    ((uint8_t *)r)[adr < 0x20 ? offsetof(PpuRegs, bgmode) + (adr - 5)
+                              : offsetof(PpuRegs, wsel) + (adr - 0x23)] = val;
+    h->regs_dirty = true;
+  } else if (adr - 0x1bu < 4) {
+    // The Mode 7 matrix's: the game multiplies with M7A and M7B a few dozen
+    // times a frame in some fights.
+    r->m7[adr - 0x1b] = (val << 8) | h->m7_latch;
+    h->m7_latch = val;
+    h->regs_dirty = true;
+  } else {
+    WriteBBusRest(adr, val);
+  }
+}
+
+// What MPYL, MPYM and MPYH read, a byte each: M7A times M7B's high byte.
+static inline int32_t Mode7Product(void) {
+  return g_snes_hw.r.m7[0] * (int8_t)(g_snes_hw.r.m7[1] >> 8);
+}
+
 ROM_CODE static uint8_t ReadBBus(uint8_t adr) {
   SnesHw *h = &g_snes_hw;
   switch (adr) {
-  case 0x34: case 0x35: case 0x36: {
-    int32_t result = h->r.m7[0] * (int8_t)(h->r.m7[1] >> 8);
-    return result >> (8 * (adr - 0x34));
-  }
+  case 0x34: case 0x35: case 0x36:
+    return Mode7Product() >> (8 * (adr - 0x34));
   case 0x39: {
     uint16_t val = h->vram_read_buf;
     if (!(h->vmain & 0x80)) {
@@ -367,6 +385,71 @@ ROM_CODE static void DmaBytes(SnesDmaChannel *c, uint32_t count) {
   }
 }
 
+// Writes |n| words of VRAM from |p| (and not past its end) from |src|. Only the
+// chunks that change are dirty, and copied: the game uploads Samus's and the
+// enemies' tiles every frame, mostly the same as before. Those from ROM that
+// are known to be there already (vram_from_rom) aren't even compared.
+static void UploadVram(uint32_t p, const uint8_t *src, uint32_t n) {
+  bool rom = (uintptr_t)src >> 25 == 4;
+  uint16_t *dst = &g_vram[p & 0x7fff];
+  // The words just behind |dst| and |src| that are of chunks that changed, to
+  // copy in one go.
+  uint32_t copy_words = 0, marked = 0;
+  for (uint32_t q = p, end = p + n; q < end;) {
+    // The part of q's chunk that's uploaded: usually all 16 words.
+    uint32_t words = 16 - (q & 15);
+    words = words < end - q ? words : end - q;
+    uint32_t *known = NULL, key = 0;
+    if (rom && words == 16) {
+      known = &vram_from_rom[(q >> 4) & 31];
+      key = ((uintptr_t)src & 0x1ffffff) | ((q & 0x7fff) >> 9) << 25;
+    }
+    if ((known && *known == key) || SameWords(dst, src, words)) {
+      if (copy_words)
+        CopyBytes(dst - copy_words, src - copy_words * 2, copy_words * 2);
+      copy_words = 0;
+    } else {
+      MarkVramDirty(q);
+      marked++;
+      copy_words += words;
+    }
+    if (known)
+      *known = key;
+    dst += words;
+    src += words * 2;
+    q += words;
+  }
+  if (copy_words)
+    CopyBytes(dst - copy_words, src - copy_words * 2, copy_words * 2);
+  g_vram_dirty_marks += marked;
+}
+
+// FastDma's other uploads to VRAM, as seldom happens (in ROM, for room in
+// IWRAM): words at a stride (a column of a map), and bytes to one half of each
+// word: Mode 7's maps and tiles, say. Return the new address.
+ROM_CODE static uint16_t VramWordsStrided(uint16_t p, uint16_t inc, const uint8_t *src,
+                                          uint32_t count) {
+  for (uint32_t i = 0; i < count; i += 2, p += inc) {
+    g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
+    MarkVramDirtyCounted(p);
+  }
+  return p;
+}
+
+ROM_CODE static uint16_t VramBytes(uint16_t p, uint16_t inc, const uint8_t *src, uint32_t count,
+                                   bool high) {
+  uint16_t first = p;
+  for (uint32_t i = 0; i < count; i++, p += inc) {
+    uint16_t *w = &g_vram[p & 0x7fff];
+    *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
+    if (!(p & 15) || inc != 1)
+      MarkVramDirtyCounted(p);
+  }
+  MarkVramDirtyCounted(first);
+  MarkVramDirtyCounted(p - 1);
+  return p;
+}
+
 // DMA from the A bus to the PPU's memories without going through WriteBBus
 // a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
 // the game does almost all its DMA. Returns false for anything else.
@@ -402,46 +485,23 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
     uint16_t p = h->vram_ptr, inc = h->vram_inc;
     if (inc == 1) {
       // In up to two pieces, as VRAM wraps around.
-      uint32_t words = count / 2, marked = 0;
+      uint32_t words = count / 2;
       while (words) {
         uint32_t n = 0x8000 - (p & 0x7fff);
         n = n < words ? n : words;
-        // Only the chunks that change are dirty: the game uploads Samus's
-        // and the enemies' tiles every frame, mostly the same as before.
-        for (uint32_t q = p & ~15; q < (uint32_t)p + n; q += 16) {
-          uint32_t lo = q < p ? p : q, hi = q + 16 < p + n ? q + 16 : p + n;
-          if (!SameWords(&g_vram[lo & 0x7fff], src + (lo - p) * 2, hi - lo)) {
-            MarkVramDirty(q);
-            marked++;
-          }
-        }
-        CopyBytes(&g_vram[p & 0x7fff], src, n * 2);
+        UploadVram(p, src, n);
         src += n * 2;
         p += n;
         words -= n;
       }
-      g_vram_dirty_marks += marked;
     } else {
-      for (uint32_t i = 0; i < count; i += 2, p += inc) {
-        g_vram[p & 0x7fff] = src[i] | (src[i + 1] << 8);
-        MarkVramDirtyCounted(p);
-      }
+      p = VramWordsStrided(p, inc, src, count);
     }
     h->vram_ptr = p;
   } else if ((c->bbad == 0x18 || c->bbad == 0x19) && mode == 0 && no_remap &&
              inc_on_high == (c->bbad == 0x19)) {
     // Bytes to one half of each word: Mode 7's maps and tiles, say.
-    bool high = c->bbad == 0x19;
-    uint16_t p = h->vram_ptr, inc = h->vram_inc;
-    for (uint32_t i = 0; i < count; i++, p += inc) {
-      uint16_t *w = &g_vram[p & 0x7fff];
-      *w = high ? (*w & 0x00ff) | (src[i] << 8) : (*w & 0xff00) | src[i];
-      if (!(p & 15) || inc != 1)
-        MarkVramDirtyCounted(p);
-    }
-    MarkVramDirtyCounted(h->vram_ptr);
-    MarkVramDirtyCounted(p - 1);
-    h->vram_ptr = p;
+    h->vram_ptr = VramBytes(h->vram_ptr, h->vram_inc, src, count, c->bbad == 0x19);
   } else {
     return false;
   }
@@ -450,8 +510,9 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
 }
 
 static void RunDma(uint8_t channels) {
-  for (int i = 0; i < 8; i++) {
-    if (!(channels & (1 << i)))
+  // (Mostly channel 0, 1 or both: no need to go through them all.)
+  for (int i = 0; channels; i++, channels >>= 1) {
+    if (!(channels & 1))
       continue;
     SnesDmaChannel *c = &g_snes_hw.dma[i];
     uint32_t count = c->das ? c->das : 0x10000;
@@ -461,23 +522,32 @@ static void RunDma(uint8_t channels) {
   }
 }
 
-static void WriteDmaReg(uint16_t reg, uint8_t val) {
-  SnesDmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
-  switch (reg & 0xf) {
-  case 0x0: c->dmap = val; break;
-  case 0x1: c->bbad = val; break;
-  case 0x2: c->a1t = (c->a1t & 0xff00) | val; break;
-  case 0x3: c->a1t = (c->a1t & 0x00ff) | (val << 8); break;
-  case 0x4: c->a1b = val; break;
-  case 0x5: c->das = (c->das & 0xff00) | val; break;
-  case 0x6: c->das = (c->das & 0x00ff) | (val << 8); break;
-  case 0x7: c->dasb = val; break;
-  case 0x8: c->a2a = (c->a2a & 0xff00) | val; break;
-  case 0x9: c->a2a = (c->a2a & 0x00ff) | (val << 8); break;
-  case 0xa: c->ntrl = val; break;
-  case 0xb: case 0xf: c->unused = val; break;
-  }
-}
+// Where each of a DMA channel's registers ($43x0-$43xf) is in SnesDmaChannel, or
+// 0xff for none: a byte of the 16-bit ones at a time, the low one first. (In
+// IWRAM, with WriteReg.)
+#define DMA_REG(field) offsetof(SnesDmaChannel, field)
+static const uint8_t kDmaRegOffset[16] IWRAM_DATA = {
+  DMA_REG(dmap), DMA_REG(bbad), DMA_REG(a1t), DMA_REG(a1t) + 1, DMA_REG(a1b), DMA_REG(das),
+  DMA_REG(das) + 1, DMA_REG(dasb), DMA_REG(a2a), DMA_REG(a2a) + 1, DMA_REG(ntrl),
+  DMA_REG(unused), 0xff, 0xff, 0xff, DMA_REG(unused),
+};
+#undef DMA_REG
+// (WriteRegWord stores the 16-bit ones whole.)
+_Static_assert(offsetof(SnesHw, dma) % 2 == 0 && sizeof(SnesDmaChannel) % 2 == 0 &&
+                   offsetof(SnesDmaChannel, a1t) % 2 == 0 &&
+                   offsetof(SnesDmaChannel, das) % 2 == 0 &&
+                   offsetof(SnesDmaChannel, a2a) % 2 == 0,
+               "DMA registers' 16-bit fields aren't halfword-aligned");
+// (DMAP with BBAD is one store too: BBAD must follow DMAP, which must be even.)
+_Static_assert(offsetof(SnesDmaChannel, dmap) % 2 == 0 &&
+                   offsetof(SnesDmaChannel, bbad) == offsetof(SnesDmaChannel, dmap) + 1 &&
+                   sizeof(((SnesDmaChannel *)0)->dmap) == 1 &&
+                   sizeof(((SnesDmaChannel *)0)->bbad) == 1,
+               "WriteRegWord: DMAP and BBAD aren't one halfword");
+// (And A1T, DAS and A2A are each the 16 bits of their two registers.)
+_Static_assert(sizeof(((SnesDmaChannel *)0)->a1t) == 2 && sizeof(((SnesDmaChannel *)0)->das) == 2 &&
+                   sizeof(((SnesDmaChannel *)0)->a2a) == 2,
+               "WriteRegWord: a 16-bit DMA register isn't 16 bits wide");
 
 ROM_CODE static uint8_t ReadDmaReg(uint16_t reg) {
   SnesDmaChannel *c = &g_snes_hw.dma[(reg >> 4) & 7];
@@ -497,6 +567,13 @@ ROM_CODE static uint8_t ReadDmaReg(uint16_t reg) {
   }
 }
 
+// (Apart, so that WriteReg needs no stack frame to call it.)
+__attribute__((noinline)) static void StartDivision(uint8_t divisor) {
+  SnesHw *h = &g_snes_hw;
+  h->rddiv = SnesDivide(h->wrdiv, divisor);
+  h->rdmpy = SnesModulus(h->wrdiv, divisor);
+}
+
 void WriteReg(uint16 reg, uint8 value) {
   SnesHw *h = &g_snes_hw;
   if (reg >= 0x2100 && reg < 0x2200) {
@@ -504,7 +581,9 @@ void WriteReg(uint16 reg, uint8 value) {
     return;
   }
   if (reg >= 0x4300 && reg < 0x4380) {
-    WriteDmaReg(reg, value);
+    uint8_t offset = kDmaRegOffset[reg & 0xf];
+    if (offset != 0xff)
+      ((uint8_t *)&h->dma[(reg >> 4) & 7])[offset] = value;
     return;
   }
   switch (reg) {
@@ -513,11 +592,7 @@ void WriteReg(uint16 reg, uint8 value) {
   case WRMPYB: h->rdmpy = h->wrmpya * value; break;
   case WRDIVL: h->wrdiv = (h->wrdiv & 0xff00) | value; break;
   case WRDIVH: h->wrdiv = (h->wrdiv & 0x00ff) | (value << 8); break;
-  case WRDIVB:
-    // In Thumb code, which can call the division helpers.
-    h->rddiv = SnesDivide(h->wrdiv, value);
-    h->rdmpy = SnesModulus(h->wrdiv, value);
-    break;
+  case WRDIVB: StartDivision(value); break;
   case HTIMEL: h->htime = (h->htime & 0x100) | value; break;
   case HTIMEH: h->htime = (h->htime & 0xff) | ((value & 1) << 8); break;
   case VTIMEL: h->vtime = (h->vtime & 0x100) | value; break;
@@ -532,6 +607,10 @@ void WriteReg(uint16 reg, uint8 value) {
 
 ROM_CODE uint8 ReadReg(uint16 reg) {
   SnesHw *h = &g_snes_hw;
+  // The product first: the game multiplies like that a few dozen times a
+  // frame in some fights.
+  if (reg - 0x2134u < 3)
+    return Mode7Product() >> (8 * (reg - 0x2134));
   if (reg >= 0x2100 && reg < 0x2200)
     return ReadBBus(reg & 0xff);
   if (reg >= 0x4300 && reg < 0x4380)
@@ -550,11 +629,20 @@ ROM_CODE uint8 ReadReg(uint16 reg) {
 }
 
 ROM_CODE uint16 ReadRegWord(uint16 reg) {
+  // (The game reads the middle of the product, as a word.)
+  if (reg == MPYM)
+    return Mode7Product() >> 8;
   uint16 lo = ReadReg(reg);
   return lo | (ReadReg(reg + 1) << 8);
 }
 
 void WriteRegWord(uint16 reg, uint16 value) {
+  // DMAP and BBAD, A1T, DAS and A2A (registers 0, 2, 5 and 8 of a channel) are
+  // both bytes of a field: one store.
+  if (reg - 0x4300u < 0x80 && ((0x125 >> (reg & 0xf)) & 1)) {
+    *(uint16_t *)((uint8_t *)&g_snes_hw.dma[(reg >> 4) & 7] + kDmaRegOffset[reg & 0xf]) = value;
+    return;
+  }
   WriteReg(reg, (uint8)value);
   WriteReg(reg + 1, value >> 8);
 }
@@ -590,7 +678,7 @@ static int hdma_count IWRAM_BSS, hdma_scrolls IWRAM_BSS, hdma_windows IWRAM_BSS,
 
 // A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
 // of a bank of RAM (*ram), or the upper half of a LoROM bank's.
-static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
+ROM_CODE static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
   *ram = bank == 0x7e || bank == 0x7f;
   if (*ram)
     return &g_ram[(bank & 1) << 16];
