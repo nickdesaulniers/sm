@@ -110,6 +110,10 @@ enum { kSnesLines = 224 };
 // VOFS << 16, as in the GBA's BGnHOFS and BGnVOFS.
 int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
                       uint32_t (*line_ofs)[4]);
+// Then, where HDMA changes the fixed color (COLDATA) on its own: the
+// states' is their first line's, but for |color_line|'s, which is that
+// line's (the one the palette shows).
+void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int color_line);
 
 // Reads a byte from the SNES's A bus: work RAM or ROM.
 uint8_t SnesHw_ReadA(uint32_t addr);

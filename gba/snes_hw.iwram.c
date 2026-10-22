@@ -555,8 +555,9 @@ typedef struct HdmaChannel {
   uint8_t regs[4];  // the B-bus registers they go to, in order
   // For scroll: the registers its words go to, and Mode 7's (or NULL).
   uint16_t *ofs[2], *m7ofs[2];
-  // Writes the windows' edges only (WH0-WH3).
-  bool window;
+  // Writes the windows' edges only (WH0-WH3), or the fixed color only
+  // (COLDATA).
+  bool window, coldata;
   // Pointers to the table's bank and the indirect data's: see BankPtr.
   const uint8_t *table, *data;
   bool table_ram, data_ram;
@@ -564,10 +565,13 @@ typedef struct HdmaChannel {
 
 // The channels on: the first hdma_count run line by line; then up to
 // hdma_scrolls, those that write only scroll registers (but BG1's, which
-// Mode 7 shares), and last, those that write only the windows' edges: those
-// run on their own, for all the frame (HdmaScrolls, HdmaWindows).
+// Mode 7 shares); up to hdma_windows, those that write only the windows'
+// edges; and last, those that write only the fixed color: those run on
+// their own, for all the frame (HdmaScrolls, HdmaWindows,
+// SnesHw_HdmaColdata).
 static HdmaChannel hdma[8] IWRAM_BSS;
-static int hdma_count IWRAM_BSS, hdma_scrolls IWRAM_BSS, hdma_total IWRAM_BSS;
+static int hdma_count IWRAM_BSS, hdma_scrolls IWRAM_BSS, hdma_windows IWRAM_BSS,
+    hdma_total IWRAM_BSS;
 
 // A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
 // of a bank of RAM (*ram), or the upper half of a LoROM bank's.
@@ -605,6 +609,8 @@ ROM_CODE static void HdmaDecode(void) {
     // halves, as most of the game's HDMA does.
     d->scroll = (mode == 2 || mode == 3) && c->bbad >= 0x0d && d->regs[3] <= 0x14;
     d->window = c->bbad >= 0x26 && c->bbad + kBbadOffsets[mode][3] <= 0x29 && !d->scroll;
+    // (Modes 0, 2 and 6: a register.)
+    d->coldata = c->bbad == 0x32 && !kBbadOffsets[mode][1] && !kBbadOffsets[mode][3];
     for (int k = 0; d->scroll && k < 2; k++) {
       PpuRegs *r = &g_snes_hw.r;
       uint8_t adr = d->regs[2 * k];
@@ -616,18 +622,21 @@ ROM_CODE static void HdmaDecode(void) {
     d->data = BankPtr(c->dasb, &d->data_ram);
   }
   hdma_total = hdma_count;
-  // The scrolling's, then the windows', last.
+  // The scrolling's, then the windows', then the fixed color's, last.
   HdmaChannel sorted[8];
   int n = 0;
-  for (int group = 0; group < 3; group++) {
+  for (int group = 0; group < 4; group++) {
     if (group == 1)
       hdma_count = n;
     if (group == 2)
       hdma_scrolls = n;
+    if (group == 3)
+      hdma_windows = n;
     for (int k = 0; k < hdma_total; k++) {
       HdmaChannel *d = &hdma[k];
       bool scroll = d->scroll && !d->m7ofs[0] && !d->m7ofs[1];
-      if ((group == 1) == scroll && (group == 2) == d->window)
+      int in = scroll ? 1 : d->window ? 2 : d->coldata ? 3 : 0;
+      if (in == group)
         sorted[n++] = *d;
     }
   }
@@ -661,6 +670,9 @@ static void HdmaNextEntry(HdmaChannel *d) {
   c->hdma_do_transfer = true;
 }
 
+// The fixed color as it was before line 0, for SnesHw_HdmaColdata.
+static uint8_t coldata_before[3];
+
 ROM_CODE void SnesHw_HdmaInit(void) {
   for (int i = 0; i < 8; i++) {
     SnesDmaChannel *c = &g_snes_hw.dma[i];
@@ -668,12 +680,16 @@ ROM_CODE void SnesHw_HdmaInit(void) {
     c->hdma_do_transfer = false;
   }
   HdmaDecode();
+  bool empty = false;
   for (int k = 0; k < hdma_total; k++) {
     hdma[k].c->a2a = hdma[k].c->a1t;
     HdmaNextEntry(&hdma[k]);
+    empty |= hdma[k].c->hdma_terminated;
   }
   // Without the ones whose table is empty.
-  HdmaDecode();
+  if (empty)
+    HdmaDecode();
+  memcpy(coldata_before, g_snes_hw.r.coldata, 3);
 }
 
 // Writes a scroll register's two bytes, low then high, as WriteBBus would.
@@ -983,12 +999,12 @@ ROM_CODE static void HdmaWindows(uint32_t *line_windows) {
   // (As a rule, there are none, and the edges are as they were.)
   static uint32_t filled IWRAM_BSS;
   static bool uniform IWRAM_BSS;
-  if (hdma_scrolls == hdma_total && uniform && filled == start)
+  if (hdma_scrolls == hdma_windows && uniform && filled == start)
     return;
   for (int v = 0; v < kSnesLines; v++)
     line_windows[v] = start;
   filled = start;
-  uniform = hdma_scrolls == hdma_total;
+  uniform = hdma_scrolls == hdma_windows;
   // A channel at a time, each of its registers' bytes of every line's word
   // (WH0 in the low byte), in turn.
   uint8_t *out = (uint8_t *)line_windows;
@@ -996,7 +1012,7 @@ ROM_CODE static void HdmaWindows(uint32_t *line_windows) {
   // IWRAM, and a call from here, from the cartridge, costs a thunk.)
 #define WINDOW_READ(p, ram, bank, addr) \
   ((ram) || (addr) >= 0x8000 ? (p)[addr] : ReadBank(p, ram, bank, addr))
-  for (int k = hdma_scrolls; k < hdma_total; k++) {
+  for (int k = hdma_scrolls; k < hdma_windows; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
     int bytes = d->bytes;
@@ -1222,6 +1238,97 @@ static void HdmaScrolls(uint32_t (*line_ofs)[4], const uint8_t *written,
     if (two && value1 >= 0)
       ((half1 & 1) ? r->vofs : r->hofs)[half1 >> 1] = value1;
   }
+}
+
+// A write to COLDATA, of the channels it has bits 5-7 set for.
+ROM_CODE static void WriteColdata(uint8_t *coldata, uint8_t val) {
+  for (int i = 0; i < 3; i++) {
+    if (val & (0x20 << i))
+      coldata[i] = val & 0x1f;
+  }
+}
+
+// The fixed color, from a channel of a byte a line with its table baked
+// (|das|): into the states, as SnesHw_HdmaColdata, and |coldata|. False if
+// the data's below |lowest| (0, or 0x8000 in ROM), where ReadBank has to
+// read it.
+ROM_CODE static bool BakedColdata(
+    const uint16_t *das, const uint8_t *data, uint32_t lowest, PpuRegs *states,
+    const uint8_t *line_state, int color_line, uint8_t *coldata) {
+  uint32_t color = coldata[0] | coldata[1] << 8 | coldata[2] << 16;
+  int prev = -1;
+  for (int v = 0; v < kSnesLines; v++) {
+    uint16_t a = das[v];
+    if (a != kNoTransfer) {
+      if (a < lowest)
+        return false;
+      uint32_t val = data[a];
+      for (int i = 0; i < 3; i++) {
+        if (val & (0x20 << i))
+          color = (color & ~(0xffu << (8 * i))) | (val & 0x1f) << (8 * i);
+      }
+    }
+    int s = line_state[v];
+    if (s != prev || v == color_line) {
+      uint8_t *o = states[s].coldata;
+      o[0] = color, o[1] = color >> 8, o[2] = color >> 16;
+    }
+    prev = s;
+  }
+  coldata[0] = color, coldata[1] = color >> 8, coldata[2] = color >> 16;
+  return true;
+}
+
+// The channels that write only the fixed color (COLDATA), for all the
+// frame's lines, from coldata_before, after the others (see snes_hw.h):
+// Ceres's backgrounds' gradients write it on every line, which, were it in
+// the states, would make every line a state, and one HDMA has to stop at.
+// The GBA can't show a gradient: the palette has one line's color
+// (|color_line|'s: see FixedMath) and color math a segment's. So each state
+// has the color of its first line, but for |color_line|'s, which has that
+// line's. (As in HdmaWindows, where the game writes the color itself
+// partway down the screen, it's lost.)
+ROM_CODE void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int color_line) {
+  if (hdma_total == hdma_windows)
+    return;
+  uint8_t *coldata = coldata_before;
+  // As a rule, a channel of a byte a line, its table baked. Or, a channel
+  // at a time, a line at a time.
+  const HdmaChannel *only = &hdma[hdma_windows];
+  const BakedTable *b =
+      hdma_total - hdma_windows == 1 && only->bytes == 1 ? Baked(only) : NULL;
+  if (b && BakedColdata(b->das, only->data, only->data_ram ? 0 : 0x8000, states, line_state,
+                        color_line, coldata)) {
+    only->c->hdma_terminated = b->end <= kSnesLines;
+    memcpy(g_snes_hw.r.coldata, coldata, 3);  // as HDMA left it, for the next frame
+    return;
+  }
+  int prev = -1;
+  for (int v = 0; v < kSnesLines; v++) {
+    for (int k = hdma_windows; k < hdma_total; k++) {
+      HdmaChannel *d = &hdma[k];
+      SnesDmaChannel *c = d->c;
+      if (c->hdma_terminated)
+        continue;
+      if (c->hdma_do_transfer) {
+        for (int j = 0; j < d->bytes; j++)
+          WriteColdata(coldata, d->indirect
+                                    ? ReadBank(d->data, d->data_ram, c->dasb, c->das++)
+                                    : ReadBank(d->table, d->table_ram, c->a1b, c->a2a++));
+      }
+      c->ntrl--;
+      c->hdma_do_transfer = c->ntrl & 0x80;
+      if (!(c->ntrl & 0x7f))
+        HdmaNextEntry(d);
+    }
+    int s = line_state[v];
+    if (s != prev || v == color_line) {
+      PpuRegs *r = &states[s];
+      r->coldata[0] = coldata[0], r->coldata[1] = coldata[1], r->coldata[2] = coldata[2];
+    }
+    prev = s;
+  }
+  memcpy(g_snes_hw.r.coldata, coldata, 3);  // as HDMA left it, for the next frame
 }
 
 // How many lines from now HDMA does nothing but count down: for each

@@ -169,7 +169,7 @@ static struct {
   uint8_t subtract_palettes;
 } conv = {.blank_tile = -1, .brightness = -1};
 
-static int SnesLine(int g) {
+static inline __attribute__((always_inline)) int SnesLine(int g) {
   if (squash)
     return kSquashLine[g];
   if (!hud)
@@ -602,11 +602,14 @@ ROM_CODE static bool Bg3Front(const PpuRegs *r, int s, int g) {
     int c = (row & 32) * 2 + (row & 31) * 2;
     if (hi[c] | hi[c + 1] | (wide ? hi[64 + c] | hi[65 + c] : 0))
       return true;
-    int n = 0;
-    while (n < 8 && g + 1 < kGbaLines && line_state[SnesLine(g + 1)] == state)
-      g++, n++;
+    // (A state's lines follow each other, and SnesLine goes up: the line 8
+    // on is the state's if those between are.)
+    int n = g + 8 < kGbaLines ? 8 : kGbaLines - 1 - g;
+    while (n && line_state[SnesLine(g + n)] != state)
+      n--;
     if (!n)
       return false;
+    g += n;
     t = SnesLine(g);
   }
 }
@@ -1076,6 +1079,8 @@ ROM_CODE static void SetSquash(void) {
 
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh, line_ofs);
+  // (The palette's line, as it was last frame: see FixedMath.)
+  SnesHw_HdmaColdata(line_states, line_state, SnesLine(kGbaLines / 2));
 
   SetSquash();
   if (squash) {

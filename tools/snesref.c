@@ -6,7 +6,9 @@
 // PREFIX.iwram), finds the SNES's PPU state in it by SYMS (`llvm-nm` of
 // sm.elf): VRAM, CGRAM, OAM and the registers of each line, as
 // gba/render.iwram.c captured them. Then draws the 256x224 frame with the
-// PC build's PPU, src/snes/ppu.c, and writes it as a PNG.
+// PC build's PPU, src/snes/ppu.c, and writes it as a PNG. (But for a
+// gradient HDMA makes of the fixed color: the lines' registers have each
+// state's first line's color, as SnesHw_HdmaColdata keeps it.)
 //
 // Build:
 //     clang -O2 -o snesref tools/snesref.c src/snes/ppu.c -Igba -lz
