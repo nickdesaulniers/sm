@@ -10,6 +10,7 @@
 
 #include "ida_types.h"
 #include "funcs.h"
+#include "input.h"
 #include "sm_rtl.h"
 #include "tour.h"
 #include "variables.h"
@@ -107,6 +108,29 @@ static void FindRooms(void) {
   tour_doors[tour_count - 1] = SM_TOUR_DOOR;
 #endif
   printf("tour: %d rooms\n", tour_count);
+}
+
+uint16_t Tour_Joypad(uint16_t real) {
+  static uint32_t frame;
+  static bool played;
+  played |= game_state == kGameState_8_MainGameplay;
+  if (played) {
+#ifdef SM_TOUR_FREE
+    return real;
+#else
+    return 0;
+#endif
+  }
+  // As tools/to-gameplay.sh's PRE_KEYS, but by the game's frames: Start
+  // every 300 frames from 1000, for the title and the file select, then A
+  // every 200, for the intro's pauses (SM_SKIP_INTRO skips it, mostly);
+  // each held for 10 frames.
+  uint32_t f = frame++;
+  if (f >= 1000 && f < 2800)
+    return (f - 1000) % 300 < 10 ? kSnesStart : 0;
+  if (f >= 2800)
+    return (f - 2800) % 200 < 10 ? kSnesA : 0;
+  return 0;
 }
 
 bool Tour_BeforeFrame(void) {

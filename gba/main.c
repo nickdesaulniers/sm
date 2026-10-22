@@ -89,7 +89,11 @@ void gba_main(void) {
   // Render_PresentLines is right).
   uint32_t slow = 0, worst[4] = {0, 0, 0, 0}, presented_audio = g_audio_cycles, overran = 0;
   for (;;) {
+#if SM_ROOM_TOUR
+    g_snes_hw.joy1 = Tour_Joypad(Input_ReadJoypad());
+#else
     g_snes_hw.joy1 = Input_ReadJoypad();
+#endif
     uint16_t state = game_state;
 #if SM_SKIP_INTRO
     // For testing: a new game's intro goes straight to its end, which fades
