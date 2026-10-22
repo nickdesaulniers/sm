@@ -24,18 +24,21 @@ static void VBlankIntrWait(void) {
 
 // Waits for the VBlank to show the next frame in: the next one, unless one
 // began since the last frame was presented (|presented_at|, g_vblank_count
-// then), it's gameplay, and there's still time in it for Render_Present
-// (|lines|, its estimate of what it will take, before the last line's). A
-// frame of the game just over the GBA's would wait a whole frame more;
-// this way the time it takes evens out over the frames. Not when it
-// wouldn't fit: a present running on into the picture shows the old
-// frame's registers and maps over the new frame's tiles (a room's worth,
-// as a door loads one: a frame of garbage).
-enum { kLastLine = 227 };
+// then), it's gameplay, and there's about time in it for Render_Present
+// (|lines|, its estimate of what it will take). A frame of the game just
+// over the GBA's would wait a whole frame more; this way the time it
+// takes evens out over the frames. A present that runs on into the
+// picture is resumed from the line it's at (Display_Resume); the lines
+// before it show the last frame's registers over the new frame's tiles,
+// which is nothing to see within the HUD's (it doesn't scroll), so it may
+// run that far over. (In gameplay and its doors, states 8-11: the title and
+// the menus have no HUD, and frames with a room's worth of tiles to
+// convert.)
+enum { kLastLine = 227, kMayRunOver = 24 /* the HUD's lines, kGbaHudLines */ };
 static bool WaitForVBlank(uint32_t presented_at, int lines) {
   unsigned line = REG_VCOUNT;
-  if (g_vblank_count != presented_at && game_state == 8 &&
-      line >= kGbaLines && line + lines < kLastLine)
+  if (g_vblank_count != presented_at && game_state >= 8 && game_state <= 11 &&
+      line >= kGbaLines && line + lines <= kLastLine + kMayRunOver)
     return true;
   VBlankIntrWait();
   return false;

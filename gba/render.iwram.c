@@ -1585,20 +1585,41 @@ ROM_CODE static void AddFromBefore(uint32_t *dirty) {
 }
 
 // About how many lines Render_Present will take, for presenting late in
-// VBlank (main.c): some 20 with nothing to convert (the palette, OAM, a
-// map's rows), and half a line a dirty chunk of VRAM, measured in Ridley's
-// fights; with 6 to spare. (The marks count chunks more than once, and
-// the ones kept from before may not be converted this frame: over, not
-// under.)
+// VBlank (main.c): some 22 with nothing to convert (the palette, OAM, a
+// map's rows), and 3/8 of a line a dirty chunk of VRAM, measured in
+// Ridley's fights; a map that moved is converted whole (a door's scroll
+// into the next room), and tiles at another base all over again. (A
+// little over is no harm: Display_Resume.)
 ROM_CODE int Render_PresentLines(void) {
-  return 26 + ((g_vram_dirty_marks + later_marks) >> 1);
+  int lines = 22 + ((g_vram_dirty_marks + later_marks) * 3 >> 3);
+  if (text_line < 0)
+    return lines;
+  const PpuRegs *r = LINE_REGS(text_line);
+  if (r->bgsc[0] != conv.bgsc[0] || r->bgsc[1] != conv.bgsc[1] || split_bg2 != conv.split_bg2 ||
+      bg3_slot_sc[0] != conv.bg3_slot_sc[0] || bg3_slot_sc[1] != conv.bg3_slot_sc[1])
+    lines += 48;
+  if (((r->bgnba[0] & 0xf) << 12) != conv.bg12_base || ((r->bgnba[1] & 0xf) << 12) != conv.bg3_base)
+    lines += 160;
+  return lines;
 }
 
-// Shows nothing (the backdrop) until the next Display_Start.
+// Shows nothing (the backdrop) until the next Display_Start, but for the
+// last frame's HUD, if it had one: its segments go on, over the black. (Its
+// tiles are converted again the while, the same.)
 ROM_CODE static void HideUntilPresented(void) {
+  DisplayFrame *last = &frames[back ^ 1];
   REG_IME = 0;
-  g_display = 0;
-  REG_DISPCNT = kDispcntMode0;
+  if (g_display == last && last->patch_segment > 0) {
+    DisplaySegment *s = (DisplaySegment *)&last->segments[last->patch_segment];
+    uint16_t first_line = s->first_line;
+    memset(s, 0, sizeof(*s));
+    s->first_line = first_line;
+    last->num_segments = last->patch_segment + 1;
+    Display_Start();
+  } else {
+    g_display = 0;
+    REG_DISPCNT = kDispcntMode0;
+  }
   REG_IME = 1;
 }
 
@@ -1654,6 +1675,8 @@ void Render_Present(void) {
   g_display = &frames[back];
   if (REG_VCOUNT >= kGbaLines)
     Display_Start();
+  else
+    Display_Resume();
   REG_IME = 1;
   back ^= 1;
 }

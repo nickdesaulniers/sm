@@ -62,3 +62,6 @@ extern volatile bool g_frame_presented;
 
 // Sets up g_display now, in VBlank, with interrupts disabled.
 void Display_Start(void);
+// Or, in the picture, from the next line on: for a present that ran on
+// past VBlank.
+void Display_Resume(void);

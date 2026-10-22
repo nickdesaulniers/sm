@@ -58,6 +58,36 @@ ROM_CODE void Display_Start(void) {
   ScheduleSegment(d);
 }
 
+// Starts g_display partway down the picture, from the line after this one:
+// for a present that ran on past VBlank (see main.c's WaitForVBlank). The
+// lines before showed the last frame's registers, over the new tiles where
+// they changed.
+ROM_CODE void Display_Resume(void) {
+  const DisplayFrame *d = g_display;
+  unsigned line = REG_VCOUNT;
+  if (!d)
+    return;
+  if (line >= kGbaLines) {
+    Display_Start();
+    return;
+  }
+  REG_DMACNT(0) = 0;
+  // The segment the next line is in: its registers now, and the stream
+  // from that line, at this line's HBlank.
+  int i = 0;
+  while (i + 1 < d->num_segments && d->segments[i + 1].first_line <= line + 1)
+    i++;
+  SetSegment(d, &d->segments[i]);
+  Patch(d, i >= d->patch_segment ? d->patch_color : d->restore_color);
+  int words = d->stream_words;
+  REG_WIN0V = REG_WIN1V = kGbaLines;
+  REG_DMASAD(0) = (uintptr_t)(d->stream + words * (line + 1));
+  REG_DMADAD(0) = d->stream_dest;
+  REG_DMACNT(0) = words | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
+  next_segment = i + 1;
+  ScheduleSegment(d);
+}
+
 // When in the frame the sound's work runs: once Render_Present is done
 // with VBlank (Audio_Kick), or if it's busy, this long after VBlank begins,
 // in 64s of cycles (60 lines).
