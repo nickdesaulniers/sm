@@ -1666,11 +1666,15 @@ int Render_GameplayYOffset(void);
 #endif
 
 static void DrawTimerSpritemap(uint16 a, uint16 j) {  // 0x809FB3
-  uint16 y = HIBYTE(timer_y_pos);
+  uint16 y = HIBYTE(timer_y_pos), x = HIBYTE(timer_x_pos);
 #if SM_GBA
   y += Render_GameplayYOffset();
+  // The GBA shows the SNES's columns 8-247: the timer, to its right edge
+  // (32 pixels right of its place), in them, as it settles at the right.
+  if (x > 248 - 32)
+    x = 248 - 32;
 #endif
-  DrawSpritemap(0x80, j, a + HIBYTE(timer_x_pos), y, 2560);
+  DrawSpritemap(0x80, j, a + x, y, 2560);
 }
 
 CoroutineRet StartGameplay_Async(void) {  // 0x80A07B

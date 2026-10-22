@@ -57,6 +57,8 @@ enum {
   kHudBlankLines = 8,
   kGbaHudLines = kHudLines - kHudBlankLines,
   kMaxYOffset = kSnesLines - kHudBlankLines - kGbaLines,
+  // The gameplay area from the SNES's line 64 (see UpdateYOffset).
+  kCeresMessageYOffset = 64 - kHudLines,
   // The SNES's 256 pixel lines lose 8 pixels at each end.
   kXOffset = 8,
 
@@ -109,7 +111,7 @@ static bool hud;
 // 168, less 4 at the top and bottom; see SetSquashLines). kSquashLine[g]
 // is the SNES line on GBA line g, and sprites are scaled to match.
 enum { kSquashTop = 4 };
-static bool squash;
+static bool squash = true;  // (the boot's Nintendo logo is a menu's)
 static uint8_t kSquashLine[kGbaLines];
 // Whether lines on show use Mode 7, and one that uses another mode, or -1.
 static bool frame_mode7;
@@ -696,6 +698,11 @@ ROM_CODE static void UpdateYOffset(void) {
     int middle = kHudLines + (kGbaLines - kGbaHudLines) / 2 + y_offset;
     int away = feet - 21 - middle;
     target = y_offset + (away > 12 ? away - 12 : away < -12 ? away + 12 : 0);
+    // Ceres's escape, in Ridley's room: its message (TIME BOMB SET!) is on
+    // the SNES's lines 64-87, out of sight under the HUD as Samus stands on
+    // the floor. In sight, but for her feet.
+    if (ceres_status == 2 && room_ptr == 0xe0b5 && target > kCeresMessageYOffset)
+      target = kCeresMessageYOffset;
     target = target < 0 ? 0 : target > kMaxYOffset ? kMaxYOffset : target;
   } else {
     target = kMaxYOffset / 2;
