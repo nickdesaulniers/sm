@@ -7,6 +7,7 @@
 volatile uint32_t g_vblank_count IWRAM_BSS;
 const DisplayFrame *volatile g_display IWRAM_BSS;
 volatile bool g_frame_presented IWRAM_BSS;
+volatile bool g_backdrop_zeroed IWRAM_BSS;  // (UpdatePalette puts it back)
 static int next_segment IWRAM_BSS;
 
 static void SetSegment(const DisplayFrame *d, const DisplaySegment *s) {
@@ -123,6 +124,7 @@ static void VBlank(void) {
     g_display = 0;
     REG_DISPCNT = kDispcntMode0;
     GBA_BG_PALETTE[0] = 0;
+    g_backdrop_zeroed = true;
   }
   g_frame_presented = false;
   // Every frame, as a frame of the game can take more than one of the

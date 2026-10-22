@@ -73,6 +73,9 @@ enum {
 
 #define VRAM_SB(n) (GBA_VRAM + (n) * 0x400)
 
+extern volatile uint32_t g_vblank_count;  // (irq.iwram.c)
+extern volatile bool g_backdrop_zeroed;   // (irq.iwram.c)
+
 // A line's GBA registers, before they're split into display.h's stream
 // and segments.
 typedef struct LineRegs {
@@ -217,7 +220,7 @@ ROM_CODE static void SetSquashLines(void) {
     g++;
   }
   if (changed)
-    g_snes_hw.oam_dirty = true;
+    g_snes_hw.oam_changed = ~0u;
 }
 
 ROM_CODE static void SetSquashRanks(void) {
@@ -1240,6 +1243,28 @@ static void Recolor(volatile uint16_t *dst, const uint16_t *src, int n, const ui
   }
 }
 
+// The colors of the blocks of 8 in |blocks| (a bit each, from color 0's), as
+// UpdatePalette has them in the GBA's palettes.
+ROM_CODE static void RecolorBlocks(uint32_t blocks, const uint8_t (*bd)[32],
+                                   const uint8_t (*bg12)[32], const uint8_t (*o)[32],
+                                   const uint8_t (*b3)[32], const uint8_t (*same)[32], bool full,
+                                   bool bg3_palettes) {
+  for (; blocks; blocks &= blocks - 1) {
+    int c = __builtin_ctz(blocks) * 8;
+    if (c >= 128) {
+      const uint8_t(*t)[32] = c < 192 ? same : o;
+      Recolor(GBA_OBJ_PALETTE + c - 128, g_cgram + c, 8, t, full && t == same);
+      continue;
+    }
+    // (BG palette 0's first color is the backdrop's.)
+    if (!c)
+      Recolor(GBA_BG_PALETTE, g_cgram, 1, bd, full && bd == same);
+    Recolor(GBA_BG_PALETTE + c + !c, g_cgram + c + !c, 8 - !c, bg12, full && bg12 == same);
+    for (int p = c / 4; p < c / 4 + 2 && p < 8 && bg3_palettes; p++)
+      Recolor(GBA_BG_PALETTE + 128 + p * 16, g_cgram + p * 4, 4, b3, full && b3 == same);
+  }
+}
+
 // The palette, at the brightness of line |r|, with line |m|'s color math
 // with the fixed color.
 ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_palettes) {
@@ -1247,11 +1272,32 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
   uint32_t math = FixedMath(m);
   uint8_t subtracted = (subtract_color & 0x8000) && (m->cgwsel & 2) ? subtract_palettes : 0;
-  if (!h->cgram_dirty && b == conv.brightness && bg3_palettes == conv.bg3_palettes &&
-      math == conv.fixed_math && subtracted == conv.subtract_palettes)
+  // The colors to convert: those the game changed, or all, if what they're
+  // converted by did, or if that's a lot of them. And BG3's, with colors
+  // subtracted and for two frames more: the VBlank interrupt puts back the
+  // colors of those it set (Display_Start), which can fall after this, if the
+  // frame it did that for was slow to present.
+  uint32_t blocks = h->cgram_changed, game_changed = blocks;
+  h->cgram_changed = 0;
+  h->cgram_dirty = false;
+  // The VBlank interrupt blacked the backdrop (color 0) of a blank frame: convert it again.
+  if (g_backdrop_zeroed) {
+    g_backdrop_zeroed = false;
+    blocks = game_changed = blocks | 1;
+  }
+  static uint8_t subtracted_frames;
+  subtracted_frames = subtracted ? 3 : subtracted_frames ? subtracted_frames - 1 : 0;
+  int changed = 0;
+  for (uint32_t left = blocks; left; left &= left - 1)
+    changed++;
+  if (b != conv.brightness || bg3_palettes != conv.bg3_palettes || math != conv.fixed_math ||
+      subtracted != conv.subtract_palettes || changed > 16)
+    blocks = game_changed = ~0u;
+  if (subtracted_frames)
+    blocks |= 0xf;
+  if (!blocks)
     return;
   conv.subtract_palettes = subtracted;
-  h->cgram_dirty = false;
   conv.brightness = b;
   conv.bg3_palettes = bg3_palettes;
   conv.fixed_math = math;
@@ -1275,23 +1321,40 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   // The backgrounds', the sprites', and BG3's 2bpp palettes of 4 colors in
   // GBA palettes 8-15 (Mode 7's background has all 256 colors: frames with
   // both are a compromise); with the color math on the layers it's on (the
-  // sprites': in palettes 4-7). By tables on the stack, in IWRAM.
+  // sprites': in palettes 4-7). By tables on the stack, in IWRAM, for all of
+  // them; for a few, copying them would cost more.
   uint8_t tables[2][3][32];
-  memcpy(tables[0], plain, sizeof(plain));
-  memcpy(tables[1], with, sizeof(with));
-  const uint8_t(*same)[32] = tables[0];
-  const uint8_t(*bd)[32] = tables[(math & 0x20) != 0], (*bg12)[32] = tables[(math & 3) != 0];
-  const uint8_t(*o)[32] = tables[(math & 0x10) != 0], (*b3)[32] = tables[(math & 4) != 0];
+  const uint8_t(*t[2])[32] = {plain, with};
+  if (blocks == ~0u) {
+    memcpy(tables[0], plain, sizeof(plain));
+    memcpy(tables[1], with, sizeof(with));
+    t[0] = tables[0];
+    t[1] = tables[1];
+  }
+  const uint8_t(*same)[32] = t[0];
+  const uint8_t(*bd)[32] = t[(math & 0x20) != 0], (*bg12)[32] = t[(math & 3) != 0];
+  const uint8_t(*o)[32] = t[(math & 0x10) != 0], (*b3)[32] = t[(math & 4) != 0];
   bool full = b == 15;
-  Recolor(GBA_BG_PALETTE, g_cgram, 1, bd, full && bd == same);
-  Recolor(GBA_BG_PALETTE + 1, g_cgram + 1, 127, bg12, full && bg12 == same);
-  Recolor(GBA_OBJ_PALETTE, g_cgram + 128, 64, same, full);
-  Recolor(GBA_OBJ_PALETTE + 64, g_cgram + 192, 64, o, full && o == same);
-  for (int p = 0; p < 8 && bg3_palettes; p++)
-    Recolor(GBA_BG_PALETTE + 128 + p * 16, g_cgram + p * 4, 4, b3, full && b3 == same);
+  if (blocks != ~0u) {
+    RecolorBlocks(blocks, bd, bg12, o, b3, same, full, bg3_palettes);
+  } else {
+    Recolor(GBA_BG_PALETTE, g_cgram, 1, bd, full && bd == same);
+    Recolor(GBA_BG_PALETTE + 1, g_cgram + 1, 127, bg12, full && bg12 == same);
+    Recolor(GBA_OBJ_PALETTE, g_cgram + 128, 64, same, full);
+    Recolor(GBA_OBJ_PALETTE + 64, g_cgram + 192, 64, o, full && o == same);
+    for (int p = 0; p < 8 && bg3_palettes; p++)
+      Recolor(GBA_BG_PALETTE + 128 + p * 16, g_cgram + p * 4, 4, b3, full && b3 == same);
+  }
   // BG3's colors c that add back the subtracted color less c (see
   // subtract_color), in the gameplay area only: the HUD has some of the
-  // same palettes.
+  // same palettes. (They're as they were unless BG3's colors, those
+  // subtracted, the brightness or the halving changed.)
+  static uint32_t patches_key;
+  uint32_t key = subtract_color | b << 16 | (math >> 6 & 1) << 20 | subtracted << 21 |
+                 bg3_palettes << 29;
+  if ((game_changed & 0xf) == 0 && key == patches_key)
+    return;
+  patches_key = key;
   num_patches = 0;
   for (int p = 0; p < 8 && bg3_palettes; p++) {
     if (!(subtracted & (1 << p)))
@@ -1310,12 +1373,23 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   }
 }
 
-static bool TileIsBlank(const uint16_t *t) {
+ROM_CODE static bool TileIsBlank(const uint16_t *t) {
   for (int i = 0; i < 16; i++) {
     if (t[i])
       return false;
   }
   return true;
+}
+
+// The last transparent tile of BG1's, or |blank| if it still is one.
+ROM_CODE static int FindBlankTile(uint16_t bg12_base, int blank) {
+  if (blank >= 0 && TileIsBlank(&g_vram[(bg12_base + blank * 16) & 0x7fff]))
+    return blank;
+  for (int i = 1023; i > 0; i--) {
+    if (TileIsBlank(&g_vram[(bg12_base + i * 16) & 0x7fff]))
+      return i;
+  }
+  return 0;
 }
 
 static bool ChunkDirty(const uint32_t *dirty, uint32_t chunk) {
@@ -1342,6 +1416,54 @@ ROM_CODE static void UpdateTilesMode7(const uint32_t *dirty) {
   }
 }
 
+// The tiles in VRAM chunk |c| (16 words), in all the GBA's tile sets that use
+// them: BG1 and BG2's, BG3's, and the sprites' (two ranges).
+static inline __attribute__((always_inline)) void ChunkTiles(uint32_t c, bool squashed, bool bg12,
+                                                             bool bg3, uint16_t bg12_base,
+                                                             uint16_t bg3_base) {
+  volatile uint32_t *vram32 = (volatile uint32_t *)GBA_VRAM;
+  volatile uint32_t *obj32 = (volatile uint32_t *)GBA_OBJ_VRAM;
+  uint16_t addr = c << kVramChunkShift;
+  const uint16_t *src = &g_vram[addr];
+  uint16_t off;
+  if (bg12) {
+    off = (addr - bg12_base) & 0x7fff;
+    if (off < 0x4000)
+      (squashed ? Convert_Tiles4bppSquashed : Convert_Tiles4bpp)(vram32 + (off >> 4) * 8, src, 1);
+  }
+  if (bg3) {
+    off = (addr - bg3_base) & 0x7fff;
+    if (off < kBg3Tiles * 8) {
+      volatile uint32_t *dst = vram32 + 0x8000 / 4 + (off >> 3) * 8;
+      (squashed ? Convert_Tiles2bppSquashed : Convert_Tiles2bpp)(dst, src, 2);
+    }
+  }
+  for (int t = 0; t < 2; t++) {
+    off = (addr - conv.obj_base[t]) & 0x7fff;
+    if (off < 0x1000) {
+      int i = off >> 4;
+      int tile = t * 512 + (i >> 4) * 32 + (i & 15);
+      if (squashed) {
+        Convert_Tile4bppAndMirrored(obj32 + tile * 8, obj32 + (tile - 2 * (i & 15) + 31) * 8, src);
+      } else {
+        Convert_Tiles4bpp(obj32 + tile * 8, src, 1);
+        Convert_Tiles4bpp(obj32 + (tile + 16) * 8, src, 1);
+      }
+    }
+  }
+}
+
+// (The squashed screens' are in ROM: menus'.)
+__attribute__((noinline)) static void UpdateChunkTiles(uint32_t c, bool bg12, bool bg3,
+                                                        uint16_t bg12_base, uint16_t bg3_base) {
+  ChunkTiles(c, false, bg12, bg3, bg12_base, bg3_base);
+}
+
+ROM_CODE static void UpdateChunkTilesSquashed(uint32_t c, bool bg12, bool bg3, uint16_t bg12_base,
+                                              uint16_t bg3_base) {
+  ChunkTiles(c, true, bg12, bg3, bg12_base, bg3_base);
+}
+
 static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) {
   SnesHw *h = &g_snes_hw;
   uint16_t bg12_base = (r->bgnba[0] & 0xf) << 12;
@@ -1363,61 +1485,28 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
     conv.obj_base[1] = obj1;
     conv.blank_tile = -1;
     memset(dirty, 0xff, kVramChunks / 8);
+    h->vram_dirty = true;
   }
 
-  volatile uint32_t *vram32 = (volatile uint32_t *)GBA_VRAM;
-  volatile uint32_t *obj32 = (volatile uint32_t *)GBA_OBJ_VRAM;
-
-  for (uint32_t w = 0; w < kVramChunks / 32; w++) {
-    uint32_t bits = dirty[w];
-    while (bits) {
+  for (uint32_t w = 0; w < kVramChunks / 32 && h->vram_dirty; w++) {
+    // (Mostly there's none: four words at a time.)
+    if (!(w & 3) && !(dirty[w] | dirty[w + 1] | dirty[w + 2] | dirty[w + 3])) {
+      w += 3;
+      continue;
+    }
+    for (uint32_t bits = dirty[w]; bits; bits &= bits - 1) {
       uint32_t c = w * 32 + __builtin_ctz(bits);
-      bits &= bits - 1;
-      uint16_t addr = c << kVramChunkShift;
-      const uint16_t *src = &g_vram[addr];
-      uint16_t off;
-      if (bg12) {
-        off = (addr - bg12_base) & 0x7fff;
-        if (off < 0x4000)
-          (squash ? Convert_Tiles4bppSquashed : Convert_Tiles4bpp)(vram32 + (off >> 4) * 8, src, 1);
-      }
-      if (bg3) {
-        off = (addr - bg3_base) & 0x7fff;
-        if (off < kBg3Tiles * 8)
-          (squash ? Convert_Tiles2bppSquashed : Convert_Tiles2bpp)(vram32 + 0x8000 / 4 + (off >> 3) * 8,
-                                                                 src, 2);
-      }
-      for (int t = 0; t < 2; t++) {
-        off = (addr - conv.obj_base[t]) & 0x7fff;
-        if (off < 0x1000) {
-          int i = off >> 4;
-          int tile = t * 512 + (i >> 4) * 32 + (i & 15);
-          if (squash) {
-            Convert_Tile4bppAndMirrored(obj32 + tile * 8, obj32 + (tile - 2 * (i & 15) + 31) * 8,
-                                        src);
-          } else {
-            Convert_Tiles4bpp(obj32 + tile * 8, src, 1);
-            Convert_Tiles4bpp(obj32 + (tile + 16) * 8, src, 1);
-          }
-        }
-      }
+      if (squash)
+        UpdateChunkTilesSquashed(c, bg12, bg3, bg12_base, bg3_base);
+      else
+        UpdateChunkTiles(c, bg12, bg3, bg12_base, bg3_base);
     }
   }
 
   // A transparent tile, for the halves of BG1's map that don't show.
   int blank = conv.blank_tile;
-  if (blank < 0 || ChunkDirty(dirty, ((bg12_base + blank * 16) & 0x7fff) >> kVramChunkShift)) {
-    if (blank < 0 || !TileIsBlank(&g_vram[(bg12_base + blank * 16) & 0x7fff])) {
-      blank = 0;
-      for (int i = 1023; i >= 0; i--) {
-        if (TileIsBlank(&g_vram[(bg12_base + i * 16) & 0x7fff])) {
-          blank = i;
-          break;
-        }
-      }
-    }
-  }
-  conv.blank_tile = blank;
+  if (blank < 0 || ChunkDirty(dirty, ((bg12_base + blank * 16) & 0x7fff) >> kVramChunkShift))
+    conv.blank_tile = FindBlankTile(bg12_base, blank);
 }
 
 // (In ROM: what it calls does the work.)
@@ -1458,8 +1547,22 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
   }
 }
 
+// Whether UpdateMaps12 has nothing to do: BG1's and BG2's maps are where they
+// were (but for 64x64 ones', whose rows it looks at), and unchanged.
+static bool Maps12Quiet(const PpuRegs *r, const uint32_t *dirty, bool force_split) {
+  uint32_t busy = force_split | (split_bg2 != conv.split_bg2);
+  for (int bg = 0; bg < 2; bg++) {
+    uint8_t sc = r->bgsc[bg];
+    busy |= (sc != conv.bgsc[bg]) | ((sc & 3) == 3);
+    // (A screen of 1024 words is 2 of the bitmap's.)
+    for (int i = 0; i < ((sc & 3) ? 4 : 2) && g_snes_hw.vram_dirty; i++)
+      busy |= dirty[((sc >> 1 & 0x3e) + i) & 63];
+  }
+  return !busy;
+}
+
 static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split, bool bg12) {
-  if (bg12)
+  if (bg12 && !Maps12Quiet(r, dirty, force_split))
     UpdateMaps12(r, dirty, force_split);
   for (int slot = 0; slot < 2; slot++) {
     uint8_t sc = bg3_slot_sc[slot];
@@ -1467,20 +1570,23 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split
       continue;
     bool changed = sc != conv.bg3_slot_sc[slot];
     conv.bg3_slot_sc[slot] = sc;
-    if (changed)
+    int total = bg3_hi_total[slot];
+    if (changed) {
       memset(bg3_hi[slot], 0, sizeof(bg3_hi[slot]));
+      total = 0;
+    }
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
+      uint8_t *counts = &bg3_hi[slot][k * 64];
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
         uint32_t o = c * 16;
-        bg3_hi[slot][k * 64 + c] = Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o,
-                                               &g_vram[addr + o], 16, 8 << 12);
+        int hi = Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o],
+                             16, 8 << 12);
+        total += hi - counts[c];
+        counts[c] = hi;
       }
     }
-    int total = 0;
-    for (int i = 0; i < 128; i++)
-      total += bg3_hi[slot][i];
     bg3_hi_total[slot] = total;
   }
 }
@@ -1490,7 +1596,9 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split
 static const uint8_t kObjShapes[8][2] = {
   {0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}, {10, 11}, {10, 2},
 };
-static const uint8_t kObjPriority[4] = {3, 3, 2, 1};
+// The GBA priorities of SNES sprite priorities 0-3, 2 bits each: 3, 3, 2, 1.
+// With bg3_mid, 3 less: 3, 2, 1, 0.
+enum { kObjPriorities = 3 | 3 << 2 | 2 << 4 | 1 << 6, kObjPrioritiesMid = 3 | 2 << 2 | 1 << 4 };
 
 // The GBA's sprite heights and widths, by kObjShapes's codes.
 static const uint8_t kObjHeight[12] = {8, 16, 32, 64, 0, 0, 0, 0, 0, 0, 32, 64};
@@ -1531,45 +1639,88 @@ ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, 
   return (attr & 1) * 512 + (e[2] >> 4) * 32 + column;
 }
 
-static void UpdateOam(void) {
-  SnesHw *h = &g_snes_hw;
-  static int last_y_off = -1;
-  static bool last_squash, last_bg3_mid;
-  int y_off = hud ? kHudBlankLines + y_offset : y_offset;
-  if (!h->oam_dirty && y_off == last_y_off && squash == last_squash && bg3_mid == last_bg3_mid)
-    return;
-  h->oam_dirty = false;
-  last_y_off = y_off;
-  last_bg3_mid = bg3_mid;
-  if (squash && !last_squash)
-    SetSquashMatrices();
-  last_squash = squash;
-  const uint8_t *shapes = kObjShapes[h->obsel >> 5];
-  // The game puts the sprites it doesn't use at line 240, small, where
-  // they don't show: most of them, most of the time.
-  bool unused_hide = kObjHeight[shapes[0]] <= 256 - 0xf0;
+// UpdateOam's work for the sprites in |blocks| (4 each) when squashed, in
+// ROM: it's menus' and the like.
+ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
+  const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
   for (int i = 0; i < 128; i++) {
+    if (!(blocks >> (i >> 2) & 1))
+      continue;
     const uint8_t *e = &g_oam[i * 4];
     int hi = (g_oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
     if (e[1] == 0xf0 && !(hi & 2) && unused_hide) {
       GBA_OAM[i * 4] = 1 << 9;  // hidden
       continue;
     }
-    int x = e[0] | (hi & 1) << 8;
-    int shape = shapes[hi >> 1];
-    uint8_t attr = e[3];
-    int tile_index = e[2];
-    int tile = (attr & 1) * 512 + (tile_index >> 4) * 32 + (tile_index & 15);
     volatile uint16_t *o = &GBA_OAM[i * 4];
-    if (squash) {
-      tile = SquashSprite(o, e, x, shape);
-    } else {
-      o[0] = ((e[1] - y_off) & 0xff) | (shape >> 2) << 14;
-      o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
-    }
-    int priority = (attr >> 4) & 3;
-    o[2] = tile | (bg3_mid ? 3 - priority : kObjPriority[priority]) << 10 | ((attr >> 1) & 7) << 12;
+    int tile = SquashSprite(o, e, e[0] | (hi & 1) << 8, shapes[hi >> 1]);
+    int priority = (e[3] >> 4) & 3;
+    o[2] = tile | (bg3_mid ? 3 - priority : (kObjPriorities >> (priority * 2)) & 3) << 10 |
+           ((e[3] >> 1) & 7) << 12;
   }
+}
+
+static void UpdateOam(void) {
+  SnesHw *h = &g_snes_hw;
+  static int last_y_off = -1;
+  static bool last_squash, last_bg3_mid;
+  int y_off = hud ? kHudBlankLines + y_offset : y_offset;
+  // The sprites to convert: those the game changed (in blocks of 4: see
+  // SnesHw), or all, if what they're converted by did.
+  uint32_t blocks = h->oam_changed;
+  if (y_off != last_y_off || squash != last_squash || bg3_mid != last_bg3_mid)
+    blocks = ~0u;
+  if (!blocks)
+    return;
+  h->oam_changed = 0;
+  last_y_off = y_off;
+  last_bg3_mid = bg3_mid;
+  if (squash && !last_squash)
+    SetSquashMatrices();
+  last_squash = squash;
+  uint32_t vblanks = g_vblank_count;
+  const uint8_t *shapes = kObjShapes[h->obsel >> 5];
+  // The game puts the sprites it doesn't use at line 240, small, where
+  // they don't show: most of them, most of the time.
+  bool unused_hide = kObjHeight[shapes[0]] <= 256 - 0xf0;
+  if (squash) {
+    UpdateOamSquashed(blocks, unused_hide);
+    if (g_vblank_count != vblanks || REG_VCOUNT < kGbaLines)
+      h->oam_changed = ~0u;
+    return;
+  }
+  // The GBA's shape bits of small and large sprites, in attributes 0 and 1
+  // (the high half of the word).
+  uint32_t shape[2] = {(shapes[0] >> 2) << 14 | (uint32_t)(shapes[0] & 3) << 30,
+                       (shapes[1] >> 2) << 14 | (uint32_t)(shapes[1] & 3) << 30};
+  uint32_t priorities = bg3_mid ? kObjPrioritiesMid : kObjPriorities;
+  const uint32_t *sprites = (const uint32_t *)g_oam;
+  for (; blocks; blocks &= blocks - 1) {
+    int block = __builtin_ctz(blocks);
+    // The sprites' x's ninth bits and sizes, 2 bits each.
+    uint32_t high = g_oam[512 + block];
+    volatile uint32_t *o = (volatile uint32_t *)&GBA_OAM[block * 16];
+#pragma clang loop unroll(disable)
+    for (int i = 0; i < 4; i++, high >>= 2, o += 2) {
+      // x, y, tile and attributes (vhoopppN), a byte each.
+      uint32_t e = sprites[block * 4 + i];
+      if (!(((e ^ 0xf000) & 0xff00) | (high & 2) | !unused_hide)) {
+        *(volatile uint16_t *)o = 1 << 9;  // hidden
+        continue;
+      }
+      uint32_t large = high >> 1 & 1, x = (e & 0xff) | (high & 1) << 8;
+      o[0] = (((e >> 8) - y_off) & 0xff) | (((x - kXOffset) & 0x1ff) | (e >> 18 & 0x3000)) << 16 |
+             shape[large];
+      // The tile (the name table's bit, and the tile's row and column), the
+      // priority and the palette.
+      ((volatile uint16_t *)o)[2] = (e >> 15 & 0x3e0) | (e >> 16 & 15) | (e >> 13 & 0x7000) |
+                                    (priorities >> (e >> 27 & 6) & 3) << 10;
+    }
+  }
+  // The GBA takes writes to OAM in VBlank (or HBlank, with DISPCNT's bit 5)
+  // only: if this ran past it, do all of them again next frame.
+  if (g_vblank_count != vblanks || REG_VCOUNT < kGbaLines)
+    h->oam_changed = ~0u;
 }
 
 // VRAM's changes on frames with no line showing BG1-BG3 (as a door loads
@@ -1577,17 +1728,20 @@ static void UpdateOam(void) {
 // their tiles and maps are converted.
 static uint32_t later_dirty[kVramChunks / 32];
 static uint32_t later_marks;
+static bool later_any;
 
 ROM_CODE static void KeepForLater(const uint32_t *dirty) {
   for (int i = 0; i < kVramChunks / 32; i++)
     later_dirty[i] |= dirty[i];
   later_marks += g_vram_dirty_marks;
+  later_any = true;
 }
 
 ROM_CODE static void AddFromBefore(uint32_t *dirty) {
   for (int i = 0; i < kVramChunks / 32; i++)
     dirty[i] |= later_dirty[i];
   memset(later_dirty, 0, sizeof(later_dirty));
+  later_any = false;
   later_marks = 0;
 }
 
@@ -1635,15 +1789,17 @@ void Render_Present(void) {
   // The registers of a line with a tiled background mode, if any, for
   // where their tiles and maps are.
   const PpuRegs *r = LINE_REGS(text ? text_line : SnesLine(kGbaLines / 2));
-  uint32_t dirty[kVramChunks / 32];
-  memcpy(dirty, g_vram_dirty, sizeof(dirty));
-  memset(g_vram_dirty, 0, sizeof(g_vram_dirty));
+  // (The changes since last time, where the game left them: nothing marks
+  // any while this runs.)
+  SnesHw *h = &g_snes_hw;
+  uint32_t *dirty = g_vram_dirty;
   uint32_t marks = g_vram_dirty_marks + later_marks;
   g_vram_dirty_marks = 0;
 
   if (mode7 != conv.mode7) {
     // Mode 7 and the other modes use the GBA's VRAM differently.
-    memset(dirty, 0xff, sizeof(dirty));
+    memset(dirty, 0xff, sizeof(g_vram_dirty));
+    h->vram_dirty = true;
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
   }
@@ -1660,13 +1816,20 @@ void Render_Present(void) {
   int blank_before = conv.blank_tile;
   if (mode7)
     UpdateTilesMode7(dirty);
-  if (text)
+  if (!text) {
+    if (h->vram_dirty)
+      KeepForLater(dirty);
+  } else if (later_any) {
     AddFromBefore(dirty);
-  else
-    KeepForLater(dirty);
+    h->vram_dirty = true;
+  }
   UpdateTiles(r, dirty, text && !mode7, text);
   if (text)
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
+  if (h->vram_dirty) {
+    memset(dirty, 0, sizeof(g_vram_dirty));
+    h->vram_dirty = false;
+  }
   UpdateOam();
 
   // From now on, the VBlank interrupt sets up this frame's registers: from

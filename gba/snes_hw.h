@@ -72,8 +72,15 @@ typedef struct SnesHw {
 
   SnesDmaChannel dma[8];
 
-  // What changed since render.c last looked (and g_vram_dirty).
-  bool cgram_dirty, oam_dirty, regs_dirty;
+  // What changed since render.c last looked (and g_vram_dirty). The game
+  // uploads all of CGRAM and OAM every frame, mostly as they were:
+  // cgram_dirty is whether it did, and cgram_changed and oam_changed have the
+  // 16-byte blocks that really changed, a bit each: 8 colors, or 4 sprites
+  // (and their byte of the high table).
+  bool cgram_dirty, regs_dirty;
+  // Whether g_vram_dirty has any bit set (render.c clears it).
+  bool vram_dirty;
+  uint32_t cgram_changed, oam_changed;
   // The scroll registers (but Mode 7's, in PpuRegs's states with BG1's),
   // which are by line (see SnesHw_RunDisplay); and those the CPU wrote since
   // it last looked: bits 0-3 BG1-BG4's HOFS, 4-7 their VOFS.
@@ -86,8 +93,8 @@ extern SnesHw g_snes_hw;
 
 // The PPU's memories, in EWRAM. OAM is 544 bytes: 128 four-byte entries,
 // then 32 bytes of high bits.
-extern uint16_t g_cgram[256];
-extern uint8_t g_oam[544];
+extern uint16_t g_cgram[256] __attribute__((aligned(4)));
+extern uint8_t g_oam[544] __attribute__((aligned(4)));
 extern uint16_t g_vram[kVramWords];
 extern uint32_t g_vram_dirty[kVramChunks / 32];
 // How many times a chunk was marked since render.c last cleared the
