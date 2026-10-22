@@ -26,8 +26,8 @@ typedef struct EchoState {
 } EchoState;
 static EchoState echo_state IWRAM_BSS;
 void Audio_EchoPairs(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
+void Audio_ClearSums(int32_t *sums, int n);
 void Audio_MixVoice(int32_t *sum, int n, AudioVoice *v);
-void Audio_OutputDry(int8_t *left, int8_t *right, const int32_t *sums, int n, const int32_t vol[4]);
 void Audio_OutputEcho(int8_t *left, int8_t *right, const int32_t *sums, int n, const int32_t vol[4]);
 // As audio_mix.S has them.
 _Static_assert(offsetof(AudioVoice, vol) == 20 && offsetof(AudioVoice, on) == 24, "AudioVoice");
@@ -48,7 +48,7 @@ static void Echo(int32_t *wet, int n) {
   const AudioMix *m = &g_audio_mix;
   if (!m->echo_writes) {
     // Only while the driver changes the echo's length, its volume 0.
-    memset(wet + kAudioChunk, 0, n * 4);
+    Audio_ClearSums(wet + kAudioChunk, n);
     return;
   }
   echo_state.fir0 = m->fir[0];
@@ -74,19 +74,29 @@ uint16_t g_audio_noise_period IWRAM_BSS;
 static int16_t noise IWRAM_DATA = -0x4000;
 static uint32_t noise_time IWRAM_BSS;
 
-static void Noise(int8_t *out, int n) {
-  uint32_t period = g_audio_noise_period << 8;
-  for (int i = 0; i < n; i++) {
-    noise_time += kAudioDspSamples;
-    for (; period && noise_time >= period; noise_time -= period) {
-      int bit = (noise ^ (noise >> 1)) & 1;
-      noise = (int16_t)((((noise >> 1) & 0x3fff) | bit << 14) << 1) >> 1;
+// Adds |n| of the noise's samples, times |vol|, to |sum|; |samples| has them
+// once they're made (|first|: not yet), for the voices after the first with
+// noise. (Thumb code, from the cartridge: only a few of the sounds have
+// noise.)
+ROM_CODE __attribute__((noinline)) static void AddNoise(int32_t *sum, int n, int32_t vol,
+                                                        int8_t *samples, bool first) {
+  if (first) {
+    uint32_t period = g_audio_noise_period << 8;
+    for (int i = 0; i < n; i++) {
+      noise_time += kAudioDspSamples;
+      for (; period && noise_time >= period; noise_time -= period) {
+        int bit = (noise ^ (noise >> 1)) & 1;
+        noise = (int16_t)((((noise >> 1) & 0x3fff) | bit << 14) << 1) >> 1;
+      }
+      samples[i] = noise >> 7;
     }
-    out[i] = noise >> 7;
   }
+  for (int i = 0; i < n; i++)
+    sum[i] += samples[i] * vol;
 }
 
 void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
+  __builtin_assume(n >= 2);  // (so there is one loop for the voices, not two)
   const AudioMix *m = &g_audio_mix;
   bool echo = m->echo_on;
   // Both sides in a word, left in the low half: a multiply a sample. With
@@ -95,22 +105,18 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   int32_t sums[3 * kAudioChunk], *dry = sums, *wet = sums + kAudioChunk;
   int8_t noise_samples[kAudioChunk];
   bool noise_done = false;
-  for (int i = 0; i < n; i++)
-    dry[i] = 0;
-  for (int i = 0; echo && i < n; i++)
-    wet[i] = 0;
+  Audio_ClearSums(dry, n);
+  Audio_ClearSums(wet, n);
+#pragma clang loop unroll(disable)
   for (int v = 0; v < 8; v++) {
     AudioVoice *voice = &g_audio_voices[v];
     if (!voice->on)
       continue;
     int32_t vol = voice->vol;
-    int32_t *sum = echo && voice->echo ? wet : dry;
+    int32_t *sum = dry + (echo & voice->echo) * kAudioChunk;  // (|wet| follows |dry|)
     if (voice->noise) {
-      if (!noise_done)
-        Noise(noise_samples, n);
+      AddNoise(sum, n, vol, noise_samples, !noise_done);
       noise_done = true;
-      for (int i = 0; i < n; i++)
-        sum[i] += noise_samples[i] * vol;
       continue;
     }
     Audio_MixVoice(sum, n, voice);
@@ -118,12 +124,10 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   // The voices' sums are at half the scale of the SNES's (see AudioVoice),
   // and the master and echo volumes are /128: /8192 makes the SNES's 16
   // bits /128, twice as loud as its top 8 bits, as the GBA's 8 are few.
-  int32_t vol[4] = {m->master_l, m->master_r, m->echo_l, m->echo_r};
-  if (!echo) {
-    Audio_OutputDry(left, right, sums, n, vol);
-    return;
-  }
-  Echo(wet, n);
+  // (Without the echo, it has no volume, and |wet| nothing in it.)
+  int32_t vol[4] = {m->master_l, m->master_r, echo ? m->echo_l : 0, echo ? m->echo_r : 0};
+  if (echo)
+    Echo(wet, n);
   Audio_OutputEcho(left, right, sums, n, vol);
 }
 
