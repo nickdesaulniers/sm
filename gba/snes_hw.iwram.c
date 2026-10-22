@@ -497,7 +497,8 @@ ROM_CODE static uint8_t ReadDmaReg(uint16_t reg) {
   }
 }
 
-void WriteReg(uint16 reg, uint8 value) {
+// (The game calls it through the Thumb entry in thumb_entries.S.)
+void WriteRegArm(uint16 reg, uint8 value) {
   SnesHw *h = &g_snes_hw;
   if (reg >= 0x2100 && reg < 0x2200) {
     WriteBBus(reg & 0xff, value);
@@ -554,9 +555,9 @@ ROM_CODE uint16 ReadRegWord(uint16 reg) {
   return lo | (ReadReg(reg + 1) << 8);
 }
 
-void WriteRegWord(uint16 reg, uint16 value) {
-  WriteReg(reg, (uint8)value);
-  WriteReg(reg + 1, value >> 8);
+void WriteRegWordArm(uint16 reg, uint16 value) {
+  WriteRegArm(reg, (uint8)value);
+  WriteRegArm(reg + 1, value >> 8);
 }
 
 // The channels HDMA is running, decoded once a frame (and if the game
@@ -590,7 +591,7 @@ static int hdma_count IWRAM_BSS, hdma_scrolls IWRAM_BSS, hdma_windows IWRAM_BSS,
 
 // A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
 // of a bank of RAM (*ram), or the upper half of a LoROM bank's.
-static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
+ROM_CODE static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
   *ram = bank == 0x7e || bank == 0x7f;
   if (*ram)
     return &g_ram[(bank & 1) << 16];
@@ -1385,15 +1386,21 @@ static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
   return !((x[11] ^ y[11]) & 0x00ffffff) && !((x[12] ^ y[12]) & 0xff000000);
 }
 
+static __attribute__((noinline)) void ClearWritten(uint8_t *written, const uint8_t *written_at,
+                                                   int num_written) {
+  for (int i = 0; i < num_written; i++)
+    written[written_at[i]] = 0;
+}
+
 int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
                       uint32_t (*line_ofs)[4]) {
   SnesHw *h = &g_snes_hw;
   SnesHw_HdmaInit();
   HdmaWindows(line_windows);
-  // The scroll registers the CPU wrote on each line, for HdmaScrolls.
+  // The scroll registers the CPU wrote on each line, for HdmaScrolls: all 0
+  // but for the lines in |written_at|, which it clears again at the end.
   static uint8_t written[kSnesLines], written_at[kSnesLines];
   int num_written = 0;
-  memset(written, 0, sizeof(written));
   int n = 0;
   h->regs_dirty = h->scroll_dirty = true;
   h->scroll_written = 0;
@@ -1439,5 +1446,6 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
   }
   if (hdma_scrolls > hdma_count)
     HdmaScrolls(line_ofs, written, written_at, num_written);
+  ClearWritten(written, written_at, num_written);
   return n;
 }

@@ -1275,14 +1275,18 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   // The backgrounds', the sprites', and BG3's 2bpp palettes of 4 colors in
   // GBA palettes 8-15 (Mode 7's background has all 256 colors: frames with
   // both are a compromise); with the color math on the layers it's on (the
-  // sprites': in palettes 4-7). By tables on the stack, in IWRAM.
+  // sprites': in palettes 4-7). By tables on the stack, in IWRAM; copied
+  // only when something reads them (at full brightness, the plain ones'
+  // colors are as they were; and with no color math, so are all).
+  bool full = b == 15;
   uint8_t tables[2][3][32];
-  memcpy(tables[0], plain, sizeof(plain));
-  memcpy(tables[1], with, sizeof(with));
+  if (!full)
+    memcpy(tables[0], plain, sizeof(plain));
+  if (math & 0x37)
+    memcpy(tables[1], with, sizeof(with));
   const uint8_t(*same)[32] = tables[0];
   const uint8_t(*bd)[32] = tables[(math & 0x20) != 0], (*bg12)[32] = tables[(math & 3) != 0];
   const uint8_t(*o)[32] = tables[(math & 0x10) != 0], (*b3)[32] = tables[(math & 4) != 0];
-  bool full = b == 15;
   Recolor(GBA_BG_PALETTE, g_cgram, 1, bd, full && bd == same);
   Recolor(GBA_BG_PALETTE + 1, g_cgram + 1, 127, bg12, full && bg12 == same);
   Recolor(GBA_OBJ_PALETTE, g_cgram + 128, 64, same, full);

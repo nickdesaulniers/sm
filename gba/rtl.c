@@ -106,6 +106,20 @@ GBA_IWRAM_CODE uint16 SnesModulus(uint16 a, uint8 b) {
   return a - (uint16)((uint64_t)a * reciprocals[b] >> 32) * b;
 }
 
+// ClearUnusedOam (src/sm_80.c) hides the sprites a frame didn't use, by their
+// Y: a byte of each four of the OAM's copy, in EWRAM, for up to 128 sprites,
+// and a frame calls it. Unrolled, for the cartridge's prefetch to keep ahead
+// of the stores (which take most of the time): the linker calls this in its
+// place, from the game's other files (--wrap in CMakeLists.txt).
+void __wrap_ClearUnusedOam(void) {
+  uint32_t i = oam_next_ptr >> 2;
+  uint8 *y = &g_ram[0x371 + i * 4];
+#pragma clang loop unroll_count(8)
+  for (; i < 0x80; i++, y += 4)
+    *y = 0xf0;
+  oam_next_ptr = 0;
+}
+
 // The GBA's SRAM is 8 bits wide: a byte at a time.
 void RtlWriteSram(void) {
   for (int i = 0; i < 0x2000; i++)

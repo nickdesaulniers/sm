@@ -237,9 +237,10 @@ __attribute__((noinline)) static void DspWriteChanged(uint8_t reg, uint8_t value
   }
 }
 
-// ARM code in IWRAM, as the driver writes registers 500 times a second.
+// ARM code in IWRAM, as the driver writes registers 500 times a second. (It
+// calls it through the Thumb entry in thumb_entries.S.)
 __attribute__((target("arm"), section(".iwram.text")))
-void Audio_DspWrite(uint8 reg, uint8 value) {
+void Audio_DspWriteArm(uint8 reg, uint8 value) {
   reg &= 0x7f;
   // The driver rewrites most registers unchanged, 500 times a second; KON
   // and KOF act whatever they were, but for none (as the driver writes
