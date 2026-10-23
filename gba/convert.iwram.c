@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "cart_data.h"
 #include "gba_hw.h"
 
 // Spreads a byte's bits a nibble apart, the leftmost pixel (bit 7) into
@@ -128,8 +129,41 @@ ROM_CODE static const uint8_t *TileRanks(const volatile uint32_t *tile, uint8_t 
   return rank;
 }
 
+// The tile the cartridge has redrawn for the squash in place of the SNES tile
+// at |src| (see cart_data.h's SquashTile), or NULL: the font tiles, which are
+// drawn to read with 6 of their 8 rows (tools/squash_font.py).
+ROM_CODE static const SquashTile *FindSquashTile(const uint16_t *src, uint32_t bpp) {
+  const uint8_t *section = (const uint8_t *)&__cart_data + __cart_data.squash_offset;
+  const SquashHeader *header = (const SquashHeader *)section;
+  const uint16_t *slots = (const uint16_t *)(header + 1);
+  const SquashTile *tiles = (const SquashTile *)(slots + (1u << header->slot_bits));
+  uint32_t mask = (1u << header->slot_bits) - 1;
+  for (uint32_t i = SquashHash(src, bpp) >> (32 - header->slot_bits);; i = (i + 1) & mask) {
+    if (!slots[i])
+      return NULL;
+    const SquashTile *t = &tiles[slots[i] - 1];
+    if (t->bpp != bpp)
+      continue;
+    uint32_t j = 0;
+    while (j < bpp * 4 && t->src[j] == src[j])
+      j++;
+    if (j == bpp * 4)
+      return t;
+  }
+}
+
+ROM_CODE static void CopySquashTile(volatile uint32_t *dst, const SquashTile *t) {
+  for (int r = 0; r < 8; r++)
+    dst[r] = t->dst[r];
+}
+
 ROM_CODE void Convert_Tiles4bppSquashed(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 16, dst += 8) {
+    const SquashTile *redrawn = FindSquashTile(src, 4);
+    if (redrawn) {
+      CopySquashTile(dst, redrawn);
+      continue;
+    }
     Convert_Tiles4bpp(dst, src, 1);
     uint8_t rank[16];
     MergeSquashedRows(dst, TileRanks(dst, rank));
@@ -138,6 +172,11 @@ ROM_CODE void Convert_Tiles4bppSquashed(volatile uint32_t *dst, const uint16_t *
 
 ROM_CODE void Convert_Tiles2bppSquashed(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 8, dst += 8) {
+    const SquashTile *redrawn = FindSquashTile(src, 2);
+    if (redrawn) {
+      CopySquashTile(dst, redrawn);
+      continue;
+    }
     Convert_Tiles2bpp(dst, src, 1);
     MergeSquashedRows(dst, kRank2bpp);
   }

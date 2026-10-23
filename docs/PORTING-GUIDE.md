@@ -191,7 +191,15 @@ feet, with some slack, or crouching moves the screen. On menus and text
 screens, squash by dropping two rows of each tile row: the lines that show
 rows 0 and 4 of the text layer's tiles (by each line's scrolling, and the
 VOFS + 1 rule). Merge each dropped row into its neighbor as the tiles are
-converted, keeping the brighter pixel, so letters keep their bars. Leave
+converted, keeping the brighter pixel, so letters keep their bars. That is
+not enough for glyphs whose shape is in the rows it moves (a C's lower
+terminal in row 4 closes it into an O, a 3's middle into a 2): redraw the
+font tiles for the squash. At cartridge-build time, from the player's ROM,
+delete the two rows of each font tile that cost its glyphs the least, the
+same two for every glyph of a font, and put the other six where the squash
+shows them (tools/squash_font.py). The cartridge holds the redrawn tiles
+under a hash of the original's bytes, and the converter, on squashed screens
+only, uses the redrawn tile when a tile matches. Leave
 8-line sprites (mostly text) unscaled. When the GBA flips a scaled sprite,
 it flips about the middle and takes columns `width..1`, so store flipped
 copies of the tiles and use an unflipped matrix. Switch between crop and

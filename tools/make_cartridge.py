@@ -9,16 +9,22 @@ The ROM must be the US release (sha1 da957f0d63d14cb441d215462904c4fa8519c613),
 with or without a copier's 512-byte header.
 
 Besides the ROM itself, the data has the game's audio samples, decoded from
-the SNES's BRR to the 8-bit PCM the GBA plays (gba/audio.c).
+the SNES's BRR to the 8-bit PCM the GBA plays (gba/audio.c), and the menu
+fonts' tiles redrawn for the squashed screens (tools/squash_font.py).
 """
 import hashlib
+import os
 import struct
 import sys
+
+sys.dont_write_bytecode = True  # (no tools/__pycache__ for squash_font)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import squash_font  # noqa: E402
 
 SNES_ROM_SHA1 = 'da957f0d63d14cb441d215462904c4fa8519c613'
 SNES_ROM_SIZE = 0x300000
 MAGIC = b'SMGBA\0\0\0'
-VERSION = 2
+VERSION = 3
 HEADER_SIZE = 256
 
 # The SNES addresses of the game's uploads to the APU: the first is the
@@ -133,6 +139,33 @@ def audio_section(rom):
     return table + pcm
 
 
+def squash_hash(data, bpp):
+    """gba/cart_data.h's SquashHash of a tile's bytes."""
+    h = bpp
+    for w in struct.unpack('<%dH' % (bpp * 4), data[:bpp * 8]):
+        h = ((h ^ w) * 0x9E3779B1) & 0xffffffff
+    return h
+
+
+def squash_section(rom):
+    """The redrawn font tiles, as gba/cart_data.h's SquashHeader describes."""
+    tiles = squash_font.tuned_tiles(rom, rom_offset)
+    bits = 4
+    while (1 << bits) < 4 * len(tiles):
+        bits += 1
+    slots = [0] * (1 << bits)
+    entries = b''
+    for n, (bpp, src, dst) in enumerate(tiles):
+        i = squash_hash(src, bpp) >> (32 - bits)
+        while slots[i]:
+            i = (i + 1) & ((1 << bits) - 1)
+        slots[i] = n + 1
+        entries += struct.pack('<I16H', bpp, *struct.unpack('<%dH' % (bpp * 4), src),
+                               *[0] * (16 - bpp * 4)) + dst
+    return (struct.pack('<II', len(tiles), bits) + struct.pack('<%dH' % len(slots), *slots) +
+            entries)
+
+
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__.strip())
@@ -148,10 +181,13 @@ def main():
         sys.exit(f'{engine_path}: not an engine image (its size is not a multiple of 256)')
     audio = audio_section(rom)
     audio_offset = HEADER_SIZE + len(rom)
-    header = MAGIC + struct.pack('<IIII', VERSION, len(rom), audio_offset, len(audio))
+    squash = squash_section(rom)
+    squash_offset = audio_offset + len(audio)
+    header = MAGIC + struct.pack('<IIIIII', VERSION, len(rom), audio_offset, len(audio),
+                                 squash_offset, len(squash))
     header += bytes(HEADER_SIZE - len(header))
     with open(out_path, 'wb') as f:
-        f.write(engine + header + rom + audio)
+        f.write(engine + header + rom + audio + squash)
 
 
 if __name__ == '__main__':
