@@ -172,6 +172,7 @@ static uint16_t patch_color[24], restore_color[24];
 static struct {
   uint16_t bg12_base, bg3_base, obj_base[2];
   uint8_t bgsc[2];
+  uint8_t bg2_nba;  // BG12NBA: where BG2's tiles are, from BG1's
   uint8_t bg_row[2];  // of 64x64 maps, the row of screens converted
   uint8_t bg3_slot_sc[2];
   int blank_tile;
@@ -477,6 +478,14 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     }
     if (bg3_mid)
       c->bgcnt[0] |= 2;  // in front of BG2 only
+    // Outside gameplay, behind the sprites of SNES priority 3, GBA 1: the
+    // text of the planet map (BG3's hexagons are on its sub screen).
+    if (squash && !bg3_mid) {
+      for (int i = 0; i < 4; i++) {
+        if (on_top & (1 << i))
+          c->bgcnt[i] |= 1;
+      }
+    }
     c->bld[0] = BlendLayers(sub) | BlendLayers(math & ~sub) << 8 | 1 << 6;
     // Subtracted (Maridia's and Tourian's shadows): the GBA can't, but
     // where the sub screen's layers are, it darkens what's under them,
@@ -1682,9 +1691,11 @@ ROM_CODE static void UpdateChunkTilesSquashed(uint32_t c, bool bg12, bool bg3, u
 }
 
 // Says once per address that BG2's tiles are somewhere other than BG1's.
+// (BG2's tiles later than BG1's, within the range converted, are supported:
+// see UpdateMaps12.)
 ROM_CODE static void WarnBg2Tiles(uint16_t bg2_base, uint16_t bg12_base) {
   static uint16_t warned_bg2_base = 0xffff;
-  if (warned_bg2_base != bg2_base) {
+  if (warned_bg2_base != bg2_base && !(bg2_base > bg12_base && bg2_base - bg12_base < 0x4000)) {
     printf("render: BG2 tiles at 0x%x, BG1's at 0x%x (not supported yet)\n", bg2_base, bg12_base);
     warned_bg2_base = bg2_base;
   }
@@ -1741,7 +1752,17 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
     bool split = bg == split_bg2;
     // A 64x64 map's top or bottom row, by the middle line (Kraid's room).
     int row = (sc & 3) == 3 ? ((VOFS(text_line, bg) + text_line) >> 8) & 1 : 0;
-    bool moved = sc != conv.bgsc[bg] || row != conv.bg_row[bg];
+    bool moved = sc != conv.bgsc[bg] || row != conv.bg_row[bg] ||
+                 (bg && r->bgnba[0] != conv.bg2_nba);
+    // BG2's tiles at another base than BG1's (the area map coming in over
+    // the planet's, on the file select's way to the game): the same tiles
+    // converted, BG2's entries that many later. (Not if the base is before
+    // BG1's, whose tiles go on from BG1's.)
+    uint32_t tile_add = 0;
+    if (bg && (r->bgnba[0] >> 4) > (r->bgnba[0] & 15))
+      tile_add = ((r->bgnba[0] >> 4) - (r->bgnba[0] & 15)) << 8;
+    if (bg)
+      conv.bg2_nba = r->bgnba[0];
     bool changed = moved || (split && force_split) || split_changed;
     if (moved) {
       memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
@@ -1757,12 +1778,19 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
         uint32_t o = c * 16;
         int hi;
+        const uint16_t *src = &g_vram[addr + o];
+        uint16_t later[16];
+        if (tile_add) {
+          for (int i = 0; i < 16; i++)
+            later[i] = (src[i] & 0xfc00) | ((src[i] + tile_add) & 0x3ff);
+          src = later;
+        }
         if (split)
           hi = Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o,
-                                VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, &g_vram[addr + o], 16,
+                                VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16,
                                 conv.blank_tile);
         else
-          hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, &g_vram[addr + o], 16, 0);
+          hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16, 0);
         cols[c & 1] += hi - counts[c];
         counts[c] = hi;
       }
@@ -1777,6 +1805,7 @@ static bool Maps12Quiet(const PpuRegs *r, const uint32_t *dirty, bool force_spli
   for (int bg = 0; bg < 2; bg++) {
     uint8_t sc = r->bgsc[bg];
     busy |= (sc != conv.bgsc[bg]) | ((sc & 3) == 3);
+    busy |= bg && r->bgnba[0] != conv.bg2_nba;
     // (A screen of 1024 words is 2 of the bitmap's.)
     for (int i = 0; i < ((sc & 3) ? 4 : 2) && g_snes_hw.vram_dirty; i++)
       busy |= dirty[((sc >> 1 & 0x3e) + i) & 63];
@@ -2084,8 +2113,12 @@ void Render_Present(void) {
   // registers and maps over the new tiles the while (Ceres's doors, with
   // the screen on: a Mode 7 room's picture scrambled by the next room's
   // tiles). Nothing, the backdrop (UpdatePalette sets it), until it's done.
+  // (Tiles at another base too, all converted again: the area map's, after
+  // the planet's, on the way from the file select into the game.)
   enum { kHeavyMarks = 512 };
-  if (mode7 != conv.mode7 || marks > kHeavyMarks)
+  bool rebased = text && (((r->bgnba[0] & 0xf) << 12) != conv.bg12_base ||
+                          ((r->bgnba[1] & 0xf) << 12) != conv.bg3_base);
+  if (mode7 != conv.mode7 || marks > kHeavyMarks || rebased)
     HideUntilPresented();
   UpdatePalette(LINE_REGS(SnesLine(0)), LINE_REGS(SnesLine(kGbaLines / 2)), text);
   conv.mode7 = mode7;
