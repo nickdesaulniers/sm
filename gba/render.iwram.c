@@ -94,7 +94,8 @@ static uint32_t line_ofs[kSnesLines][4];
 #define HOFS(s, bg) (line_ofs[s][bg] & 0xffff)
 #define VOFS(s, bg) (line_ofs[s][bg] >> 16)
 // Two of each, for the frame on show and the next. (One of the streams in
-// EWRAM, for room in IWRAM: HBlank DMA reads only 16 bytes a line.)
+// EWRAM, for room in IWRAM: HBlank DMA reads only 16 bytes a line.) Only
+// BuildLine writes them: ScrollRuns keeps what runs they hold, to skip.
 static uint32_t stream0[kGbaLines + 1][4] IWRAM_BSS, stream1[kGbaLines + 1][4];
 static uint32_t (*const streams[2])[4] = {stream0, stream1};
 // The streams of frames with windows (see display.h), and their windows
@@ -657,7 +658,7 @@ FILL_VARYING(FillBg2Split, "r7", "mov r5, r7\n\t")
 #undef FILL_VARYING
 
 // The lines of ScrollStream's, in runs where line_ofs has the one row (see SnesHw_OfsRunStarts),
-// but for one word at most: those are one stream line, filled by FillLines (or FillVarying). The
+// but for one word at most: those are one stream line, filled by FillLines (or FillBg2/FillBg3). The
 // same run is often there already, from the frame before last (this stream's last): then it isn't
 // written again, EWRAM's stores being what they cost. (|fill_runs|, by stream, are the runs as
 // written: first line and lines; |new_runs| this frame's so far.)
@@ -890,10 +891,10 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
     }
     shown[bg] = n;
   }
-  // The pause menu's equipment screen puts its title (SAMUS) on BG1's priority
-  // tiles, over BG2's priority tiles' (the map's, BRINSTAR), which split_bg2
-  // would put in front.
-  bool equipment = game_state >= 13 && game_state <= 16 && (menu_index == 1 || menu_index == 4);
+  // The pause menu's equipment screen (and its fades) puts its title (SAMUS) on
+  // BG1's priority tiles, over BG2's priority tiles' (the map's, BRINSTAR),
+  // which split_bg2 would put in front.
+  bool equipment = game_state >= 13 && game_state <= 16 && pause_screen_mode == 1;
   SetSplit(!equipment && shown[1] > shown[0] && (r->tm & 2));
 }
 
