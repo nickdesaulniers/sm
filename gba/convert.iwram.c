@@ -103,10 +103,36 @@ ROM_CODE static void MergeSquashedRows(volatile uint32_t *dst, const uint8_t *ra
   }
 }
 
+// The ranks for a converted 4bpp tile of one opaque color and another that
+// fills its bottom right pixel, where the 8x8 fonts have their gaps between
+// letters and lines: that one is the background, and loses to the other. The
+// tiles' palettes aren't known here, and the pause screen's letters use all
+// of them: ranked by BG palette 0's order, whose colors don't match, they
+// lost their strokes to their backgrounds. Else (outlines, shading, and the
+// text on nothing), squash_rank's order.
+ROM_CODE static const uint8_t *TileRanks(const volatile uint32_t *tile, uint8_t rank[16]) {
+  uint32_t colors = 0;
+  for (int r = 0; r < 8; r++) {
+    uint32_t row = tile[r];
+    for (int x = 0; x < 32; x += 4)
+      colors |= 1u << (row >> x & 15);
+  }
+  int gap = tile[7] >> 28;
+  colors &= ~(1u | 1u << gap);
+  // (One color left, a power of two.)
+  if (!gap || !colors || (colors & (colors - 1)))
+    return squash_rank;
+  memset(rank, 0, 16);
+  rank[gap] = 1;
+  rank[__builtin_ctz(colors)] = 2;
+  return rank;
+}
+
 ROM_CODE void Convert_Tiles4bppSquashed(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 16, dst += 8) {
     Convert_Tiles4bpp(dst, src, 1);
-    MergeSquashedRows(dst, squash_rank);
+    uint8_t rank[16];
+    MergeSquashedRows(dst, TileRanks(dst, rank));
   }
 }
 

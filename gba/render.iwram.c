@@ -789,7 +789,11 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
     }
     shown[bg] = n;
   }
-  SetSplit(shown[1] > shown[0] && (r->tm & 2));
+  // The pause menu's equipment screen puts its title (SAMUS) on BG1's priority
+  // tiles, over BG2's priority tiles' (the map's, BRINSTAR), which split_bg2
+  // would put in front.
+  bool equipment = game_state >= 13 && game_state <= 16 && (menu_index == 1 || menu_index == 4);
+  SetSplit(!equipment && shown[1] > shown[0] && (r->tm & 2));
 }
 
 // The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
@@ -1718,17 +1722,21 @@ ROM_CODE static void SetSquashMatrices(void) {
 // Sprite |e| (at |x|, of GBA shape |shape|) squashed, in OAM entry |o|; and
 // its first tile. Its middle goes where the SNES's would be, squashed
 // (sprites below line 224 are partly above the screen).
-// - 8 lines high (mostly text), as it is: squashed, its row 3 would go.
+// - 8 lines high (mostly text), as it is: squashed, its row 3 would go. But
+//   not when |stacked|, with another above or below it (|stacked|: the
+//   frame around the equipment screen's selection is such pieces: unscaled,
+//   it came out taller than what it frames and cut the item's letters).
 // - Higher, scaled by a matrix. Not flipped left to right by one, though:
 //   the GBA flips by a scale of -1 about the middle, which takes columns
 //   width..1, not width - 1..0. UpdateTiles puts each tile flipped at 31 -
 //   its column, and those, in reverse order, are the sprite flipped.
-ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, int shape) {
+ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, int shape,
+                                 bool stacked) {
   uint8_t attr = e[3];
   int height = kObjHeight[shape], y = e[1] >= kSnesLines ? e[1] - 256 : e[1];
   int middle = (((y + height / 2) * 3) >> 2) - kSquashTop;
   int column = e[2] & 15;
-  if (height == 8) {
+  if (height == 8 && !stacked) {
     o[0] = ((middle - 4) & 0xff) | (shape >> 2) << 14;
     o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
   } else {
@@ -1754,7 +1762,19 @@ ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
       continue;
     }
     volatile uint16_t *o = &GBA_OAM[i * 4];
-    int tile = SquashSprite(o, e, e[0] | (hi & 1) << 8, shapes[hi >> 1]);
+    int x = e[0] | (hi & 1) << 8, shape = shapes[hi >> 1];
+    bool stacked = false;
+    if (kObjHeight[shape] == 8) {
+      // (The game puts the pieces of a sprite together in its list.)
+      for (int j = i < 24 ? 0 : i - 24; j < i + 24 && j < 128 && !stacked; j++) {
+        const uint8_t *f = &g_oam[j * 4];
+        int hj = (g_oam[512 + (j >> 2)] >> ((j & 3) * 2)) & 3;
+        int dy = f[1] - e[1];
+        stacked = (dy == 8 || dy == -8) && (f[0] | (hj & 1) << 8) == x && f[1] < kSnesLines &&
+                  kObjHeight[shapes[hj >> 1]] == 8;
+      }
+    }
+    int tile = SquashSprite(o, e, x, shape, stacked);
     int priority = (e[3] >> 4) & 3;
     o[2] = tile | (bg3_mid ? 3 - priority : (kObjPriorities >> (priority * 2)) & 3) << 10 |
            ((e[3] >> 1) & 7) << 12;
