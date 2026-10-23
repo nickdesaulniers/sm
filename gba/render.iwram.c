@@ -1640,7 +1640,8 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
     uint32_t tile_add = 0;
     if (bg && (r->bgnba[0] >> 4) > (r->bgnba[0] & 15))
       tile_add = ((r->bgnba[0] >> 4) - (r->bgnba[0] & 15)) << 8;
-    conv.bg2_nba = bg ? r->bgnba[0] : conv.bg2_nba;
+    if (bg)
+      conv.bg2_nba = r->bgnba[0];
     bool changed = moved || (split && force_split) || split_changed;
     if (moved) {
       memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
