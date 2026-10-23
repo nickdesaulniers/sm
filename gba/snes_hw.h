@@ -106,7 +106,9 @@ enum { kSnesLines = 224 };
 // Runs the SNES's display of a frame: HDMA, and the game's IRQ handlers,
 // which change registers partway down the screen. Returns the PPU's
 // registers for each line, as states[line_state[line]] with a state for
-// each change: the number of states. But for the windows' edges (WH0-WH3,
+// each change (numbered down the screen: line_state only goes up, and
+// render.iwram.c finds where a state ends by searching): the number of
+// states. But for the windows' edges (WH0-WH3,
 // as a word), which HDMA often changes every line: they're
 // line_windows[line], and the states' are the last line's.
 // The scrolling is by line too: line_ofs[line][n] is BGn+1's, HOFS |

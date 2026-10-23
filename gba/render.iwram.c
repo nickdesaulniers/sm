@@ -122,8 +122,13 @@ static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
 // How many of each slot's entries, by chunk of 16, have the priority bit.
 // The GBA has no background to spare for BG3's priority tiles (in front of
 // everything, with BGMODE's bit 3) and the others (at the back): lines
-// whose rows have any go in front (Bg3Front).
-static uint8_t bg3_hi[2][128];
+// whose rows have any go in front (Bg3Front, which reads a row's two
+// chunks together).
+// (By byte for the writers; by halfword, a row's two chunks, for Bg3Front.)
+static union {
+  uint8_t chunks[128];
+  uint16_t rows[64];
+} bg3_hi[2];
 static int bg3_hi_total[2];
 // Likewise for BG1's and BG2's maps (by screen, 64 chunks each), as last
 // converted; and whether to split BG2, not BG1, into the GBA's BG1 and BG3
@@ -291,7 +296,7 @@ static int Sext13(int v) {
   return (int16_t)(v << 3) >> 3;
 }
 
-static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
+ROM_CODE static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   uint16_t dispcnt = kDispcntMode1;
   if (!(r->inidisp & 0x80)) {
     if (r->tm & 1) dispcnt |= kDispcntBg0 << 2;
@@ -318,11 +323,21 @@ static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   l->stream[3] = c * dx + d * dy + (y0 << 8);
 }
 
-// The next line of a Mode 7 stream with the same registers: the reference
-// point moves down the map by (b, d).
-static void StepLineMode7(LineRegs *l) {
-  l->stream[2] += (int16_t)(l->stream[0] >> 16);
-  l->stream[3] += (int16_t)(l->stream[1] >> 16);
+// |n| (at least 1) lines of a Mode 7 stream with the same registers, from
+// the first line's |in|: the reference point moves down the map by (b, d).
+// (Or, with those 0, the same line.) In assembly, like ScrollStream.
+__attribute__((noinline)) static void Mode7Stream(uint32_t (*out)[4], int n, const uint32_t *in,
+                                                  int b, int d) {
+  __asm__ volatile(
+      "ldmia %[in], {r4-r7}\n\t"
+      "1: stmia %[out]!, {r4-r7}\n\t"
+      "add r6, r6, %[b]\n\t"
+      "add r7, r7, %[d]\n\t"
+      "subs %[n], %[n], #1\n\t"
+      "bne 1b"
+      : [out] "+r"(out), [n] "+r"(n)
+      : [in] "r"(in), [b] "r"(b), [d] "r"(d)
+      : "r4", "r5", "r6", "r7", "cc", "memory");
 }
 
 // The GBA layers (BLDCNT's bits) of the SNES's layers in |snes| (CGADSUB's
@@ -507,7 +522,7 @@ ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blend
 
 // A window's GBA WINxH, from the SNES's edges (WH0-WH3). For none, from
 // the right edge to it: the GBA's (0, 0) is all the line.
-static uint16_t WindowH(int left, int right) {
+ROM_CODE static uint16_t WindowH(int left, int right) {
   left -= kXOffset;
   right += 1 - kXOffset;
   left = left < 0 ? 0 : left;
@@ -521,12 +536,7 @@ static uint16_t WindowH(int left, int right) {
 // screen's on top, |sub|, but where TSW does), and whether color math is
 // on (CGWSEL's region, by the color window), or the main screen's black
 // (it's clipped: showing the backdrop, here). Only with the tiled layers.
-static void Windows(LineRegs *l, const PpuRegs *r, uint8_t sub) {
-  DisplaySegment *c = &l->ctl;
-  c->win[0] = c->win[1] = 0;
-  // (As a rule, no window is on for anything.)
-  if (!((r->wsel[0] | r->wsel[1] | r->wsel[2]) & 0xaa) || frame_mode7 || (r->inidisp & 0x80))
-    return;
+ROM_CODE static void Windows(DisplaySegment *c, const PpuRegs *r, uint8_t sub) {
   // The regions, for the settings: they change seldom, unlike the edges.
   static uint32_t last_key[3] IWRAM_BSS, regions IWRAM_BSS;
   bool blending = c->bld[0];
@@ -548,21 +558,57 @@ static void Windows(LineRegs *l, const PpuRegs *r, uint8_t sub) {
   c->win[1] = regions >> 16;
 }
 
-// The windows' GBA WIN0H and WIN1H, from the SNES's edges on its line |s|.
-static uint32_t LineWindows(int s) {
-  uint32_t wh = line_wh[s];
-  return WindowH(wh & 0xff, (wh >> 8) & 0xff) | (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
+// The windows' GBA WIN0H and WIN1H, from the SNES's edges, for the GBA lines
+// from |g| to |end| (the SNES's from |s|).
+ROM_CODE static void LineWindows(int g, int end, int s) {
+  for (; g < end; g++, s++) {
+    uint32_t wh = line_wh[s];
+    line_windows[g] = WindowH(wh & 0xff, (wh >> 8) & 0xff) |
+                      (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
+  }
 }
 
-// The stream of a line (not in frames with Mode 7): its scrolling, as the
-// GBA's, for its SNES line |s|.
-static void LineStream(LineRegs *l, int s, int g) {
-  // (The SNES shows a background's row VOFS + 1 on its first line.)
-  const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
-  l->stream[0] = ofs[2] + add;
-  l->stream[1] = ofs[split_bg2] + add;
-  l->stream[2] = ofs[0] + add;
-  l->stream[3] = ofs[1] + add;
+// The streams of |n| (at least 1) lines (not in frames with Mode 7), from GBA
+// line |g| and its SNES line |s|: their scrolling, as the GBA's. (The SNES
+// shows a background's row VOFS + 1 on its first line.) In assembly, for
+// one stm to store a line, from registers that go up: the compiler stores
+// the words one or two at a time.
+_Static_assert(sizeof(line_ofs[0]) == 16 && sizeof(*(uint32_t(*)[4])0) == 16,
+               "ScrollStream steps a line_ofs row and a stream line by 4 words (16 bytes)");
+__attribute__((noinline)) static void ScrollStream(uint32_t (*out)[4], int n, int s, int g) {
+  const uint32_t(*ofs)[4] = &line_ofs[s];
+  const uint32_t add = kXOffset | (uint32_t)(s + 1 - g) << 16;
+  // A line's words, in r4-r7, are BG3's, the split BG's (BG1's, or BG2's
+  // if split_bg2), BG1's and BG2's: from r8-r10, BG1's, BG2's and BG3's.
+  if (!split_bg2) {
+    __asm__ volatile(
+        "1: ldmia %[ofs], {r8, r9, r10}\n\t"
+        "add r4, r10, %[add]\n\t"
+        "add r6, r8, %[add]\n\t"
+        "add r7, r9, %[add]\n\t"
+        "mov r5, r6\n\t"
+        "stmia %[out]!, {r4-r7}\n\t"
+        "add %[ofs], %[ofs], #16\n\t"
+        "subs %[n], %[n], #1\n\t"
+        "bne 1b"
+        : [out] "+r"(out), [ofs] "+r"(ofs), [n] "+r"(n)
+        : [add] "r"(add)
+        : "r4", "r5", "r6", "r7", "r8", "r9", "r10", "cc", "memory");
+  } else {
+    __asm__ volatile(
+        "1: ldmia %[ofs], {r8, r9, r10}\n\t"
+        "add r4, r10, %[add]\n\t"
+        "add r6, r8, %[add]\n\t"
+        "add r7, r9, %[add]\n\t"
+        "mov r5, r7\n\t"
+        "stmia %[out]!, {r4-r7}\n\t"
+        "add %[ofs], %[ofs], #16\n\t"
+        "subs %[n], %[n], #1\n\t"
+        "bne 1b"
+        : [out] "+r"(out), [ofs] "+r"(ofs), [n] "+r"(n)
+        : [add] "r"(add)
+        : "r4", "r5", "r6", "r7", "r8", "r9", "r10", "cc", "memory");
+  }
 }
 
 // Whether two lines' registers are the same, but for the scrolling: then
@@ -573,54 +619,70 @@ _Static_assert(sizeof(PpuRegs) == 64 && offsetof(PpuRegs, hofs) == 10 &&
                "SameButScrolling's layout");
 static bool SameButScrolling(const PpuRegs *a, const PpuRegs *b) {
   // A word at a time (line_states is aligned): halfwords 0-4 and 13-31.
+  // (From the last: it's the layers on (TM), at the end, that differ most.)
   const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
-  if (x[0] != y[0] || x[1] != y[1] || (x[2] ^ y[2]) & 0xffff || (x[6] ^ y[6]) >> 16)
-    return false;
-  for (int i = 7; i < 16; i++) {
+  for (int i = 15; i >= 7; i--) {
     if (x[i] != y[i])
       return false;
   }
-  return true;
+  return x[0] == y[0] && x[1] == y[1] && !((x[2] ^ y[2]) & 0xffff) && !((x[6] ^ y[6]) >> 16);
 }
 
 // Whether BG3 goes in front (see bg3_hi), for the line |r| on GBA line |g|
 // (SNES line |s|): if the rows of its map that the lines with its state
-// show from there on have priority tiles. (The HUD's do, and some rooms'
-// BG3 below it in the same map, all behind, doesn't: Phantoon's room's,
-// opaque black.)
-ROM_CODE static bool Bg3Front(const PpuRegs *r, int s, int g) {
+// (to the GBA line before |end|) show from there on have priority tiles.
+// (The HUD's do, and some rooms' BG3 below it in the same map, all behind,
+// doesn't: Phantoon's room's, opaque black.)
+__attribute__((noinline, minsize)) static bool Bg3Front(const PpuRegs *r, int s, int g, int end) {
   int slot = Bg3Slot(r->bgsc[2]);
   if (!(r->bgmode & 8) || !bg3_hi_total[slot])
     return false;
   // 64 rows high, the second screen's rows 32-63; wider, both screens'
-  // rows (as UpdateMaps has them: of 64x64, the top two).
+  // rows (as UpdateMaps has them: of 64x64, the top two). A row has two
+  // chunks, in a halfword, and the other screen's are 32 halfwords on.
   uint8_t sc = r->bgsc[2];
-  bool tall = (sc & 3) == 2, wide = sc & 1;
-  const uint8_t *hi = bg3_hi[slot];
-  int state = line_state[s];
+  int rows = (sc & 3) == 2 ? 63 : 31, wide = sc & 1 ? 32 : 0;
+  const uint16_t *hi = bg3_hi[slot].rows;
   // A line every 8 (a row's height), and the last.
   for (int t = s;;) {
-    int row = ((t + 1 + VOFS(t, 2)) >> 3) & (tall ? 63 : 31);
-    int c = (row & 32) * 2 + (row & 31) * 2;
-    if (hi[c] | hi[c + 1] | (wide ? hi[64 + c] | hi[65 + c] : 0))
+    int row = ((t + 1 + VOFS(t, 2)) >> 3) & rows;
+    if (hi[row] | (wide ? hi[wide + row] : 0))
       return true;
-    // (A state's lines follow each other, and SnesLine goes up: the line 8
-    // on is the state's if those between are.)
-    int n = g + 8 < kGbaLines ? 8 : kGbaLines - 1 - g;
-    while (n && line_state[SnesLine(g + n)] != state)
-      n--;
-    if (!n)
+    if (g == end - 1)
       return false;
-    g += n;
+    g = g + 8 < end ? g + 8 : end - 1;
     t = SnesLine(g);
   }
+}
+
+// The scrolling of a line with another mode in a frame with Mode 7, as the
+// segment's, in place of the stream, which is BG2's transformation.
+// (The SNES shows a background's row VOFS + 1 on its first line.)
+ROM_CODE static void BuildLineBesideMode7(LineRegs *l, int s, int g) {
+  int split = split_bg2;
+  // (By halfwords: ofs isn't word aligned, and the ARM would store a word
+  // at the word it's in.)
+  const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
+  const uint32_t in[4] = {ofs[2] + add, ofs[split] + add, ofs[0] + add, ofs[1] + add};
+  for (int i = 0; i < 4; i++) {
+    l->ctl.ofs[2 * i] = (uint16_t)in[i];
+    l->ctl.ofs[2 * i + 1] = in[i] >> 16;
+  }
+  // BG2's identity, for what it's worth.
+  l->stream[0] = 0x100;
+  l->stream[1] = 0x100 << 16;
+  l->stream[2] = l->stream[3] = 0;
 }
 
 // The registers BuildLine last made the GBA's of, but for the scrolling,
 // in this frame.
 static const PpuRegs *built_regs;
 
-static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
+// The lines from |g|, SNES line |s|, to the one before |end| have the state
+// |r|: |l| gets the first's registers, and for Mode 7 or a frame with it,
+// its stream (see ScrollStream and Mode7Stream for the others').
+__attribute__((noinline)) static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g,
+                                                int end) {
   if ((r->bgmode & 7) == 7) {
     BuildLineMode7(l, r, s);
     return;
@@ -638,39 +700,20 @@ static void BuildLine(LineRegs *l, const PpuRegs *r, int s, int g) {
   }
   l->ctl.dispcnt = dispcnt;
   int bg3_sb = Bg3Slot(r->bgsc[2]) ? kSbBg3Slot1 : kSbBg3Slot0;
-  int bg3_front = Bg3Front(r, s, g);
+  int bg3_front = Bg3Front(r, s, g, end);
   l->ctl.bgcnt[0] = (bg3_front ? 0 : 3) | 2 << 2 | bg3_sb << 8 | BgSize(r->bgsc[2]) << 14;
   // The SNES background split into GBA BG1 and BG2 or BG3.
   l->ctl.bgcnt[1] = (1 - bg3_mid) | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
   l->ctl.bgcnt[2] = (2 - bg3_mid) | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
   l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
-  Windows(l, r, ColorMath(&l->ctl, r));
+  uint8_t sub = ColorMath(&l->ctl, r);
+  l->ctl.win[0] = l->ctl.win[1] = 0;
+  // (As a rule, no window is on for anything.)
+  if (((r->wsel[0] | r->wsel[1] | r->wsel[2]) & 0xaa) && !frame_mode7 && !(r->inidisp & 0x80))
+    Windows(&l->ctl, r, sub);
 scrolling:;
-  // (The SNES shows a background's row VOFS + 1 on its first line.)
-  // The scrolling is the stream, but in frames with Mode 7, whose stream
-  // is BG2's transformation.
-  if (!frame_mode7) {
-    LineStream(l, s, g);
-    return;
-  }
-  // (By halfwords: ofs isn't word aligned, and the ARM would store a word
-  // at the word it's in.)
-  const uint32_t *ofs = line_ofs[s], add = kXOffset | (uint32_t)(s + 1 - g) << 16;
-  const uint32_t in[4] = {ofs[2] + add, ofs[split] + add, ofs[0] + add, ofs[1] + add};
-  for (int i = 0; i < 4; i++) {
-    l->ctl.ofs[2 * i] = (uint16_t)in[i];
-    l->ctl.ofs[2 * i + 1] = in[i] >> 16;
-  }
-  // BG2's identity, for what it's worth.
-  l->stream[0] = 0x100;
-  l->stream[1] = 0x100 << 16;
-  l->stream[2] = l->stream[3] = 0;
-}
-
-// Whether two lines' scrolling is the same.
-static bool SameOfs(int a, int b) {
-  const uint32_t *x = line_ofs[a], *y = line_ofs[b];
-  return x[0] == y[0] && x[1] == y[1] && x[2] == y[2] && x[3] == y[3];
+  if (frame_mode7)
+    BuildLineBesideMode7(l, s, g);
 }
 
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
@@ -1085,6 +1128,53 @@ ROM_CODE static void SetSquash(void) {
   }
 }
 
+// The GBA line after those from |g| with the state |state|. (A state's
+// lines follow each other, and SnesLine goes up: SnesHw_RunDisplay numbers
+// the states as the lines go down the screen.)
+__attribute__((noinline, minsize)) static int StateEnd(int g, int state) {
+  int lo = g + 1, hi = kGbaLines;
+  while (lo < hi) {
+    int mid = (lo + hi) >> 1;
+    if (line_state[SnesLine(mid)] == state)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  return lo;
+}
+
+// The stream for a frame with windows: the scrolling's and their edges.
+ROM_CODE static void WindowStream(const uint32_t (*stream)[4], uint32_t (*w)[kWindowStreamWords]) {
+  for (int g = 0; g <= kGbaLines; g++) {
+    for (int i = 0; i < 4; i++)
+      w[g][i] = stream[g][i];
+    w[g][kWindowStreamWords - 1] = line_windows[g < kGbaLines ? g : kGbaLines - 1];
+  }
+}
+
+// Where the lines from |g| to |end|, all with one state, are no longer
+// alike for the stream: in the squashed screens, which drop some of the
+// SNES's lines every few, the offset from the SNES's lines changes; and in
+// a frame with Mode 7, a line with another mode, whose scrolling is in its
+// segment, is a new segment when it changes.
+ROM_CODE static int OffsetEnd(int g, int end, bool mode7) {
+  int s = SnesLine(g), t = g + 1;
+  if (squash) {
+    while (t < end && SnesLine(t) - t == s - g)
+      t++;
+    end = t;
+  }
+  if (frame_mode7 && !mode7) {
+    // (The lines from here to the end are the SNES's from s.)
+    const uint32_t *x = line_ofs[s];
+    for (t = g + 1; t < end && x[4] == x[0] && x[5] == x[1] && x[6] == x[2] && x[7] == x[3];
+         t++)
+      x += 4;
+    end = t;
+  }
+  return end;
+}
+
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh, line_ofs);
   // (The palette's line, as it was last frame: see FixedMath.)
@@ -1106,23 +1196,30 @@ void Render_CaptureFrame(void) {
   UpdateYOffset();
 
   // The BG3 maps the lines use (in slots), whether any line is Mode 7's,
-  // and a line of text (not Mode 7), the middle one if it can be. A line
-  // with the state of the one before tells nothing new.
+  // and a line of text (not Mode 7), the middle one if it can be. A state
+  // at a time: its lines follow each other. (The first few's ends are kept
+  // for the loop below.)
   uint8_t first = LINE_REGS(SnesLine(0))->bgsc[2];
   uint8_t second = first;
+  enum { kKeptEnds = 8 };
+  uint8_t state_ends[kKeptEnds];
+  _Static_assert(kGbaLines <= 255, "state_ends keeps GBA lines as bytes");
+  int last_state = line_state[SnesLine(kGbaLines - 1)];
   frame_mode7 = false;
   text_line = -1;
-  for (int g = 0, prev = -1; g < kGbaLines; g++) {
+  for (int g = 0, end, run = 0; g < kGbaLines; g = end, run++) {
     int s = SnesLine(g), state = line_state[s];
-    if (state == prev && g != kGbaLines / 2)
-      continue;
-    prev = state;
     const PpuRegs *r = &line_states[state];
+    end = state == last_state ? kGbaLines : StateEnd(g, state);
+    if (run < kKeptEnds)
+      state_ends[run] = end;
     if (second == first)
       second = r->bgsc[2];
     if ((r->bgmode & 7) == 7)
       frame_mode7 = true;
-    else if (text_line < 0 || g == kGbaLines / 2)
+    else if (g <= kGbaLines / 2 && kGbaLines / 2 < end)
+      text_line = SnesLine(kGbaLines / 2);
+    else if (text_line < 0)
       text_line = s;
   }
   if (first != bg3_slot_sc[0] && first != bg3_slot_sc[1]) {
@@ -1143,40 +1240,44 @@ void Render_CaptureFrame(void) {
   else
     subtract_color = 0;
 
-  // Lines with the same registers as the one before (and the same
-  // vertical offset) have the same GBA registers, but for Mode 7's
+  // Lines with the same registers (and the same offset from the SNES's
+  // lines) have the same GBA registers, but for the scrolling, and Mode 7's
   // reference point, which moves down the map a line at a time.
   uint32_t(*stream)[4] = streams[back];
   DisplaySegment *segs = segments[back];
   int num_segs = 0;
   LineRegs l;
-  int prev_state = -1, prev_dy = 0, prev_s = 0;
   bool windows = false;
   built_regs = NULL;
-  for (int g = 0; g < kGbaLines; g++) {
-    int s = SnesLine(g), state = line_state[s];
+  for (int g = 0, state_end, run = 0; g < kGbaLines; g = state_end, run++) {
+    int state = line_state[SnesLine(g)];
     const PpuRegs *r = &line_states[state];
-    bool mode7 = (r->bgmode & 7) == 7, same = state == prev_state && s - g == prev_dy;
-    if (same && mode7) {
-      StepLineMode7(&l);
-    } else if (same && !frame_mode7) {
-      LineStream(&l, s, g);
-    } else if (!same || !SameOfs(s, prev_s)) {
-      BuildLine(&l, r, s, g);
+    bool mode7 = (r->bgmode & 7) == 7;
+    state_end = run < kKeptEnds ? state_ends[run] : StateEnd(g, state);
+    for (int end; g < state_end; g = end) {
+      int s = SnesLine(g);
+      end = state_end;
+      if (hud && g < kGbaHudLines && kGbaHudLines < end && y_offset)
+        end = kGbaHudLines;  // below the HUD, the gameplay area is y_offset lines on
+      if (squash || (frame_mode7 && !mode7))
+        end = OffsetEnd(g, end, mode7);
+      BuildLine(&l, r, s, g, state_end);
       if (!num_segs || (num_segs < kMaxSegments && !SameSegment(&segs[num_segs - 1], &l.ctl))) {
         segs[num_segs] = l.ctl;
         segs[num_segs++].first_line = g;
       }
+      if (mode7)
+        Mode7Stream(stream + g, end - g, l.stream, (int16_t)(l.stream[0] >> 16),
+                    (int16_t)(l.stream[1] >> 16));
+      else if (frame_mode7)
+        Mode7Stream(stream + g, end - g, l.stream, 0, 0);
+      else
+        ScrollStream(stream + g, end - g, s, g);
+      if (l.ctl.dispcnt & (3 << 13)) {
+        LineWindows(g, end, s);
+        windows = true;
+      }
     }
-    for (int i = 0; i < 4; i++)
-      stream[g][i] = l.stream[i];
-    if (l.ctl.dispcnt & (3 << 13)) {
-      line_windows[g] = LineWindows(s);
-      windows = true;
-    }
-    prev_state = state;
-    prev_dy = s - g;
-    prev_s = s;
   }
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
@@ -1187,13 +1288,8 @@ void Render_CaptureFrame(void) {
   f->stream_dest = frame_mode7 ? 0x04000020 : 0x04000010;
   if (windows) {
     // (Not with Mode 7: see Windows.) The transformations stay 0.
-    uint32_t(*w)[kWindowStreamWords] = window_streams[back];
-    for (int g = 0; g <= kGbaLines; g++) {
-      for (int i = 0; i < 4; i++)
-        w[g][i] = stream[g][i];
-      w[g][kWindowStreamWords - 1] = line_windows[g < kGbaLines ? g : kGbaLines - 1];
-    }
-    f->stream = &w[0][0];
+    WindowStream(stream, window_streams[back]);
+    f->stream = &window_streams[back][0][0];
     f->stream_words = kWindowStreamWords;
   }
   f->num_segments = num_segs;
@@ -1469,19 +1565,19 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split
     bool changed = sc != conv.bg3_slot_sc[slot];
     conv.bg3_slot_sc[slot] = sc;
     if (changed)
-      memset(bg3_hi[slot], 0, sizeof(bg3_hi[slot]));
+      memset(&bg3_hi[slot], 0, sizeof(bg3_hi[slot]));
     int screens = (sc & 3) ? 2 : 1;
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
       FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
         uint32_t o = c * 16;
-        bg3_hi[slot][k * 64 + c] = Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o,
-                                               &g_vram[addr + o], 16, 8 << 12);
+        bg3_hi[slot].chunks[k * 64 + c] = Convert_Map(
+            VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o], 16, 8 << 12);
       }
     }
     int total = 0;
     for (int i = 0; i < 128; i++)
-      total += bg3_hi[slot][i];
+      total += bg3_hi[slot].chunks[i];
     bg3_hi_total[slot] = total;
   }
 }
