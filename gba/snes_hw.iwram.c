@@ -15,6 +15,10 @@
 SnesHw g_snes_hw IWRAM_BSS __attribute__((aligned(4)));
 uint16_t g_cgram[256] __attribute__((aligned(4)));
 uint8_t g_oam[544] __attribute__((aligned(4)));
+uint8_t g_oam_used;
+// The blocks of sprites the last upload of all of OAM compared, with 1
+// added, or 0 if g_oam might differ from the game's anywhere (see FastDma).
+static uint8_t oam_prev_blocks;
 uint16_t g_vram[kVramWords];
 uint32_t g_vram_dirty[kVramChunks / 32];
 // The game wrote HDMAEN: HDMA's decoded channels are out of date.
@@ -41,6 +45,7 @@ ROM_CODE ROM_CODE void SnesHw_Reset(void) {
   memset(g_vram_dirty, 0xff, sizeof(g_vram_dirty));
   g_snes_hw.vram_dirty = g_snes_hw.cgram_dirty = true;
   g_snes_hw.cgram_changed = g_snes_hw.oam_changed = ~0u;
+  oam_prev_blocks = 0;
 }
 
 // The chunks that a whole chunk of ROM was last uploaded to and that nothing
@@ -147,6 +152,7 @@ __attribute__((noinline)) static void WriteBBusRest(uint8_t adr, uint8_t val) {
       g_oam[0x200 + (a & 0x1f)] = val;
     }
     h->oam_changed = ~0u;
+    oam_prev_blocks = 0;
     h->oam_addr = (a + 1) & 0x3ff;
     break;
   }
@@ -341,21 +347,36 @@ static void CopyBytes(void *dst, const uint8_t *src, uint32_t bytes) {
 // words, but those that are as they were: the game uploads all of CGRAM and
 // OAM every frame, mostly the same, and render.c converts only what's new.
 // Returns the blocks that changed, as bits from |first| on. (Reading both
-// takes about what DMA's reading and writing does.)
-__attribute__((noinline)) static uint32_t CopyChanged(uint32_t *dst, const uint32_t *src,
-                                                      uint32_t blocks, uint32_t first) {
-  uint32_t changed = 0;
-  for (uint32_t i = first; blocks; blocks--, i++, dst += 4, src += 4) {
-    uint32_t s0 = src[0], s1 = src[1], s2 = src[2], s3 = src[3];
-    uint32_t d0 = dst[0], d1 = dst[1], d2 = dst[2], d3 = dst[3];
-    // (Loaded before they're compared, so that it's a block load of each.)
-    __asm__("" : "+r"(d0), "+r"(d1), "+r"(d2), "+r"(d3));
-    if ((s0 ^ d0) | (s1 ^ d1) | (s2 ^ d2) | (s3 ^ d3)) {
-      dst[0] = s0, dst[1] = s1, dst[2] = s2, dst[3] = s3;
-      changed |= 1u << i;
-    }
-  }
-  return changed;
+// takes about what DMA's reading and writing does.) In assembly: a block is
+// a load of four words from each side, a compare and a conditional store,
+// with no branch for those that are the same (the compiler loaded the
+// source's in two pieces, and branched on each word).
+__attribute__((naked, noinline)) static uint32_t CopyChanged(uint32_t *dst, const uint32_t *src,
+                                                             uint32_t blocks, uint32_t first) {
+  __asm__(
+      "cmp r2, #0\n"
+      "moveq r0, #0\n"
+      "bxeq lr\n"
+      "push {r4-r11}\n"
+      "mov r12, #1\n"
+      "mov r3, r12, lsl r3\n"  // the bit of the block
+      "mov r12, #0\n"          // the changed
+      "1:\n"
+      "ldmia r1!, {r4-r7}\n"
+      "ldmia r0, {r8-r11}\n"
+      "teq r4, r8\n"
+      "teqeq r5, r9\n"
+      "teqeq r6, r10\n"
+      "teqeq r7, r11\n"
+      "stmne r0, {r4-r7}\n"
+      "orrne r12, r12, r3\n"
+      "add r0, r0, #16\n"
+      "mov r3, r3, lsl #1\n"
+      "subs r2, r2, #1\n"
+      "bne 1b\n"
+      "mov r0, r12\n"
+      "pop {r4-r11}\n"
+      "bx lr\n");
 }
 
 // Whether the |n| words at |src| (bytes) are those at |a|, a pair at a
@@ -399,6 +420,7 @@ ROM_CODE static void PaletteOrOamBytes(uint8_t bbad, const uint8_t *src, uint32_
   }
   h->oam_addr = a;
   h->oam_changed = ~0u;
+  oam_prev_blocks = 0;
 }
 
 // DMA a byte at a time, through the B bus's registers: what FastDma
@@ -514,9 +536,23 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
       // All of it. (The high table's two blocks have the bits of half of
       // the low table's blocks each.)
       uint32_t high = CopyChanged((uint32_t *)&g_oam[0x200], (const uint32_t *)(src + 0x200), 2, 0);
-      h->oam_changed |= CopyChanged((uint32_t *)g_oam, (const uint32_t *)src, 32, 0) |
+      // The low table's blocks past those that the last two frames of gameplay drew: the game
+      // hid the sprites it didn't use (by Y), and left the rest of their bytes as they were, so
+      // they're as they were the last time (when they were the same in g_oam).
+      uint32_t used = g_oam_used, blocks = 32;
+      g_oam_used = 0;
+      if (used && used != kOamUsedUnknown) {
+        uint32_t drawn = (used + 2) >> 2;  // (g_oam_used is the sprites + 1)
+        if (oam_prev_blocks)
+          blocks = oam_prev_blocks - 1 > drawn ? oam_prev_blocks - 1 : drawn;
+        oam_prev_blocks = drawn + 1;
+      } else {
+        oam_prev_blocks = 0;
+      }
+      h->oam_changed |= CopyChanged((uint32_t *)g_oam, (const uint32_t *)src, blocks, 0) |
                         (high & 1) * 0xffffu | (high >> 1 & 1) * 0xffff0000u;
     } else {
+      oam_prev_blocks = 0;
       uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
       if (low > count)
         low = count;

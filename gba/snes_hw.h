@@ -95,6 +95,11 @@ extern SnesHw g_snes_hw;
 // then 32 bytes of high bits.
 extern uint16_t g_cgram[256] __attribute__((aligned(4)));
 extern uint8_t g_oam[544] __attribute__((aligned(4)));
+// Set by ClearUnusedOam (rtl.c), cleared by the upload of OAM: the most
+// sprites, plus 1, that the frames of gameplay since drew (0: none ran), or
+// kOamUsedUnknown, if there is a frame that may have drawn any.
+enum { kOamUsedUnknown = 0xff };
+extern uint8_t g_oam_used;
 extern uint16_t g_vram[kVramWords];
 extern uint32_t g_vram_dirty[kVramChunks / 32];
 // How many times a chunk was marked since render.c last cleared the
