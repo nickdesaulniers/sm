@@ -99,6 +99,7 @@ add_executable(sm_gba
     audio.c
     audio_mix.iwram.c
     audio_mix.S
+    decompress.S
     irq_entry.S
     controls_screen.c
     input.c

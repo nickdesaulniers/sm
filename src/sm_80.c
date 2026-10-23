@@ -2577,6 +2577,15 @@ static uint8 DecompNextByte() {
 }
 
 void DecompressToMem(uint32 src, uint8 *decompress_dst) {  // 0x80B119
+#if SM_GBA
+  // The same, 4 times faster (gba/decompress.S), on the ROM as it is in the
+  // cartridge: data at $8000 and up in a bank runs on into the next one's.
+  // (Below that, this function's addresses wrap in the bank; no data is there.)
+  if (src & 0x8000) {
+    Decompress(RomPtr(src), decompress_dst);
+    return;
+  }
+#endif
   decompress_src = src;
 
   int src_pos, dst_pos = 0;

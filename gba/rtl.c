@@ -77,6 +77,27 @@ uint16 Mult8x8(uint8 a, uint8 b) {
   return a * b;
 }
 
+// Sets |count| halfwords at |dst| to |value|, a word at a time: the game
+// clears 25 KB of a room's map as it loads, and by halfwords that took twice
+// as long. (|dst| is 2-byte aligned, as halfwords are.)
+void Fill16(uint16 *dst, uint16 value, int count) {
+  uint32_t v = value | (uint32_t)value << 16;
+  if (((uintptr_t)dst & 2) && count) {
+    *dst++ = value;
+    count--;
+  }
+  uint32_t *w = (uint32_t *)dst;
+  int n = count >> 1;
+  for (; n >= 8; n -= 8, w += 8) {
+    w[0] = v, w[1] = v, w[2] = v, w[3] = v;
+    w[4] = v, w[5] = v, w[6] = v, w[7] = v;
+  }
+  for (; n; n--)
+    *w++ = v;
+  if (count & 1)
+    *(uint16_t *)w = value;
+}
+
 // The SNES's divider, by multiplying: a / b is the top word of a times
 // 2^32 / b rounded up, for any 16-bit a and b from 2 to 255 (it's less than
 // 2^-16 over, and a / b's fraction is at most 1 - 1/b: checked for all of
