@@ -16,7 +16,13 @@
 uint8 SpcRam_Read(uint16 addr);
 void SpcRam_Upload(const uint8 *data);
 void Audio_DspWrite(uint8 reg, uint8 value);
-#define SPC_RAM(addr) SpcRam_Read(addr)
+extern uint8 g_audio_dsp[128];
+// (The latest read's bytes first, in line; the rest, in a call.)
+#define SPC_RAM(x)                                                           \
+  ({                                                                         \
+    uint16_t a_ = (x), o_ = a_ - g_aram_cache[0].addr;                       \
+    o_ < g_aram_cache[0].length ? g_aram_cache[0].src[o_] : SpcRam_Read(a_); \
+  })
 #else
 #define SPC_RAM(addr) p->ram[addr]
 #endif
@@ -378,6 +384,7 @@ static const MemMapSized kSpcPlayer_Maps[] = {
 static void PlayNote(SpcPlayer *p, Channel *c, uint8 note);
 
 static void Dsp_Write(SpcPlayer *p, uint8_t reg, uint8 value) {
+#if !SM_GBA
   DspRegWriteHistory *hist = p->reg_write_history;
   if (hist) {
     if (hist->count < 256) {
@@ -389,7 +396,14 @@ static void Dsp_Write(SpcPlayer *p, uint8_t reg, uint8 value) {
       hist->count++;
     }
   }
+#endif
 #if SM_GBA
+  // The driver rewrites most registers unchanged, 500 times a second: they
+  // don't need a call. (KON and KOF act whatever they were, but for none,
+  // as the driver writes them each tick.)
+  reg &= 0x7f;
+  if (reg == KON || reg == KOF ? !value : g_audio_dsp[reg] == value)
+    return;
   Audio_DspWrite(reg, value);
 #else
   if (p->dsp)

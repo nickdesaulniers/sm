@@ -4,10 +4,15 @@
 @     void Audio_MixVoice(int32_t *sum, int n, AudioVoice *v);
 @
 @ Adds |n| (even) of a voice's samples, times its volume, to |sum|, as the
-@ loop in Audio_MixChunk does, two at a time; or, played slower than half
+@ loop in Audio_MixChunk does, four at a time; or, played slower than half
 @ the mixer's rate, those between its samples, a sample at a time. At the
 @ end of the sample, it goes back to its loop, or is done (v->on false).
 @ Silent (v->vol 0), it only moves on.
+@
+@     void Audio_ClearSums(int32_t *sums, int n);
+@
+@ Zeroes |n| (even) words, four at a time (memset's loop is two or three
+@ times slower).
 @
 @     void Audio_EchoPairs(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
 @
@@ -19,15 +24,13 @@
 @ the filtered echo at s->feedback (/128), clamped, go back in the buffer.
 @ |wet| and the echo are as the voices' sums: right << 16 + left.
 @
-@     void Audio_OutputDry(int8_t *left, int8_t *right, const int32_t *sums, int n,
-@                          const int32_t vol[4]);
 @     void Audio_OutputEcho(int8_t *left, int8_t *right, const int32_t *sums, int n,
 @                           const int32_t vol[4]);
 @
-@ The mixer's last step, as Audio_MixChunk has it: |n| samples of the
-@ voices' sums (both sides in a word, as above), at the master volumes
-@ (vol[0] left, vol[1] right), /8192, clamped, into |left| and |right|.
-@ With the echo, its voices' sums are at sums[48] on (kAudioChunk on),
+@ The mixer's last step, as Audio_MixChunk has it, with the echo: |n|
+@ samples of the voices' sums (both sides in a word, as above), at the
+@ master volumes (vol[0] left, vol[1] right), /8192, clamped, into |left|
+@ and |right|. The voices' with echo are at sums[48] on (kAudioChunk on),
 @ added in, and the echo's output at sums[96] on, at the echo volumes
 @ (vol[2], vol[3]).
 
@@ -76,8 +79,11 @@ Audio_MixVoice:
     cmp     r8, r6
     bhs     1f
     @ (The volume multiplies: the ARM's multiply is quicker by a small
-    @ number, as the sample is, than by one as big as the volume.)
-0:
+    @ number, as the sample is, than by one as big as the volume.) Four
+    @ samples at a time, for the sums' loads and stores, and the loop: two
+    @ first, if |n| is two more than a multiple of four.
+    tst     r1, #2
+    beq     0f
     add     r8, r3, r4, lsr #16
     ldrsb   r8, [r8]
     add     r4, r4, r5
@@ -89,6 +95,27 @@ Audio_MixVoice:
     mla     r12, r7, r9, r12
     stmia   r0!, {r10, r12}
     subs    r1, r1, #2
+    beq     6f
+0:
+    add     r8, r3, r4, lsr #16
+    ldrsb   r8, [r8]
+    add     r4, r4, r5
+    add     r9, r3, r4, lsr #16
+    ldrsb   r9, [r9]
+    add     r4, r4, r5
+    ldmia   r0, {r6, r10, r11, r12}
+    mla     r6, r7, r8, r6
+    mla     r10, r7, r9, r10
+    add     r8, r3, r4, lsr #16
+    ldrsb   r8, [r8]
+    add     r4, r4, r5
+    add     r9, r3, r4, lsr #16
+    ldrsb   r9, [r9]
+    add     r4, r4, r5
+    mla     r11, r7, r8, r11
+    mla     r12, r7, r9, r12
+    stmia   r0!, {r6, r10, r11, r12}
+    subs    r1, r1, #4
     bne     0b
     b       6f
 1:
@@ -146,33 +173,10 @@ Audio_MixVoice:
     @ sound as a buzz at the sample's rate. r8 is the sample at r10, r9 how
     @ far the next is from it.
 10:
-    mvn     r10, #1             @ (not a sample's, nor the one before)
     mla     r8, r5, r1, r4
     cmp     r8, r6
-    bhs     11f
-    @ Not to the end in these |n|: two at a time, not looking.
-17:
-    cmp     r10, r4, lsr #16
-    blne    15f
-    mov     r11, r4, lsl #16
-    mov     r11, r11, lsr #24
-    mul     r12, r9, r11
-    add     r6, r8, r12, asr #8
-    add     r4, r4, r5
-    cmp     r10, r4, lsr #16
-    blne    15f
-    mov     r11, r4, lsl #16
-    mov     r11, r11, lsr #24
-    mul     r12, r9, r11
-    add     r12, r8, r12, asr #8
-    add     r4, r4, r5
-    ldmia   r0, {r11, lr}
-    mla     r11, r7, r6, r11
-    mla     lr, r7, r12, lr
-    stmia   r0!, {r11, lr}
-    subs    r1, r1, #2
-    bne     17b
-    b       6b
+    blo     12f
+    mvn     r10, #1             @ (not a sample's, nor the one before)
 11:
     cmp     r10, r4, lsr #16
     blne    15f
@@ -220,6 +224,58 @@ Audio_MixVoice:
     sub     r11, r11, r12
     b       14b
 
+    @ Not to the end in these |n|: two at a time, not looking. The position
+    @ is in two parts, so that its sample changing comes as a carry: its
+    @ fraction in the top of r4 (r5 the step the same), and the index of the
+    @ sample after (r10). r8 is the sample, r9 how far the next is from it.
+12:
+    mov     r10, r4, lsr #16
+    ldrsb   r8, [r3, r10]
+    mov     r9, #0
+    mov     r4, r4, lsl #16
+    mov     r5, r5, lsl #16
+    bl      19f
+22:
+    mov     r11, r4, lsr #24
+    mul     lr, r9, r11
+    add     r11, r8, lr, asr #8
+    adds    r4, r4, r5
+    blcs    19f
+    mov     r12, r4, lsr #24
+    mul     lr, r9, r12
+    add     r12, r8, lr, asr #8
+    adds    r4, r4, r5
+    blcs    19f
+    ldmia   r0, {r6, lr}
+    mla     r6, r7, r11, r6
+    mla     lr, r7, r12, lr
+    stmia   r0!, {r6, lr}
+    subs    r1, r1, #2
+    bne     22b
+    mov     r11, r4, lsr #16
+    sub     r12, r10, #1
+    orr     r4, r11, r12, lsl #16
+    b       6b
+    @ On to the next sample (r8 ← r8 + r9), and how far the one after is
+    @ from it: as 15, with its loop's first, or the last again, at the end.
+19:
+    add     r8, r8, r9
+    add     r10, r10, #1
+    ldr     r6, [r2, #V_END]
+    cmp     r10, r6, lsr #16
+    bhs     23f
+    ldrsb   r9, [r3, r10]
+    sub     r9, r9, r8
+    bx      lr
+23:
+    ldr     r6, [r2, #V_LOOP_LEN]
+    movs    r6, r6, lsr #16
+    moveq   r6, #1
+    sub     r6, r10, r6
+    ldrsb   r9, [r3, r6]
+    sub     r9, r9, r8
+    bx      lr
+
     @ Silent (its envelope or volume at 0: of the voices mixed, 30% in
     @ Norfair, 42% in Maridia): it plays on, unheard, as on the SNES.
 20:
@@ -235,6 +291,27 @@ Audio_MixVoice:
     bhs     21b
     b       6b
     .size Audio_MixVoice, . - Audio_MixVoice
+
+    .global Audio_ClearSums
+    .type Audio_ClearSums, %function
+Audio_ClearSums:
+    str     r4, [sp, #-4]!
+    mov     r2, #0
+    mov     r3, #0
+    mov     r4, #0
+    mov     r12, #0
+    tst     r1, #2
+    stmne   r0!, {r2, r3}
+    movs    r1, r1, lsr #2
+    beq     2f
+1:
+    stmia   r0!, {r2, r3, r4, r12}
+    subs    r1, r1, #1
+    bne     1b
+2:
+    ldr     r4, [sp], #4
+    bx      lr
+    .size Audio_ClearSums, . - Audio_ClearSums
 
     .global Audio_EchoPairs
     .type Audio_EchoPairs, %function
@@ -322,33 +399,6 @@ Audio_EchoPairs:
     cmp     \x, \t, asr #24
     eorne   \x, r8, \x, asr #31
 .endm
-
-    .global Audio_OutputDry
-    .type Audio_OutputDry, %function
-Audio_OutputDry:
-    push    {r4-r8, lr}
-    ldr     r12, [sp, #24]      @ vol
-    ldmia   r12, {r4, r5}
-    mov     r8, #127
-1:
-    ldr     r12, [r2], #4
-    mov     r6, r12, lsl #16
-    mov     r6, r6, asr #16     @ left
-    sub     r12, r12, r6
-    mov     r12, r12, asr #16   @ right
-    mul     lr, r6, r4
-    mul     r7, r12, r5
-    mov     lr, lr, asr #13
-    clamp8  lr, r6
-    strb    lr, [r0], #1
-    mov     r7, r7, asr #13
-    clamp8  r7, r6
-    strb    r7, [r1], #1
-    subs    r3, r3, #1
-    bne     1b
-    pop     {r4-r8, lr}
-    bx      lr
-    .size Audio_OutputDry, . - Audio_OutputDry
 
     .global Audio_OutputEcho
     .type Audio_OutputEcho, %function

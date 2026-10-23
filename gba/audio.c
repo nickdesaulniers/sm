@@ -31,12 +31,11 @@ typedef struct AramBlock {
 enum { kMaxAramBlocks = 32 };
 static AramBlock aram[kMaxAramBlocks];
 static int aram_count;
-// The bytes the last read found, as far as no newer block covers them:
-// the driver reads on from where it read, mostly.
-static struct {
-  uint16_t addr, length;
-  const uint8_t *src;
-} aram_cache;
+// The bytes the latest reads found, as far as no newer block covers them
+// (the latest first; spc_player.h): the driver reads on from where it read,
+// mostly, from a few places in turn (the music, the sound effects, its
+// tables). (In IWRAM: the driver looks at the first of them for each byte.)
+AramCache g_aram_cache[kAramCacheEntries] IWRAM_BSS;
 
 static void AddAramBlock(uint16_t dest, uint16_t length, const uint8_t *src) {
   // Older blocks this one covers are gone.
@@ -51,7 +50,8 @@ static void AddAramBlock(uint16_t dest, uint16_t length, const uint8_t *src) {
   }
   aram[n++] = (AramBlock){dest, length, src};
   aram_count = n;
-  aram_cache.length = 0;
+  for (int i = 0; i < kAramCacheEntries; i++)
+    g_aram_cache[i].length = 0;
 }
 
 static int FindAramBlockIndex(uint16_t addr) {
@@ -78,31 +78,42 @@ void SpcRam_Upload(const uint8 *data) {
 }
 
 static uint8 SpcRam_ReadUncached(uint16 addr) {
-  int i = FindAramBlockIndex(addr);
-  if (i < 0)
-    return 0;
-  // Of its block, the bytes around |addr| no newer one covers.
-  const AramBlock *b = &aram[i];
-  int start = b->dest, end = b->dest + b->length;
-  if (end > 0x10000)
-    end = 0x10000;
-  for (int j = i + 1; j < aram_count; j++) {
-    int s = aram[j].dest, e = aram[j].dest + aram[j].length;
+  // From the newest block on: the newer ones that don't have |addr| bound
+  // the bytes around it that the one that has it can give.
+  int start = 0, end = 0x10000;
+  for (int i = aram_count - 1; i >= 0; i--) {
+    const AramBlock *b = &aram[i];
+    int s = b->dest, e = s + b->length;
+    if ((uint16_t)(addr - s) < b->length) {
+      if (s > start)
+        start = s;
+      if (e < end)
+        end = e;
+      for (int j = kAramCacheEntries - 1; j > 0; j--)
+        g_aram_cache[j] = g_aram_cache[j - 1];
+      g_aram_cache[0] = (AramCache){start, end - start, b->src + (start - s)};
+      return b->src[(uint16_t)(addr - s)];
+    }
     if (e <= addr && e > start)
       start = e;
     else if (s > addr && s < end)
       end = s;
   }
-  aram_cache.addr = start;
-  aram_cache.length = end - start;
-  aram_cache.src = b->src + (start - b->dest);
-  return b->src[(uint16_t)(addr - b->dest)];
+  return 0;
 }
 
+// What SPC_RAM (spc_player.c) reads when the first of the cache has missed.
 uint8 SpcRam_Read(uint16 addr) {
-  uint16_t offset = addr - aram_cache.addr;
-  if (offset < aram_cache.length)
-    return aram_cache.src[offset];
+  for (int i = 0; i < kAramCacheEntries; i++) {
+    uint16_t offset = addr - g_aram_cache[i].addr;
+    if (offset < g_aram_cache[i].length) {
+      AramCache hit = g_aram_cache[i];
+      for (int j = i; j > 0; j--)
+        g_aram_cache[j] = g_aram_cache[j - 1];
+      g_aram_cache[0] = hit;
+      return hit.src[offset];
+    }
+  }
   return SpcRam_ReadUncached(addr);
 }
 
@@ -110,9 +121,10 @@ static uint16_t SpcRam_Read16(uint16_t addr) {
   return SpcRam_Read(addr) | SpcRam_Read(addr + 1) << 8;
 }
 
-// The DSP: its registers, and each voice's envelope. (In EWRAM: the
-// mixer's code needs IWRAM's room more.)
-static uint8_t dsp[128];
+// The DSP: its registers (src/spc_player.c looks at them to see what the
+// driver changes), and each voice's envelope. (In EWRAM: the mixer's code
+// needs IWRAM's room more.)
+uint8_t g_audio_dsp[128];
 
 enum { kAttack, kDecay, kSustain, kGain, kRelease };
 typedef struct Envelope {
@@ -149,14 +161,14 @@ static const AudioSample *FindSample(uint32_t rom_offset) {
 __attribute__((noinline)) static void KeyOn(int v) {
   AudioVoice *voice = &g_audio_voices[v];
   Envelope *e = &envelopes[v];
-  uint16_t entry = (dsp[0x5d] << 8) + dsp[v * 16 + 4] * 4;
+  uint16_t entry = (g_audio_dsp[0x5d] << 8) + g_audio_dsp[v * 16 + 4] * 4;
   uint16_t start = SpcRam_Read16(entry), loop = SpcRam_Read16(entry + 2);
   const AramBlock *b = FindAramBlock(start);
   const AudioSample *s = b ? FindSample(b->src + (uint16_t)(start - b->dest) - snes_rom) : NULL;
-  voice->noise = (dsp[0x3d] >> v) & 1;
-  voice->echo = (dsp[0x4d] >> v) & 1;
+  voice->noise = (g_audio_dsp[0x3d] >> v) & 1;
+  voice->echo = (g_audio_dsp[0x4d] >> v) & 1;
   if (!s && !voice->noise) {
-    printf("audio: no sample at 0x%04x (srcn %u)\n", start, dsp[v * 16 + 4]);
+    printf("audio: no sample at 0x%04x (srcn %u)\n", start, g_audio_dsp[v * 16 + 4]);
     voice->on = false;
     return;
   }
@@ -171,16 +183,16 @@ __attribute__((noinline)) static void KeyOn(int v) {
   voice->on = true;
   e->level = 0;
   e->counter = 0;
-  e->state = (dsp[v * 16 + 5] & 0x80) ? kAttack : kGain;
+  e->state = (g_audio_dsp[v * 16 + 5] & 0x80) ? kAttack : kGain;
 }
 
 // The master and echo volumes, or none while the DSP's muted.
 __attribute__((noinline)) static void UpdateVolumes(void) {
-  bool mute = dsp[0x6c] & 0x40;
-  g_audio_mix.master_l = mute ? 0 : dsp[0x0c];
-  g_audio_mix.master_r = mute ? 0 : dsp[0x1c];
-  g_audio_mix.echo_l = mute ? 0 : dsp[0x2c];
-  g_audio_mix.echo_r = mute ? 0 : dsp[0x3c];
+  bool mute = g_audio_dsp[0x6c] & 0x40;
+  g_audio_mix.master_l = mute ? 0 : g_audio_dsp[0x0c];
+  g_audio_mix.master_r = mute ? 0 : g_audio_dsp[0x1c];
+  g_audio_mix.echo_l = mute ? 0 : g_audio_dsp[0x2c];
+  g_audio_mix.echo_r = mute ? 0 : g_audio_dsp[0x3c];
 }
 
 // The registers the driver changes now and then, in ROM.
@@ -215,7 +227,7 @@ __attribute__((noinline)) static void DspWriteChanged(uint8_t reg, uint8_t value
   case 0x4f: case 0x5f: case 0x6f: case 0x7f: {  // FIR
     // Its taps, oldest first, at 32 kHz; here, at half the mixer's rate,
     // six of them a tap.
-    const int8_t *c = (const int8_t *)&dsp[0x0f];
+    const int8_t *c = (const int8_t *)&g_audio_dsp[0x0f];
     g_audio_mix.fir[0] = c[0x70] + c[0x60] + c[0x50] + c[0x40] + c[0x30] + c[0x20];
     g_audio_mix.fir[1] = c[0x10] + c[0x00];
     break;
@@ -237,20 +249,15 @@ __attribute__((noinline)) static void DspWriteChanged(uint8_t reg, uint8_t value
   }
 }
 
-// ARM code in IWRAM, as the driver writes registers 500 times a second.
-__attribute__((target("arm"), section(".iwram.text")))
+// The driver's write of |value| to |reg| (up to 0x7f), when it changes
+// something: src/spc_player.c's Dsp_Write leaves out the rest, most of the
+// 500 a second.
 void Audio_DspWrite(uint8 reg, uint8 value) {
-  reg &= 0x7f;
-  // The driver rewrites most registers unchanged, 500 times a second; KON
-  // and KOF act whatever they were, but for none (as the driver writes
-  // them each tick).
-  if (reg == 0x4c || reg == 0x5c ? !value : dsp[reg] == value)
-    return;
-  dsp[reg] = value;
+  g_audio_dsp[reg] = value;
   int v = reg >> 4;
   if ((reg & 0xe) == 0x2) {
     // 0x1000 is the DSP's 32 kHz: in the mixer's samples, 16.16.
-    uint32_t pitch = (dsp[v * 16 + 2] | dsp[v * 16 + 3] << 8) & 0x3fff;
+    uint32_t pitch = (g_audio_dsp[v * 16 + 2] | g_audio_dsp[v * 16 + 3] << 8) & 0x3fff;
     g_audio_voices[v].step = pitch * (16 * kAudioDspSamples) >> 8;
     return;
   }
@@ -297,49 +304,68 @@ static unsigned EnvelopeRate(const Envelope *e, const uint8_t *r) {
   }
 }
 
+// A voice's envelope level after |n| of the DSP's samples, for its states
+// but the sustain, which RunEnvelopes does itself. (Thumb code, from the
+// cartridge.)
+static int EnvelopeLevel(AudioVoice *voice, Envelope *e, const uint8_t *r, unsigned n) {
+  int level = e->level;
+  if (e->state == kRelease) {
+    level -= 8 * n;
+    if (level <= 0) {
+      level = 0;
+      voice->on = false;
+    }
+  } else if (e->state == kGain && !(r[7] & 0x80)) {
+    level = (r[7] & 0x7f) * 16;
+  } else {
+    // Its steps in the time, at the rate of its state, which can change as
+    // it goes: the attack's quick steps would go on into the decay and the
+    // sustain, and the notes fade too soon. (No division: the GBA does it in
+    // software, slowly.)
+    unsigned rate, t = e->counter + n;
+    while ((rate = EnvelopeRate(e, r)) && t >= rate) {
+      if (e->state == kSustain || (e->state == kGain && (r[7] & 0x60) == 0x20)) {
+        // Falling exponentially, as most are, with nothing to change it:
+        // EnvelopeStep's, quicker.
+        for (; t >= rate; t -= rate)
+          level -= ((level - 1) >> 8) + 1;
+      } else {
+        int state = e->state;
+        do {
+          level = EnvelopeStep(e, r, level);
+          t -= rate;
+        } while (t >= rate && e->state == state);
+      }
+    }
+    e->counter = rate ? t : 0;
+  }
+  return level;
+}
+
 // Runs the envelopes for |n| of the DSP's samples, and sets the mixer's
-// volumes from them, and whether it has echo to mix. (Thumb code, from
-// the cartridge, 250 times a second: with pointers, not indexes, as it has
-// few registers.)
+// volumes from them, and whether it has echo to mix. (ARM code in IWRAM, as
+// it runs 250 times a second, for every voice: with pointers, not indexes.)
+__attribute__((target("arm"), section(".iwram.text"), noinline))
 static void RunEnvelopes(unsigned n) {
   AudioMix *m = &g_audio_mix;
   bool echo = m->echo_l || m->echo_r || m->feedback;
   AudioVoice *voice = g_audio_voices;
   Envelope *e = envelopes;
-  const uint8_t *r = dsp;
+  const uint8_t *r = g_audio_dsp;
   for (int v = 0; v < 8; v++, voice++, e++, r += 16) {
     if (!voice->on)
       continue;
-    int level = e->level;
-    if (e->state == kRelease) {
-      level -= 8 * n;
-      if (level <= 0) {
-        level = 0;
-        voice->on = false;
-      }
-    } else if (e->state == kGain && !(r[7] & 0x80)) {
-      level = (r[7] & 0x7f) * 16;
-    } else {
-      // Its steps in the time, at the rate of its state, which can change
-      // as it goes: the attack's quick steps would go on into the decay
-      // and the sustain, and the notes fade too soon. (No division: the
-      // GBA does it in software, slowly.)
-      unsigned rate, t = e->counter + n;
-      while ((rate = EnvelopeRate(e, r)) && t >= rate) {
-        if (e->state == kSustain || (e->state == kGain && (r[7] & 0x60) == 0x20)) {
-          // Falling exponentially, as most are, with nothing to change it:
-          // EnvelopeStep's, quicker.
-          for (; t >= rate; t -= rate)
-            level -= ((level - 1) >> 8) + 1;
-        } else {
-          int state = e->state;
-          do {
-            level = EnvelopeStep(e, r, level);
-            t -= rate;
-          } while (t >= rate && e->state == state);
-        }
-      }
+    int level;
+    if (e->state == kSustain) {
+      // (Most are, most of the time, with a step every few hundred of the
+      // DSP's samples, if any.)
+      unsigned rate = kRates[r[6] & 0x1f], t = e->counter + n;
+      level = e->level;
+      for (; rate && t >= rate; t -= rate)
+        level -= ((level - 1) >> 8) + 1;
       e->counter = rate ? t : 0;
+    } else {
+      level = EnvelopeLevel(voice, e, r, n);
     }
     e->level = level;
     // Volume (/128) times envelope (/2048), in 8 bits (see AudioVoice), so
@@ -354,7 +380,7 @@ static void RunEnvelopes(unsigned n) {
 
 void Audio_Init(void) {
   g_audio_mix.echo_len = 1;
-  dsp[0x6c] = 0xe0;  // as the DSP resets: muted, no echo writes
+  g_audio_dsp[0x6c] = 0xe0;  // as the DSP resets: muted, no echo writes
   SpcPlayer_Initialize(&player);
 
   REG_SOUNDCNT_X = 0x80;  // on (first: the rest ignore writes while off)
