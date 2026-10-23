@@ -872,6 +872,11 @@ ROM_CODE static void SetSplit(bool split) {
   bg12_layers[1] = split ? 10 : 8;
 }
 
+// The pause menu's equipment screen, and its fades.
+static inline bool EquipmentScreen(void) {
+  return game_state >= 13 && game_state <= 16 && pause_screen_mode == 1;
+}
+
 // Chooses split_bg2 from BG1's and BG2's priority tiles (as the frame
 // before converted their maps) and the line |r|'s scrolling.
 ROM_CODE static void ChooseSplit(const PpuRegs *r) {
@@ -894,8 +899,7 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   // The pause menu's equipment screen (and its fades) puts its title (SAMUS) on
   // BG1's priority tiles, over BG2's priority tiles' (the map's, BRINSTAR),
   // which split_bg2 would put in front.
-  bool equipment = game_state >= 13 && game_state <= 16 && pause_screen_mode == 1;
-  SetSplit(!equipment && shown[1] > shown[0] && (r->tm & 2));
+  SetSplit(!EquipmentScreen() && shown[1] > shown[0] && (r->tm & 2));
 }
 
 // The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
@@ -1381,6 +1385,8 @@ void Render_CaptureFrame(void) {
                     (int16_t)(l.stream[1] >> 16));
       else if (frame_mode7)
         Mode7Stream(stream + g, end - g, l.stream, 0, 0);
+      else if (squash)  // (whose runs are a few lines: OffsetEnd)
+        ScrollStream(stream + g, end - g, s, g);
       else
         ScrollRuns(stream + g, end - g, s, g);
       if (l.ctl.dispcnt & (3 << 13)) {
@@ -1853,10 +1859,57 @@ ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, 
   return (attr & 1) * 512 + (e[2] >> 4) * 32 + column;
 }
 
+// The 8-line sprites with another 8-line sprite 8 lines above or below at
+// the same x, as bits, set in |stacked|: on the equipment screen (only), the
+// frame around the selection. In one pass, by a table of the sprites' places
+// (|x| | |y| << 9, plus 1; 0 for none), not by comparing each with the others:
+// the pause screens show over a hundred sprites.
+ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t stacked[4]) {
+  // (Kept a slot short of full, or a search for a place not in it wouldn't
+  // end: on the stack, which has room for 512 bytes more, not twice that.)
+  enum { kSlots = 128 };
+  uint32_t places[kSlots] = {0};
+  uint32_t eights[4] = {0, 0, 0, 0};
+  int n = 0;
+  for (int i = 0; i < 128 && n < kSlots - 1; i++) {
+    const uint8_t *e = &g_oam[i * 4];
+    int hi = (g_oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
+    if (e[1] >= kSnesLines || kObjHeight[shapes[hi >> 1]] != 8)
+      continue;
+    n++;
+    eights[i >> 5] |= 1u << (i & 31);
+    uint32_t place = (e[0] | (hi & 1) << 8 | e[1] << 9) + 1;
+    unsigned slot = (place * 0x9e5u >> 4) & (kSlots - 1);
+    while (places[slot] && places[slot] != place)
+      slot = (slot + 1) & (kSlots - 1);
+    places[slot] = place;
+  }
+  for (int i = 0; i < 128; i++) {
+    if (!(eights[i >> 5] >> (i & 31) & 1))
+      continue;
+    const uint8_t *e = &g_oam[i * 4];
+    int hi = (g_oam[512 + (i >> 2)] >> ((i & 3) * 2)) & 3;
+    uint32_t place = (e[0] | (hi & 1) << 8 | e[1] << 9) + 1;
+    for (int dy = -8; dy <= 8; dy += 16) {
+      if (e[1] + dy < 0)
+        continue;
+      uint32_t near = place + (dy << 9);
+      unsigned slot = (near * 0x9e5u >> 4) & (kSlots - 1);
+      while (places[slot] && places[slot] != near)
+        slot = (slot + 1) & (kSlots - 1);
+      if (places[slot])
+        stacked[i >> 5] |= 1u << (i & 31);
+    }
+  }
+}
+
 // UpdateOam's work for the sprites in |blocks| (4 each) when squashed, in
 // ROM: it's menus' and the like.
 ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
   const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
+  uint32_t stacked_bits[4] = {0, 0, 0, 0};
+  if (EquipmentScreen())
+    FindStackedSprites(shapes, stacked_bits);
   for (int i = 0; i < 128; i++) {
     if (!(blocks >> (i >> 2) & 1))
       continue;
@@ -1868,17 +1921,7 @@ ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
     }
     volatile uint16_t *o = &GBA_OAM[i * 4];
     int x = e[0] | (hi & 1) << 8, shape = shapes[hi >> 1];
-    bool stacked = false;
-    if (kObjHeight[shape] == 8) {
-      // (The game puts the pieces of a sprite together in its list.)
-      for (int j = i < 24 ? 0 : i - 24; j < i + 24 && j < 128 && !stacked; j++) {
-        const uint8_t *f = &g_oam[j * 4];
-        int hj = (g_oam[512 + (j >> 2)] >> ((j & 3) * 2)) & 3;
-        int dy = f[1] - e[1];
-        stacked = (dy == 8 || dy == -8) && (f[0] | (hj & 1) << 8) == x && f[1] < kSnesLines &&
-                  kObjHeight[shapes[hj >> 1]] == 8;
-      }
-    }
+    bool stacked = stacked_bits[i >> 5] >> (i & 31) & 1;
     int tile = SquashSprite(o, e, x, shape, stacked);
     int priority = (e[3] >> 4) & 3;
     o[2] = tile | (bg3_mid ? 3 - priority : (kObjPriorities >> (priority * 2)) & 3) << 10 |
