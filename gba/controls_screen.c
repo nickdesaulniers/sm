@@ -5,7 +5,7 @@
 //   SHOT          B
 //   JUMP          A
 //   DASH          AUTO: Samus always runs
-//   ITEM SELECT   SELECT, which picks what R readies instead of missiles
+//   ITEM SELECT   SELECT, with R held: picks what R readies instead of missiles
 //   USE ITEM      R: hold to ready it (ITEM CANCEL on the SNES)
 //   ANGLE UP      L
 //   ANGLE DOWN    L + down

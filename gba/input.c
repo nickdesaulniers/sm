@@ -6,10 +6,10 @@
 //   R       hold to ready missiles, or the item Select picked; power bombs
 //           in morph ball; hold to look with the X-ray scope
 //   L       hold to aim diagonally: up, or down with Down held (SNES R, L)
-//   Select  pick what R readies instead of missiles: super missiles,
-//           grapple beam or X-ray scope, of those Samus has, then missiles
-//           again (as nothing picked: R has them anyway, so Select doesn't
-//           show them)
+//   Select  with R held: pick what R readies, the HUD showing it: missiles,
+//           super missiles, grapple beam, X-ray scope, of those Samus has,
+//           round and round. The pick is kept for the next time R is held.
+//           Without R, Select does nothing
 //   Start   pause
 // and Samus always runs (SNES B held). Elsewhere, menus and the pause
 // screen included, the buttons are the SNES's buttons of the same names.
@@ -35,13 +35,9 @@ enum {
   kItemXray = 5,
 };
 
-// Frames of the game to show the item Select picked on the HUD.
-enum { kShowPickedItemFrames = 40 };
-
 static uint16_t keys;
 // What Select picked for R, or none, for missiles.
 static uint8_t r_item = kItemNone;
-static uint8_t show_picked_item;
 
 static bool HasItem(int item) {
   switch (item) {
@@ -83,8 +79,6 @@ static bool InMorphBall(void) {
 
 // The HUD item the game should have selected, once a frame.
 uint16 GbaWantedHudItem(void) {
-  if (show_picked_item)
-    show_picked_item--;
   // Letting go of R mustn't drop Samus from the grapple beam.
   if (samus_movement_type == kMovementType_16_Grappling && hud_item_index == kItemGrapple)
     return kItemGrapple;
@@ -96,7 +90,7 @@ uint16 GbaWantedHudItem(void) {
     int item = r_item != kItemNone ? r_item : kItemMissiles;
     return HasItem(item) ? item : kItemNone;
   }
-  return show_picked_item ? r_item : kItemNone;
+  return kItemNone;
 }
 
 uint16_t Input_ReadJoypad(void) {
@@ -147,9 +141,10 @@ uint16_t Input_ReadJoypad(void) {
     else
       joy = (joy & ~kSnesUp) | kSnesR;
   }
-  if (pressed & kKeySelect) {
+  // Only with R held, so the pick is what R is readying, not a state that
+  // times out. Not while it's power bombs or the grapple beam holding Samus.
+  if ((pressed & kKeySelect) && (keys & kKeyR) && !InMorphBall() &&
+      samus_movement_type != kMovementType_16_Grappling)
     PickNextRItem();
-    show_picked_item = kShowPickedItemFrames;
-  }
   return joy;
 }
