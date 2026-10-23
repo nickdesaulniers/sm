@@ -38,6 +38,9 @@
 //
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
 //
+// With SAVE=FILE.sav, the cartridge's SRAM starts as that file's (which is
+// left as it was: the game's saves go to a copy in memory).
+//
 // Build with tools/mgba/build.sh, against mGBA 0.10.
 #include <mgba/flags.h>
 #include <mgba/core/config.h>
@@ -46,6 +49,8 @@
 #include <mgba/core/log.h>
 #include <mgba/core/timing.h>
 #include <mgba/internal/arm/arm.h>
+#include <mgba-util/vfs.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -326,6 +331,13 @@ int main(int argc, char** argv) {
     if (!mCoreLoadFile(core, argv[1])) {
         fprintf(stderr, "%s: can't load %s\n", argv[0], argv[1]);
         return 1;
+    }
+    if (getenv("SAVE")) {
+        struct VFile* vf = VFileOpen(getenv("SAVE"), O_RDONLY);
+        if (!vf || !core->loadTemporarySave(core, vf)) {
+            fprintf(stderr, "%s: can't load %s\n", argv[0], getenv("SAVE"));
+            return 1;
+        }
     }
     core->reset(core);
 
