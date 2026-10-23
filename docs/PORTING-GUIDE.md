@@ -251,6 +251,13 @@ against ground truth headlessly. Build these tools early.
 - **A sound oracle** (`tools/spcref.c`, `tools/compare_audio.py`): replay
   the game's sound requests through the original driver and an emulated
   DSP, then compare the loudness envelopes and spectra.
+- **Sample-exact audio, between builds:** hashing the mixed samples of an
+  old and a new build parts as soon as one runs at another speed (a busy
+  loop of 40 iterations in the mixer does it, a few seconds in): the game's
+  sound requests meet the driver's ticks at times that depend on the cycles.
+  To prove a faster mixer the same, put the old routine (renamed, in ROM)
+  beside the new in one build, run both on the same inputs every chunk, and
+  compare what they leave, besides the same on random inputs.
 - **Shortcuts:** `-DSM_SKIP_INTRO`, `-DSM_START_ZEBES` and `-DSM_TEST_ITEMS`
   get to the interesting state in seconds. `-DSM_TOUR_ONLY=0x...,0x...`
   tours only some rooms, `-DSM_TOUR_SETTLE` stays longer in each (bosses

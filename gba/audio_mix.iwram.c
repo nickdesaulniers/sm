@@ -20,13 +20,19 @@ static const int8_t silence[kAudioFrameSamples] __attribute__((aligned(4)));
 // in a word, in the units of the voices' sums (/2 of the DSP's).
 static uint32_t echo_buf[kAudioEchoMax];
 static uint16_t echo_pos IWRAM_BSS;
+// A word of silence in it: each side, 16 bits, is 0x8000 more than it is (the
+// mixer works on them as 0 to 0xffff: audio_mix.S).
+static const uint32_t kEchoZero = 0x80008000u;
+// (|old| is the buffer's last word, as the buffer has it; |last| the last echo
+// sample, as the voices' sums.)
 typedef struct EchoState {
   int32_t fir0, fir1, feedback;
   uint32_t old, last;
 } EchoState;
 static EchoState echo_state IWRAM_BSS;
 void Audio_EchoPairs(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
-void Audio_ClearSums(int32_t *sums, int n);
+void Audio_EchoUnheard(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
+void Audio_ClearSums(int32_t *sums, int n, int32_t value);
 void Audio_MixVoice(int32_t *sum, int n, AudioVoice *v);
 void Audio_OutputEcho(int8_t *left, int8_t *right, const int32_t *sums, int n, const int32_t vol[4]);
 // As audio_mix.S has them.
@@ -34,13 +40,21 @@ _Static_assert(offsetof(AudioVoice, vol) == 20 && offsetof(AudioVoice, on) == 24
 _Static_assert(offsetof(EchoState, last) == 16, "EchoState");
 
 ROM_CODE void Audio_ClearEcho(void) {
-  memset(echo_buf, 0, sizeof(echo_buf));
-  echo_state.old = echo_state.last = 0;
+  Audio_ClearSums((int32_t *)echo_buf, kAudioEchoMax, kEchoZero);
+  echo_state.old = kEchoZero;
+  echo_state.last = 0;
   echo_pos = 0;
 }
 
 
-// As src/snes/dsp.c's dsp_handleEcho, on pairs of samples (see echo.S):
+static inline void EchoRun(int32_t *wet, int run, uint32_t *buf, bool unheard) {
+  if (unheard && run > 1)
+    Audio_EchoUnheard(wet, run, buf, &echo_state);
+  else
+    Audio_EchoPairs(wet, run, buf, &echo_state);
+}
+
+// As src/snes/dsp.c's dsp_handleEcho, on pairs of samples (see audio_mix.S):
 // what comes out of the echo buffer, filtered, goes back in with the voices'
 // echo (|wet|) at the feedback volume, and to wet[kAudioChunk] on, to play
 // at the echo volume.
@@ -48,17 +62,21 @@ static void Echo(int32_t *wet, int n) {
   const AudioMix *m = &g_audio_mix;
   if (!m->echo_writes) {
     // Only while the driver changes the echo's length, its volume 0.
-    Audio_ClearSums(wet + kAudioChunk, n);
+    Audio_ClearSums(wet + kAudioChunk, n, 0);
     return;
   }
   echo_state.fir0 = m->fir[0];
   echo_state.fir1 = m->fir[1];
   echo_state.feedback = m->feedback;
+  // With the echo's volumes and feedback 0 (the sound driver has them so
+  // while a song starts, and at the end of the game), what the filter makes
+  // isn't heard or kept: the buffer takes the voices' echo as it is.
+  bool unheard = !(m->echo_l | m->echo_r | m->feedback);
   int pos = echo_pos, len = m->echo_len;
   for (int pairs = n >> 1; pairs;) {
     // Up to where the buffer wraps.
     int run = len - pos < pairs ? len - pos : pairs;
-    Audio_EchoPairs(wet, run, echo_buf + pos, &echo_state);
+    EchoRun(wet, run, echo_buf + pos, unheard);
     wet += 2 * run;
     pairs -= run;
     pos += run;
@@ -105,8 +123,10 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   int32_t sums[3 * kAudioChunk], *dry = sums, *wet = sums + kAudioChunk;
   int8_t noise_samples[kAudioChunk];
   bool noise_done = false;
-  Audio_ClearSums(dry, n);
-  Audio_ClearSums(wet, n);
+  // (|wet| starts as the echo works on it, kEchoZero up, and |dry| as far
+  // down, to add up.)
+  Audio_ClearSums(dry, n, -(int32_t)kEchoZero);
+  Audio_ClearSums(wet, n, kEchoZero);
 #pragma clang loop unroll(disable)
   for (int v = 0; v < 8; v++) {
     AudioVoice *voice = &g_audio_voices[v];
