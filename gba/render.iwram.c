@@ -103,8 +103,9 @@ static uint32_t (*const streams[2])[4] = {stream0, stream1};
 static uint32_t window_streams[2][kGbaLines + 1][kWindowStreamWords];
 static uint32_t line_windows[kGbaLines];
 // Segments: a frame has a few, as a rule (each costs an interrupt). Past
-// the most, the last goes on to the end.
-enum { kMaxSegments = 32 };
+// the most, the last goes on to the end. (The tour and the intro have 3 at
+// most.)
+enum { kMaxSegments = 16 };
 static DisplaySegment segments[2][kMaxSegments];
 static DisplayFrame frames[2];
 static int back;
