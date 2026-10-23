@@ -1,74 +1,19 @@
 // The C library functions the game and the compiler call. Clang emits
 // calls to memcpy/memset/memmove on its own (for struct copies, zeroing, and
-// recognized loops), so these must exist.
+// recognized loops), so these must exist. (memcpy and memset, which are
+// called all the time, are in IWRAM, in memops.S.)
 //
 // Built -fno-builtin, and the functions carry no_builtin too, so that the
 // optimizer doesn't turn these loops back into calls to themselves; and
-// noinline, for one copy of each in IWRAM, not one per __aeabi_ alias.
+// noinline, for one copy of each, not one per __aeabi_ alias.
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
 #define NO_BUILTIN __attribute__((no_builtin, noinline))
 
-// In IWRAM, as ARM code (see CMakeLists.txt): the game copies a lot.
-#pragma clang section text = ".iwram.text.libc"
-
 // For word-at-a-time access to memory of any type.
 typedef uint32_t __attribute__((may_alias)) Word;
-
-// A word at a time when the two are equally aligned: the ARM7TDMI takes
-// about as long per word as per byte, more so from 16-bit-wide memory.
-NO_BUILTIN void *memcpy(void *__restrict dst, const void *__restrict src, size_t n) {
-  unsigned char *d = dst;
-  const unsigned char *s = src;
-  if ((((uintptr_t)d ^ (uintptr_t)s) & 3) == 0) {
-    for (; n && ((uintptr_t)d & 3); --n)
-      *d++ = *s++;
-    Word *dw = (Word *)d;
-    const Word *sw = (const Word *)s;
-    for (; n >= 16; n -= 16) {
-      dw[0] = sw[0];
-      dw[1] = sw[1];
-      dw[2] = sw[2];
-      dw[3] = sw[3];
-      dw += 4;
-      sw += 4;
-    }
-    for (; n >= 4; n -= 4)
-      *dw++ = *sw++;
-    d = (unsigned char *)dw;
-    s = (const unsigned char *)sw;
-  }
-  while (n--)
-    *d++ = *s++;
-  return dst;
-}
-
-NO_BUILTIN void *memset(void *dst, int value, size_t n) {
-  unsigned char *d = dst;
-  unsigned char byte = (unsigned char)value;
-  for (; n && ((uintptr_t)d & 3); --n)
-    *d++ = byte;
-  Word *dw = (Word *)d;
-  uint32_t word = byte * 0x01010101u;
-  for (; n >= 16; n -= 16) {
-    dw[0] = word;
-    dw[1] = word;
-    dw[2] = word;
-    dw[3] = word;
-    dw += 4;
-  }
-  for (; n >= 4; n -= 4)
-    *dw++ = word;
-  d = (unsigned char *)dw;
-  while (n--)
-    *d++ = byte;
-  return dst;
-}
-
-// The rest of the C library is seldom used: in ROM.
-#pragma clang section text = ""
 
 // Words too, as memcpy: the game moves rooms' data so, kilobytes of it
 // (as the rooms load).
@@ -144,21 +89,10 @@ NO_BUILTIN int strcmp(const char *a, const char *b) {
   return (unsigned char)*a - (unsigned char)*b;
 }
 
-// ARM run-time ABI memory helpers, which clang emits instead of memcpy/
-// memset on EABI targets. The 4/8 variants promise aligned pointers, which
-// these simple versions don't need. Note __aeabi_memset's argument order
-// differs from memset's.
+// ARM run-time ABI memory helpers, which clang emits instead of memmove on
+// EABI targets. (memcpy's and memset's are in memops.S.) The 4/8 variants
+// promise aligned pointers, which this simple version doesn't need.
 // https://github.com/ARM-software/abi-aa/blob/main/rtabi32/rtabi32.rst
-#pragma clang section text = ".iwram.text.libc"
-void __aeabi_memcpy(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
-void __aeabi_memcpy4(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
-void __aeabi_memcpy8(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
 void __aeabi_memmove(void *dst, const void *src, size_t n) { memmove(dst, src, n); }
 void __aeabi_memmove4(void *dst, const void *src, size_t n) { memmove(dst, src, n); }
 void __aeabi_memmove8(void *dst, const void *src, size_t n) { memmove(dst, src, n); }
-void __aeabi_memset(void *dst, size_t n, int value) { memset(dst, value, n); }
-void __aeabi_memset4(void *dst, size_t n, int value) { memset(dst, value, n); }
-void __aeabi_memset8(void *dst, size_t n, int value) { memset(dst, value, n); }
-void __aeabi_memclr(void *dst, size_t n) { memset(dst, 0, n); }
-void __aeabi_memclr4(void *dst, size_t n) { memset(dst, 0, n); }
-void __aeabi_memclr8(void *dst, size_t n) { memset(dst, 0, n); }

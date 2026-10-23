@@ -5,6 +5,7 @@ add_library(gba_libc STATIC
     libc/stdio.c
     libc/stdlib.c
     libc/string.c
+    libc/memops.S
 )
 # -fno-builtin keeps clang from turning these implementations into calls
 # to themselves (they also carry no_builtin).
@@ -101,6 +102,7 @@ add_executable(sm_gba
     audio_mix.S
     decompress.S
     irq_entry.S
+    thumb_entries.S
     controls_screen.c
     input.c
     message_boxes.c
@@ -155,6 +157,8 @@ target_link_libraries(sm_gba PRIVATE sm_game gba_libc gba_builtins)
 target_link_options(sm_gba PRIVATE
     -T ${CMAKE_CURRENT_SOURCE_DIR}/gba.ld
     -Wl,--gc-sections
+    # The game's calls to ClearUnusedOam go to rtl.c's, faster.
+    -Wl,--wrap=ClearUnusedOam
 )
 
 # The engine, sm-engine.gba, has none of the game's data: make_cartridge.py

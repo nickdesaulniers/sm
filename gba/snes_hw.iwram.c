@@ -620,7 +620,8 @@ __attribute__((noinline)) static void StartDivision(uint8_t divisor) {
   h->rdmpy = SnesModulus(h->wrdiv, divisor);
 }
 
-void WriteReg(uint16 reg, uint8 value) {
+// (The game calls it through the Thumb entry in thumb_entries.S.)
+void WriteRegArm(uint16 reg, uint8 value) {
   SnesHw *h = &g_snes_hw;
   if (reg >= 0x2100 && reg < 0x2200) {
     WriteBBus(reg & 0xff, value);
@@ -682,15 +683,15 @@ ROM_CODE uint16 ReadRegWord(uint16 reg) {
   return lo | (ReadReg(reg + 1) << 8);
 }
 
-void WriteRegWord(uint16 reg, uint16 value) {
+void WriteRegWordArm(uint16 reg, uint16 value) {
   // DMAP and BBAD, A1T, DAS and A2A (registers 0, 2, 5 and 8 of a channel) are
   // both bytes of a field: one store.
   if (reg - 0x4300u < 0x80 && ((0x125 >> (reg & 0xf)) & 1)) {
     *(uint16_t *)((uint8_t *)&g_snes_hw.dma[(reg >> 4) & 7] + kDmaRegOffset[reg & 0xf]) = value;
     return;
   }
-  WriteReg(reg, (uint8)value);
-  WriteReg(reg + 1, value >> 8);
+  WriteRegArm(reg, (uint8)value);
+  WriteRegArm(reg + 1, value >> 8);
 }
 
 // The channels HDMA is running, decoded once a frame (and if the game

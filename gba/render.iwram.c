@@ -1419,19 +1419,23 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   // GBA palettes 8-15 (Mode 7's background has all 256 colors: frames with
   // both are a compromise); with the color math on the layers it's on (the
   // sprites': in palettes 4-7). By tables on the stack, in IWRAM, for all of
-  // them; for a few, copying them would cost more.
+  // them; for a few, copying them would cost more. Copied only when something
+  // reads them (at full brightness, the plain ones' colors are as they were;
+  // and with no color math, so are all).
+  bool full = b == 15;
   uint8_t tables[2][3][32];
   const uint8_t(*t[2])[32] = {plain, with};
   if (blocks == ~0u) {
-    memcpy(tables[0], plain, sizeof(plain));
-    memcpy(tables[1], with, sizeof(with));
+    if (!full)
+      memcpy(tables[0], plain, sizeof(plain));
+    if (math & 0x37)
+      memcpy(tables[1], with, sizeof(with));
     t[0] = tables[0];
     t[1] = tables[1];
   }
   const uint8_t(*same)[32] = t[0];
   const uint8_t(*bd)[32] = t[(math & 0x20) != 0], (*bg12)[32] = t[(math & 3) != 0];
   const uint8_t(*o)[32] = t[(math & 0x10) != 0], (*b3)[32] = t[(math & 4) != 0];
-  bool full = b == 15;
   if (blocks != ~0u) {
     RecolorBlocks(blocks, bd, bg12, o, b3, same, full, bg3_palettes);
   } else {
