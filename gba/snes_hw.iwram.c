@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "gba_hw.h"
+#include "input.h"
 #include "sm_rtl.h"
 
 // (Aligned: SameRegs compares its registers' words.)
@@ -744,6 +745,9 @@ ROM_CODE uint8 ReadReg(uint16 reg) {
   case RDMPYH: return h->rdmpy >> 8;
   case JOY1L: return h->joy1;
   case JOY1H: return h->joy1 >> 8;
+  // Only read with the developer tools on (dev_tools.c).
+  case JOY2L: return Input_ReadJoypad2();
+  case JOY2H: return Input_ReadJoypad2() >> 8;
   default: return 0;
   }
 }

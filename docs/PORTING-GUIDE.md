@@ -231,6 +231,47 @@ in the same genre would (here *Metroid: Zero Mission*). Translate them into
 the SNES joypad bits the game reads (`gba/input.c`). Keep the SNES buttons'
 own names in menus.
 
+### The game's own debug code
+
+A decompilation keeps the developers' leftovers, and they're the cheapest
+developer tools a port can have: grep `src/` for the debug switches
+(`enable_debug`, `debug_flag`, the `debug_*` variables, `joypad2_*`) before
+writing any. In Super Metroid, `enable_debug` (RAM $7E05D1, cleared at
+reset, set by nothing: the developers poked it in) turns on:
+
+- starting a file goes to the load-game map (state 5), new files too; the
+  map's area select steps with Select and the directions, and the room map
+  steps with controller 2's Select through every load station of the area
+  the file has used, then the **debug stations** (indexes 16 and up of
+  `kLoadStationLists`, with their own map icons): 20 spawn points, in rooms
+  next to the bosses' and in the Golden Torizo's;
+- a soft reset on Start + Select + L + R, and a pad-1 filter that moves
+  Select + L or R into debug variables (no use here);
+- debug station icons on the pause map;
+- invincibility (`debug_invincibility` of 7 or more: no knockback, health
+  kept) with L + R + A on controller 2 while standing facing front, or the
+  sequence in `word_82F204` entered on controller 2, in the controller
+  settings screen (it counts up the same variable; all of it needs the
+  switch on, as controller 2 is only read then);
+- the Golden Torizo's room gives a loadout for X + Y + A + B held as it
+  loads (`sm_aa.c`), and death skips its white flash with controller 2's A +
+  L + R.
+
+Code nothing reaches stays dead: the Draygon puppet on controller 2
+(`Draygon_Func_37`), the scroll save and load (`DebugScrollPosSaveLoad`) and
+the demo recorder's pause (`HandleDemoRecorder_1`) are never called.
+
+The port reaches what it can with glue in `gba/` and no change to `src/`
+beyond one guard (`SaveToSram`): a button combination sets `enable_debug`
+(`gba/dev_tools.c`), the GBA's Select reads as controller 2's in the map
+(`ReadReg`'s JOY2L), and a loadout picker draws its text into the map's own
+tilemap. Two things to know. The map hides stations a file hasn't used, and
+a new file has none, so the glue sets the used bits while the map shows and
+puts them back. And its font: the game draws its menus' text in tiles (here
+the map's letters are tiles $30 to $49), so text for a screen is a tilemap
+write, with no font of the port's own, and it has to survive the squash
+(`kSquashLine`): the game's own 8x8 letters do.
+
 ## 5. Verification: make every claim checkable
 
 The work went fastest whenever a bug could be reproduced and compared

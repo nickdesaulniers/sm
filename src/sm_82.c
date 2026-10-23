@@ -910,6 +910,9 @@ static CoroutineRet RunOneFrameOfGameInner(void) {
   coroutine_state_1 = coroutine_state_2 = coroutine_state_3 = coroutine_state_4 = 0;
 
   ReadJoypadInputs();
+  // (Its soft reset, with enable_debug: no state to run, 0xffff is none.)
+  if (game_state == 0xffff)
+    return kCoroutineNone;
   HdmaObjectHandler();
   NextRandom();
   ClearOamExt();

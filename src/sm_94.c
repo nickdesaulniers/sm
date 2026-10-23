@@ -1293,7 +1293,8 @@ static uint8 BlockInsideReact_SpecialAir(CollInfo *ci) {
   if (v0 & 0x80) {
     const uint8 *v3 = RomPtr_94(g_off_949B06[area_index]);
     SpawnPLM(*(uint16 *)&v3[2 * (v0 & 0x7F)]);
-  } else {
+  } else if (v0 < 80) {
+    // (Past the table: see BlockColl_SpikeBlock.)
     off_949966[v0]();
   }
   return 0;

@@ -152,7 +152,16 @@ void SoftReset(void) {
   game_state = 0xffff;
 }
 
+#if SM_GBA
+bool Dev_SaveBlocked(void);
+#endif
+
 void SaveToSram(uint16 a) {  // 0x818000
+#if SM_GBA
+  // A spawn of the developer tools with a loadout isn't the player's file.
+  if (Dev_SaveBlocked())
+    return;
+#endif
   uint16 v7;
   uint16 v11;
 

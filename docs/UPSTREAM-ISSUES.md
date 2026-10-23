@@ -73,16 +73,44 @@ matches the original frame by frame.
 ## 5. Tables indexed by a block's BTS, past their end
 
 **Where:** `src/sm_94.c`: `BlockInsideReact_SpikeAir`,
-`BlockColl_Horiz_SpikeBlock` and `BlockColl_Vert_SpikeBlock`, and
-`BlockReactGrapple_GrappleBlock` and `BlockReactGrapple_SpikeBlock`.
+`BlockColl_Horiz_SpikeBlock` and `BlockColl_Vert_SpikeBlock`,
+`BlockReactGrapple_GrappleBlock` and `BlockReactGrapple_SpikeBlock`, and
+`BlockInsideReact_SpecialAir`.
 
 **What:** each indexes a table of handlers (or PLMs) by the block's BTS
 byte, which can be anything: the C's tables have 16 entries (the grapple
-block's 4), and the ROM's are as short (the spike air table at
-`$94:98CC` is 8 entries: the next function starts 16 bytes on), so a
-larger BTS reads past the table, where the SNES would take the next
-code's bytes for addresses. In C it's undefined; on the GBA, with Samus
-held inside a block in a Maridia room by a test that walks every room,
+block's 4; the special air table's, at `$94:9966`, 80), and the ROM's are
+as short (the spike air table at `$94:98CC` is 8 entries: the next
+function starts 16 bytes on; the special air table is followed by
+data), so a larger BTS reads past the table, where the SNES would take
+the next code's bytes for addresses. In C it's undefined; on the GBA, with
+Samus held inside a block in a Maridia room by a test that walks every room,
 it called a null pointer and reset (which pointer depended on the build).
 
-**Fix:** a BTS past the table does nothing (commit be704b4).
+**Fix:** a BTS past the table does nothing (commit be704b4; and for
+`BlockInsideReact_SpecialAir`, whose BTS 80 to 127 read the data after its
+table, the commit that adds the developer tools). That one showed up
+when adding a few statics moved the others: with Samus outside the room (the
+tour's door transitions run her handler with her at x = -185 for a moment;
+the developers' debug station Norfair 21 starts her out of bounds), her
+block index is far past the room's, and `BTS[cur_block_index]` reads past
+the end of `g_ram`, into whatever follows. The tour reset in Maridia's
+room D2D9 and, once the new statics went last, its pictures didn't move.
+Keeping Samus's block inside the room's would be the root fix.
+
+## 6. The debug soft reset runs a state that isn't
+
+**Where:** `src/sm_80.c`, `ReadJoypadInputs`, and `src/sm_82.c`,
+`RunOneFrameOfGameInner`.
+
+**What:** with `enable_debug` set (the developers' switch, which the load-game
+map's station list and more depend on), holding Start, Select, L and R calls
+`SoftReset` from `ReadJoypadInputs`. That sets `game_state` to 0xffff, as the
+other callers do, but they're inside a state's function: this one is at the
+top of the frame, which then goes on to `kGameStateFuncs[game_state]`, 65535
+entries past a table of 45. On the PC build that's undefined; on the GBA it
+jumped into the weeds. (The SNES's reset vector runs at once.)
+
+**Fix:** `RunOneFrameOfGameInner` returns after `ReadJoypadInputs` if
+`game_state` is 0xffff, and the frame ends as the other soft resets do
+(commit: the one that adds the developer tools).

@@ -20,6 +20,7 @@
 
 #include <stdbool.h>
 
+#include "dev_tools.h"
 #include "gba_hw.h"
 #include "ida_types.h"
 #include "sm_rtl.h"
@@ -97,6 +98,12 @@ uint16_t Input_ReadJoypad(void) {
   uint16_t prev = keys;
   keys = ~REG_KEYINPUT & 0x3ff;
   uint16_t pressed = keys & ~prev;
+  // The developer tools (dev_tools.c): turned on by L and R held with Start,
+  // on the title or the file select; they may use up a frame's buttons.
+  if ((pressed & kKeyStart) && (keys & (kKeyL | kKeyR)) == (kKeyL | kKeyR))
+    Dev_TryEnable();
+  if (enable_debug && Dev_Frame(keys, pressed))
+    return 0;
   uint16_t joy = 0;
   if (keys & kKeyUp) joy |= kSnesUp;
   if (keys & kKeyDown) joy |= kSnesDown;
@@ -147,4 +154,11 @@ uint16_t Input_ReadJoypad(void) {
       samus_movement_type != kMovementType_16_Grappling)
     PickNextRItem();
   return joy;
+}
+
+// The SNES's second controller, which the game reads, with enable_debug set,
+// to step through the load stations on the room map with its Select
+// (FileSelectMap_10_RoomSelectMap): the GBA's Select. (For ReadReg.)
+uint16_t Input_ReadJoypad2(void) {
+  return game_state == 5 && (keys & kKeySelect) && Dev_SelectFree() ? kSnesSelect : 0;
 }

@@ -104,6 +104,7 @@ add_executable(sm_gba
     irq_entry.S
     thumb_entries.S
     controls_screen.c
+    dev_tools.c
     input.c
     message_boxes.c
     main.c

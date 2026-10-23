@@ -13,3 +13,6 @@ enum {
 
 // Reads the buttons, once a frame of the game, before it.
 uint16_t Input_ReadJoypad(void);
+
+// What the SNES's second controller reads, for the developer tools.
+uint16_t Input_ReadJoypad2(void);
