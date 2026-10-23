@@ -53,6 +53,20 @@ SECTIONS {
     } > iwram
     ASSERT(__iwram_bss_end <= __sp_sys - __stack_size, "IWRAM overflows into the stack")
 
+    /* .bss first: g_ram, the game's 128 KB of RAM, is at the start of EWRAM,
+       where types.h expects it (as the address 0x02000000). */
+    .bss (NOLOAD) : ALIGN(4) {
+        __bss_start = .;
+        g_ram = .;
+        . += 0x20000;
+        *(.bss .bss.*)
+        *(COMMON)
+        *(.ewram_bss .ewram_bss.*)
+        . = ALIGN(4);
+        __bss_end = .;
+    } > ewram
+    ASSERT(g_ram == 0x02000000, "g_ram must be at the start of EWRAM")
+
     .data : ALIGN(4) {
         __data_start = .;
         *(.data .data.*)
@@ -61,14 +75,6 @@ SECTIONS {
     } > ewram AT> rom
     __data_lma = LOADADDR(.data);
 
-    .bss (NOLOAD) : ALIGN(4) {
-        __bss_start = .;
-        *(.bss .bss.*)
-        *(COMMON)
-        *(.ewram_bss .ewram_bss.*)
-        . = ALIGN(4);
-        __bss_end = .;
-    } > ewram
     __heap_start = .;
     __heap_end = ORIGIN(ewram) + LENGTH(ewram);
 
