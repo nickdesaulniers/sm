@@ -27,6 +27,7 @@ ROM_CODE void Convert_Init(void) {
 // bitplanes 2 and 3.
 void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
   for (; count > 0; count--, src += 16, dst += 8) {
+#pragma clang loop unroll(disable)
     for (int r = 0; r < 8; r++) {
       uint32_t p01 = src[r], p23 = src[r + 8];
       dst[r] = expand[p01 & 0xff] | expand[p01 >> 8] << 1 | expand[p23 & 0xff] << 2 |
@@ -36,9 +37,10 @@ void Convert_Tiles4bpp(volatile uint32_t *dst, const uint16_t *src, int count) {
 }
 
 // As Convert_Tiles4bpp, a tile, and at |mirrored|, the tile flipped left to
-// right (for sprites outside gameplay: see render.c's SquashSprite).
-void Convert_Tile4bppAndMirrored(volatile uint32_t *dst, volatile uint32_t *mirrored,
-                                 const uint16_t *src) {
+// right (for sprites outside gameplay: see render.c's SquashSprite; in ROM,
+// then).
+ROM_CODE void Convert_Tile4bppAndMirrored(volatile uint32_t *dst, volatile uint32_t *mirrored,
+                                          const uint16_t *src) {
   // (Unrolled, it would take 400 more bytes of IWRAM.)
 #pragma clang loop unroll(disable)
   for (int r = 0; r < 8; r++) {

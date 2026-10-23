@@ -13,8 +13,8 @@
 
 // (Aligned: SameRegs compares its registers' words.)
 SnesHw g_snes_hw IWRAM_BSS __attribute__((aligned(4)));
-uint16_t g_cgram[256];
-uint8_t g_oam[544];
+uint16_t g_cgram[256] __attribute__((aligned(4)));
+uint8_t g_oam[544] __attribute__((aligned(4)));
 uint16_t g_vram[kVramWords];
 uint32_t g_vram_dirty[kVramChunks / 32];
 // The game wrote HDMAEN: HDMA's decoded channels are out of date.
@@ -39,12 +39,14 @@ ROM_CODE ROM_CODE void SnesHw_Reset(void) {
     c->ntrl = 0xff;
   }
   memset(g_vram_dirty, 0xff, sizeof(g_vram_dirty));
-  g_snes_hw.cgram_dirty = g_snes_hw.oam_dirty = true;
+  g_snes_hw.vram_dirty = g_snes_hw.cgram_dirty = true;
+  g_snes_hw.cgram_changed = g_snes_hw.oam_changed = ~0u;
 }
 
 static inline void MarkVramDirty(uint16_t addr) {
   uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift;
   g_vram_dirty[chunk >> 5] |= 1u << (chunk & 31);
+  g_snes_hw.vram_dirty = true;
 }
 
 // And counts the chunk (g_vram_dirty_marks) if it wasn't dirty: for the
@@ -53,6 +55,7 @@ uint32_t g_vram_dirty_marks IWRAM_BSS;
 __attribute__((noinline)) static void MarkVramDirtyCounted(uint16_t addr) {
   uint32_t chunk = (addr & 0x7fff) >> kVramChunkShift, bit = 1u << (chunk & 31);
   uint32_t *w = &g_vram_dirty[chunk >> 5];
+  g_snes_hw.vram_dirty = true;
   if (!(*w & bit)) {
     *w |= bit;
     g_vram_dirty_marks++;
@@ -112,7 +115,11 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     h->regs_dirty = true;
   switch (adr) {
   case 0x00: r->inidisp = val; break;
-  case 0x01: h->obsel = val; h->oam_dirty = true; break;
+  case 0x01:
+    if (val != h->obsel)
+      h->oam_changed = ~0u;  // (the sprites' sizes)
+    h->obsel = val;
+    break;
   case 0x02:
     h->oam_addr_reload = (h->oam_addr_reload & 0x200) | (val << 1);
     h->oam_addr = h->oam_addr_reload;
@@ -133,8 +140,8 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     } else {
       g_oam[0x200 + (a & 0x1f)] = val;
     }
+    h->oam_changed = ~0u;
     h->oam_addr = (a + 1) & 0x3ff;
-    h->oam_dirty = true;
     break;
   }
   case 0x05: r->bgmode = val; break;
@@ -211,6 +218,7 @@ static void WriteBBus(uint8_t adr, uint8_t val) {
     if (!h->cgram_high) {
       h->cgram_latch = val;
     } else {
+      h->cgram_changed = ~0u;
       g_cgram[h->cgram_ptr++] = ((val & 0x7f) << 8) | h->cgram_latch;
       h->cgram_dirty = true;
     }
@@ -311,6 +319,27 @@ static void CopyBytes(void *dst, const uint8_t *src, uint32_t bytes) {
   }
 }
 
+// Copies |blocks| blocks of 16 bytes from |src| to |dst|, both aligned to
+// words, but those that are as they were: the game uploads all of CGRAM and
+// OAM every frame, mostly the same, and render.c converts only what's new.
+// Returns the blocks that changed, as bits from |first| on. (Reading both
+// takes about what DMA's reading and writing does.)
+__attribute__((noinline)) static uint32_t CopyChanged(uint32_t *dst, const uint32_t *src,
+                                                      uint32_t blocks, uint32_t first) {
+  uint32_t changed = 0;
+  for (uint32_t i = first; blocks; blocks--, i++, dst += 4, src += 4) {
+    uint32_t s0 = src[0], s1 = src[1], s2 = src[2], s3 = src[3];
+    uint32_t d0 = dst[0], d1 = dst[1], d2 = dst[2], d3 = dst[3];
+    // (Loaded before they're compared, so that it's a block load of each.)
+    __asm__("" : "+r"(d0), "+r"(d1), "+r"(d2), "+r"(d3));
+    if ((s0 ^ d0) | (s1 ^ d1) | (s2 ^ d2) | (s3 ^ d3)) {
+      dst[0] = s0, dst[1] = s1, dst[2] = s2, dst[3] = s3;
+      changed |= 1u << i;
+    }
+  }
+  return changed;
+}
+
 // Whether the |n| words at |src| (bytes) are those at |a|, a pair at a
 // time; false (not known) when they aren't 4-byte aligned or n is odd.
 static bool SameWords(const uint16_t *a, const uint8_t *src, uint32_t n) {
@@ -338,6 +367,7 @@ ROM_CODE static void PaletteOrOamBytes(uint8_t bbad, const uint8_t *src, uint32_
       h->cgram_high = !h->cgram_high;
     }
     h->cgram_dirty = true;
+    h->cgram_changed = ~0u;
     return;
   }
   uint16_t a = h->oam_addr;
@@ -350,7 +380,7 @@ ROM_CODE static void PaletteOrOamBytes(uint8_t bbad, const uint8_t *src, uint32_
       g_oam[a - 1] = h->oam_latch, g_oam[a] = src[i];
   }
   h->oam_addr = a;
-  h->oam_dirty = true;
+  h->oam_changed = ~0u;
 }
 
 // DMA a byte at a time, through the B bus's registers: what FastDma
@@ -385,19 +415,33 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
   if (c->bbad == 0x22 && (mode == 0 || mode == 2) && !h->cgram_high && !(count & 1) &&
       h->cgram_ptr + count / 2 <= 256) {
     // Whole colors (the unused top bit doesn't matter to the GBA).
-    CopyBytes(&g_cgram[h->cgram_ptr], src, count);
+    if (!(((uintptr_t)src & 3) | (h->cgram_ptr & 7) | (count & 15))) {
+      h->cgram_changed |= CopyChanged((uint32_t *)&g_cgram[h->cgram_ptr], (const uint32_t *)src,
+                                      count >> 4, h->cgram_ptr >> 3);
+    } else {
+      CopyBytes(&g_cgram[h->cgram_ptr], src, count);
+      h->cgram_changed = ~0u;
+    }
     h->cgram_ptr += count / 2;
     h->cgram_dirty = true;
   } else if (c->bbad == 0x04 && (mode == 0 || mode == 2) && !(h->oam_addr & 1) &&
              h->oam_addr + count <= 0x220) {
     // The low table and then the high table, as the game uploads OAM.
-    uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
-    if (low > count)
-      low = count;
-    CopyBytes(&g_oam[h->oam_addr], src, low);
-    CopyBytes(&g_oam[h->oam_addr + low], src + low, count - low);
+    if (!h->oam_addr && count == 0x220 && !((uintptr_t)src & 3)) {
+      // All of it. (The high table's two blocks have the bits of half of
+      // the low table's blocks each.)
+      uint32_t high = CopyChanged((uint32_t *)&g_oam[0x200], (const uint32_t *)(src + 0x200), 2, 0);
+      h->oam_changed |= CopyChanged((uint32_t *)g_oam, (const uint32_t *)src, 32, 0) |
+                        (high & 1) * 0xffffu | (high >> 1 & 1) * 0xffff0000u;
+    } else {
+      uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
+      if (low > count)
+        low = count;
+      CopyBytes(&g_oam[h->oam_addr], src, low);
+      CopyBytes(&g_oam[h->oam_addr + low], src + low, count - low);
+      h->oam_changed = ~0u;
+    }
     h->oam_addr = (h->oam_addr + count) & 0x3ff;
-    h->oam_dirty = true;
   } else if ((c->bbad == 0x22 || c->bbad == 0x04) && (mode == 0 || mode == 2)) {
     PaletteOrOamBytes(c->bbad, src, count);
   } else if (c->bbad == 0x18 && mode == 1 && no_remap && inc_on_high && !(count & 1)) {
