@@ -3,7 +3,9 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifndef G_RAM_IS_CONSTANT
 extern uint8 g_ram[0x20000] RAM_ALIGNED;
+#endif
 extern void RtlApuWrite(uint32 adr, uint8 val);
 extern int snes_frame_counter;
 

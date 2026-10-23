@@ -1697,7 +1697,7 @@ static void DamageSamusInTopRow(void) {  // 0x88A8C4
     samus_periodic_damage = 8;
 }
 
-GBA_IWRAM_CODE void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
+void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
   uint16 i;
   uint16 r24 = 0;
   reg_BG2SC = 74;

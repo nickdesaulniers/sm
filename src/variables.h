@@ -2,7 +2,9 @@
 #define SM_VARIABLES_H_
 #include "types.h"
 
+#ifndef G_RAM_IS_CONSTANT
 extern uint8 g_ram[0x20000] RAM_ALIGNED;
+#endif
 
 #define INT16_SHL8(x) ((int16)(x) << 8)
 #define INT16_SHL16(x) ((int16)(x) << 16)

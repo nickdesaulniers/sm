@@ -80,6 +80,17 @@ add_library(sm_game STATIC
 )
 # The decompiled code is warning-heavy; keep the build log readable.
 target_compile_options(sm_game PRIVATE -w)
+# Unroll loops whose trip count is only known at run time (the game's loops
+# over OAM, PLMs and enemies): a taken branch from the cartridge costs 8
+# cycles, an instruction 2. Not in the file with ARM functions for IWRAM
+# (GBA_IWRAM_CODE), which have no room to grow.
+target_compile_options(sm_game PRIVATE "SHELL:-mllvm -unroll-runtime" "SHELL:-mllvm -unroll-count=4")
+# Lay blocks out by the ext-TSP model, which puts more of a function's
+# likely paths on fall-through than the default placement: a taken branch
+# costs 6 cycles more than falling through.
+target_compile_options(sm_game PRIVATE "SHELL:-mllvm -enable-ext-tsp-block-placement")
+set_source_files_properties(${game_dir}/sm_81.c
+    PROPERTIES COMPILE_OPTIONS "-mllvm;-unroll-runtime=false;-mllvm;-unroll-count=0")
 target_include_directories(sm_game PUBLIC ${game_dir})
 
 add_executable(sm_gba

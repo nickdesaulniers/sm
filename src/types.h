@@ -51,6 +51,15 @@ typedef int64_t int64;
 // with halfword loads on the GBA.
 #if SM_GBA
 #define RAM_ALIGNED __attribute__((aligned(4)))
+// The linker script puts g_ram at the start of EWRAM. Thumb code in the
+// cartridge has it as a constant: clang knows the address is aligned, and
+// builds it from two instructions instead of loading it from the cartridge,
+// which takes 11 cycles. ARM code in IWRAM, where a literal costs nothing
+// but 4 bytes, has the symbol.
+#ifdef __thumb__
+#define g_ram ((uint8 *)0x02000000)
+#define G_RAM_IS_CONSTANT 1
+#endif
 #else
 #define RAM_ALIGNED
 #endif

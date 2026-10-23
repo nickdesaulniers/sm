@@ -10,7 +10,6 @@
 #include "types.h"
 #include "variables.h"
 
-uint8 g_ram[0x20000] RAM_ALIGNED;
 static uint8 sram[0x2000];
 uint8 *g_sram = sram;
 bool g_use_my_apu_code = true;
