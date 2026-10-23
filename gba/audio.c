@@ -380,6 +380,7 @@ static void RunEnvelopes(unsigned n) {
 
 void Audio_Init(void) {
   g_audio_mix.echo_len = 1;
+  Audio_ClearEcho();
   g_audio_dsp[0x6c] = 0xe0;  // as the DSP resets: muted, no echo writes
   SpcPlayer_Initialize(&player);
 
