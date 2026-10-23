@@ -7,6 +7,7 @@
 #include "cart_data.h"
 #include "gba_hw.h"
 #include "sm_rtl.h"
+#include "snes_hw.h"
 #include "types.h"
 #include "variables.h"
 
@@ -130,9 +131,20 @@ GBA_IWRAM_CODE uint16 SnesModulus(uint16 a, uint8 b) {
 // Y: a byte of each four of the OAM's copy, in EWRAM, for up to 128 sprites,
 // and a frame calls it. Unrolled, for the cartridge's prefetch to keep ahead
 // of the stores (which take most of the time): the linker calls this in its
-// place, from the game's other files (--wrap in CMakeLists.txt).
+// place, from the game's other files (--wrap in CMakeLists.txt). It also
+// notes how many sprites a frame of gameplay drew, for the upload of OAM
+// to compare only those (see FastDma in snes_hw.iwram.c): the other states
+// draw by other means, as the cutscenes move the sprites they don't use.
 void __wrap_ClearUnusedOam(void) {
   uint32_t i = oam_next_ptr >> 2;
+  static bool was_gameplay;
+  bool gameplay = game_state == 8;
+  uint32_t used = (i < 0x80 ? i : 0x80) + 1;
+  if (!(gameplay && was_gameplay))
+    g_oam_used = kOamUsedUnknown;
+  else if (g_oam_used < used)
+    g_oam_used = used;
+  was_gameplay = gameplay;
   uint8 *y = &g_ram[0x371 + i * 4];
 #pragma clang loop unroll_count(8)
   for (; i < 0x80; i++, y += 4)
