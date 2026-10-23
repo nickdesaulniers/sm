@@ -19,6 +19,8 @@ uint16_t g_vram[kVramWords];
 uint32_t g_vram_dirty[kVramChunks / 32];
 // The game wrote HDMAEN: HDMA's decoded channels are out of date.
 static bool hdma_dirty IWRAM_BSS;
+// Set when a line found hdma_dirty and decoded the channels again, partway down the screen.
+static bool hdma_redecoded IWRAM_BSS;
 
 static uint32_t wram_port_addr;
 
@@ -588,6 +590,16 @@ static HdmaChannel hdma[8] IWRAM_BSS;
 static int hdma_count IWRAM_BSS, hdma_scrolls IWRAM_BSS, hdma_windows IWRAM_BSS,
     hdma_total IWRAM_BSS;
 
+// What HdmaDecode last decoded them from: HDMAEN, and of each channel on, DMAP, BBAD, A1B and DASB
+// (a word each), and whether it left any out (for a table that ended).
+static uint8_t decoded_hdmaen IWRAM_BSS;
+static bool decoded_all IWRAM_BSS;
+static uint32_t decoded_regs[8];
+
+ROM_CODE static inline uint32_t HdmaRegs(const SnesDmaChannel *c) {
+  return c->dmap | c->bbad << 8 | c->a1b << 16 | (uint32_t)c->dasb << 24;
+}
+
 // A pointer to a bank of the A bus, in which [addr] is the byte at addr: all
 // of a bank of RAM (*ram), or the upper half of a LoROM bank's.
 static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
@@ -609,10 +621,17 @@ static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_
 ROM_CODE static void HdmaDecode(void) {
   hdma_count = 0;
   hdma_dirty = false;
+  decoded_hdmaen = g_snes_hw.hdmaen;
+  decoded_all = true;
   for (int i = 0; i < 8; i++) {
     SnesDmaChannel *c = &g_snes_hw.dma[i];
-    if (!(g_snes_hw.hdmaen & (1 << i)) || c->hdma_terminated)
+    if (!(g_snes_hw.hdmaen & (1 << i)))
       continue;
+    decoded_regs[i] = HdmaRegs(c);
+    if (c->hdma_terminated) {
+      decoded_all = false;
+      continue;
+    }
     HdmaChannel *d = &hdma[hdma_count++];
     uint8_t mode = c->dmap & 7;
     d->c = c;
@@ -694,7 +713,14 @@ ROM_CODE void SnesHw_HdmaInit(void) {
     c->hdma_terminated = false;
     c->hdma_do_transfer = false;
   }
-  HdmaDecode();
+  // As last frame's, as a rule: the game sets its HDMA up once.
+  bool same = decoded_all && g_snes_hw.hdmaen == decoded_hdmaen;
+  for (int i = 0; same && i < 8; i++)
+    same = !(decoded_hdmaen >> i & 1) || HdmaRegs(&g_snes_hw.dma[i]) == decoded_regs[i];
+  if (same)
+    hdma_dirty = false;
+  else
+    HdmaDecode();
   bool empty = false;
   for (int k = 0; k < hdma_total; k++) {
     hdma[k].c->a2a = hdma[k].c->a1t;
@@ -731,8 +757,11 @@ static inline void WriteScroll(uint8_t adr, uint8_t lo, uint8_t hi) {
 }
 
 void SnesHw_HdmaRunLine(void) {
-  if (hdma_dirty)
+  if (hdma_dirty) {
+    hdma_redecoded = true;
     HdmaDecode();
+    decoded_all = false;  // (so the next frame decodes again)
+  }
   bool terminated = false;
   for (int k = 0; k < hdma_count; k++) {
     HdmaChannel *d = &hdma[k];
@@ -780,6 +809,7 @@ void Vector_IRQ(void);
 // on which lines it transfers, and the data's address then. (Norfair's and
 // Maridia's are of a line an entry: going through them a byte at a time,
 // from the cartridge, was most of HDMA's work.)
+enum { kMaxSegs = 4, kUnknownSegs = 0xfe, kTooManySegs = 0xff };
 typedef struct BakedTable {
   uint32_t key;   // bank << 16 | address | bytes per line << 24, or 0
   uint32_t used;  // the frame (g_vblank_count) it was last asked for
@@ -788,9 +818,30 @@ typedef struct BakedTable {
   // starts on: where to go on from when the table slides up a few lines.
   uint16_t last_a;
   int16_t last_v;
+  // The lines (|seg|, nseg of them) from the first it transfers on that the data's address
+  // changes on, or kTooManySegs: the data is the same over each, as far as the next. (Most
+  // tables keep a register at a few values, not a value a line.) Found when BuildPatches asks
+  // (kUnknownSegs until then): the channels it isn't asked of don't need them.
+  uint8_t nseg, seg[kMaxSegs];
   uint16_t das[kSnesLines];  // or kNoTransfer
 } BakedTable;
 enum { kNoTransfer = 0xffff, kNoEnd = 0xffff };
+
+ROM_CODE static void BakedSegments(const BakedTable *table) {
+  BakedTable *b = (BakedTable *)table;
+  int n = 0, a = kNoTransfer;
+  for (int v = 0; v < kSnesLines; v++) {
+    if (b->das[v] == kNoTransfer || b->das[v] == a)
+      continue;
+    a = b->das[v];
+    if (n == kMaxSegs) {
+      n = kTooManySegs;
+      break;
+    }
+    b->seg[n++] = v;
+  }
+  b->nseg = n;
+}
 
 extern volatile uint32_t g_vblank_count;
 
@@ -961,6 +1012,7 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
         b->last_v = v + slide;
       }
     }
+    b->nseg = kUnknownSegs;
     b->key = key;
     b->used = now;
     return b;
@@ -983,6 +1035,7 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
   if (!BakeLines(d->table, c->a1t, 0, d->bytes, 0, kSnesLines - 1, b->das, &b->end, &b->last_a,
                  &b->last_v))
     return NULL;
+  b->nseg = kUnknownSegs;
   b->key = key;
   b->used = now;
   return b;
@@ -1094,164 +1147,512 @@ ROM_CODE static void HdmaWindows(uint32_t *line_windows) {
 #undef WINDOW_READ
 }
 
-// (|written_at|: the |num_written| lines where |written| isn't 0, in
-// order.)
-static void HdmaScrolls(uint32_t (*line_ofs)[4], const uint8_t *written,
-                        const uint8_t *written_at, int num_written) {
-  PpuRegs *r = &g_snes_hw.r;
+// The scrolling and states of the lines (line_ofs, line_state) are kept from frame to frame, and
+// written in pieces: stretches of lines that have the same, as a rule a few (the HUD, and the room
+// below it). A piece is written only where it differs from what the last frame left, so a
+// camera that stands still, or a room that scrolls only some of its backgrounds, costs little.
+// |last_start| is where the last frame's pieces started, |last_pieces| how many (0: not known, as
+// after a frame in which the CPU wrote scroll registers), and |last_varying| the words of line_ofs
+// (bits 0-3: BG1-BG4's) that HdmaScrolls wrote a line at a time, which aren't the same over a piece.
+enum { kMaxPieces = 8, kMaxPatches = 8 };
+static uint8_t last_start[kMaxPieces], last_pieces, last_varying;
+
+// Most of the channels that write only scroll registers hold them at a few values over the frame,
+// not a value a line: the HUD's, in nearly every room, keeps BG3 still above the room's. Those
+// are patches to the pieces' words, from the line each starts on (in order of lines): a register's
+// |half| of line_ofs[line] (BG1's HOFS, VOFS, BG2's...). The rest are HdmaScrolls', a line at a time.
+typedef struct Patch {
+  uint8_t line, half;
+  uint16_t value;
+} Patch;
+static Patch patches[kMaxPatches], lefts[kMaxPatches];
+static uint8_t num_patches, num_lefts;
+// The channels (by number) that are patches, and the words (bits 0-3) that the rest write.
+static uint8_t patched, varying;
+
+// A piece's lines are written by EmitPiece, which goes along the patches (the next, and the values
+// they have given the halves so far, or -1) and the last frame's pieces (the one it's in), and
+// makes the pieces of this frame (|next_start|, as last_start) from the changes in what it writes.
+static uint8_t patch_at, last_at, next_start[kMaxPieces], next_pieces;
+static bool next_over;
+static int16_t patch_values[8];
+static uint32_t next_words[4];
+static int next_state;
+static uint32_t (*piece_ofs)[4];
+static uint8_t *piece_state;
+
+// A channel's lines are written in turn, a word (BG1-BG4's HOFS | VOFS << 16) at a time, or all four.
+static void FillWord(uint32_t (*line_ofs)[4], int from, int to, int word, uint32_t value) {
+  uint32_t *p = &line_ofs[from][word], *end = &line_ofs[to][word];
+  // (Four lines to the loop: each store to EWRAM costs 7 cycles, and the loop around it 4.)
+  for (; end - p >= 16; p += 16) {
+    p[0] = value;
+    p[4] = value;
+    p[8] = value;
+    p[12] = value;
+  }
+  for (; p < end; p += 4)
+    *p = value;
+}
+
+static void FillWords(uint32_t (*line_ofs)[4], int from, int to, const uint32_t *words) {
+  uint32_t w0 = words[0], w1 = words[1], w2 = words[2], w3 = words[3];
+  for (uint32_t *p = line_ofs[from], *end = line_ofs[to]; p < end; p += 4) {
+    p[0] = w0;
+    p[1] = w1;
+    p[2] = w2;
+    p[3] = w3;
+  }
+}
+
+ROM_CODE static void BeginPieces(uint32_t (*line_ofs)[4], uint8_t *line_state) {
+  piece_ofs = line_ofs;
+  piece_state = line_state;
+  patch_at = last_at = next_pieces = 0;
+  next_over = false;
+  next_state = -1;
+  for (int i = 0; i < 8; i++)
+    patch_values[i] = -1;
+}
+
+// Writes lines |a| to |b| (of up to the last), which have |state| and the scrolling |ofs| but for
+// the patches, as far as they differ from the last frame's.
+ROM_CODE static void EmitPiece(int a, int b, int state, const uint32_t *ofs) {
+  while (a < b) {
+    while (patch_at < num_patches && patches[patch_at].line <= a) {
+      patch_values[patches[patch_at].half] = patches[patch_at].value;
+      patch_at++;
+    }
+    int end = b;
+    if (patch_at < num_patches && patches[patch_at].line < end)
+      end = patches[patch_at].line;
+    // Where the last frame's piece it's in ends.
+    while (last_at + 1 < last_pieces && last_start[last_at + 1] <= a)
+      last_at++;
+    bool known = last_pieces != 0;
+    if (known && last_at + 1 < last_pieces && last_start[last_at + 1] < end)
+      end = last_start[last_at + 1];
+    uint32_t words[4];
+    for (int i = 0; i < 4; i++) {
+      words[i] = ofs[i];
+      if (patch_values[2 * i] >= 0)
+        words[i] = (words[i] & 0xffff0000) | patch_values[2 * i];
+      if (patch_values[2 * i + 1] >= 0)
+        words[i] = (words[i] & 0xffff) | (uint32_t)patch_values[2 * i + 1] << 16;
+    }
+    // The words that aren't the same as the last frame's over the piece, which is as they are on
+    // its first line. (Or, written a line at a time, not the same on any.)
+    int changed = 0;
+    for (int i = 0; i < 4; i++) {
+      if (!known || (last_varying >> i & 1) || piece_ofs[a][i] != words[i])
+        changed |= 1 << i;
+    }
+    if (changed == 15) {
+      FillWords(piece_ofs, a, end, words);
+    } else {
+      for (int i = 0; i < 4; i++) {
+        if (changed >> i & 1)
+          FillWord(piece_ofs, a, end, i, words[i]);
+      }
+    }
+    if (!known || piece_state[a] != state)
+      memset(&piece_state[a], state, end - a);
+    // A new piece, if it's not the last one's.
+    if (next_state != state || memcmp(next_words, words, sizeof(words))) {
+      if (next_pieces == kMaxPieces)
+        next_over = true;
+      else
+        next_start[next_pieces++] = a;
+      memcpy(next_words, words, sizeof(words));
+      next_state = state;
+    }
+    a = end;
+  }
+}
+
+// Puts the patch where the lines go on from (it's one of a channel's few values).
+ROM_CODE static void AddPatch(int line, int half, int value) {
+  int i = num_patches++;
+  for (; i > 0 && patches[i - 1].line > line; i--)
+    patches[i] = patches[i - 1];
+  patches[i].line = line;
+  patches[i].half = half;
+  patches[i].value = value;
+}
+
+// A scroll register's halfword of line_ofs[line] (BG1's HOFS: 0, VOFS: 1, BG2's: 2, 3...)
+// for a channel's register |i|, the word it's in (0-3) and its mask in |written|.
+ROM_CODE static int ScrollHalf(const HdmaChannel *d, int i, int *bit) {
+  uint8_t adr = d->regs[d->bytes == 4 ? 2 * i : 0];
+  int reg = adr & 1 ? (adr - 0xd) >> 1 : 4 + ((adr - 0xe) >> 1);
+  *bit = 1 << reg;
+  return (reg & 3) * 2 + (reg >> 2);
+}
+
+// Looks at the channels HdmaScrolls has: which are patches, and what they are.
+ROM_CODE static void BuildPatches(void) {
+  num_patches = num_lefts = patched = varying = 0;
+  bool later = false;
+  // The registers the patches write. A second channel on one of them is a line at a time: the
+  // line path has the later channel's value hold over the first's later lines, which patches
+  // merged by line wouldn't.
+  int taken = 0;
   for (int k = hdma_count; k < hdma_scrolls; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
-    const uint8_t *table = d->table, *data = d->data;
-    bool table_ram = d->table_ram, data_ram = d->data_ram, indirect = d->indirect;
-    uint8_t a1b = c->a1b, dasb = c->dasb, ntrl = c->ntrl;
-    uint16_t a2a = c->a2a, das = c->das;
-    bool transfer = c->hdma_do_transfer, terminated = c->hdma_terminated;
+    int channel = c - g_snes_hw.dma, bit0, bit1 = 0, half0 = ScrollHalf(d, 0, &bit0), half1 = 0;
     bool two = d->bytes == 4;
-    // Its registers (one, or two): their bits in |written|, their halves of
-    // line_ofs, and their values (or -1, before it writes them).
-    uint8_t bit[2], half[2];
-    for (int i = 0; i < 2; i++) {
-      uint8_t adr = d->regs[two ? 2 * i : 0];
-      int reg = adr & 1 ? (adr - 0xd) >> 1 : 4 + ((adr - 0xe) >> 1);
-      bit[i] = 1 << reg;
-      half[i] = (reg & 3) * 2 + (reg >> 2);
-    }
-    uint8_t bit0 = bit[0], bit1 = bit[1], half0 = half[0], half1 = half[1];
-    int value0 = -1, value1 = -1;
+    if (two)
+      half1 = ScrollHalf(d, 1, &bit1);
     const BakedTable *b = Baked(d);
-    if (b) {
-      // From the baked table: the data, on the lines it transfers; in runs
-      // of lines between those where something else wrote the registers.
-      uint8_t mask = bit0 | (two ? bit1 : 0);
-      uint16_t *ofs16 = (uint16_t *)line_ofs;
-      const uint16_t *das_at = b->das;
-      int next = 0;
-      for (int v = 0; v < kSnesLines;) {
-        while (next < num_written &&
-               (written_at[next] < v || !(written[written_at[next]] & mask)))
-          next++;
-        int end = next < num_written ? written_at[next] : kSnesLines;
-        if (data_ram && !two) {
-          for (; v < end; v++) {
-            uint16_t a = das_at[v];
-            if (a != kNoTransfer)
-              value0 = (data[a] | data[(uint16_t)(a + 1)] << 8) & 0x3ff;
-            if (value0 >= 0)
-              ofs16[v * 8 + half0] = value0;
-          }
-        } else if (data_ram) {
-          for (; v < end; v++) {
-            uint16_t a = das_at[v];
-            if (a != kNoTransfer) {
-              value0 = (data[a] | data[(uint16_t)(a + 1)] << 8) & 0x3ff;
-              value1 = (data[(uint16_t)(a + 2)] | data[(uint16_t)(a + 3)] << 8) & 0x3ff;
-            }
-            if (value0 >= 0)
-              ofs16[v * 8 + half0] = value0;
-            if (value1 >= 0)
-              ofs16[v * 8 + half1] = value1;
-          }
-        }
-        // Lines with data elsewhere than RAM, or where something else wrote
-        // a register.
-        for (; v < kSnesLines && (v < end || v == end); v++) {
-          uint16_t a = das_at[v];
-          if (a != kNoTransfer) {
-            value0 = (ReadBank(data, data_ram, dasb, a) |
-                      ReadBank(data, data_ram, dasb, (uint16_t)(a + 1)) << 8) & 0x3ff;
-            if (two)
-              value1 = (ReadBank(data, data_ram, dasb, (uint16_t)(a + 2)) |
-                        ReadBank(data, data_ram, dasb, (uint16_t)(a + 3)) << 8) & 0x3ff;
-          }
-          uint8_t w = written[v];
-          if (w & bit0)
-            value0 = -1;
-          else if (value0 >= 0)
-            ofs16[v * 8 + half0] = value0;
-          if (two) {
-            if (w & bit1)
-              value1 = -1;
-            else if (value1 >= 0)
-              ofs16[v * 8 + half1] = value1;
-          }
-        }
-      }
-      c->hdma_terminated = b->end <= kSnesLines;
+    // (After a channel that isn't, the others are HdmaScrolls' too: its lines come after.)
+    if (b && !later && b->nseg == kUnknownSegs)
+      BakedSegments(b);
+    if (!b || later || (taken & (bit0 | bit1)) || b->nseg > kMaxSegs ||
+        num_patches + b->nseg * (1 + two) > kMaxPatches) {
+      later = true;
+      varying |= 1 << (half0 >> 1);
+      if (two)
+        varying |= 1 << (half1 >> 1);
+      continue;
     }
-    for (int v = 0; v < kSnesLines && !b; v++) {
-      if (!terminated) {
-        if (transfer) {
-          for (int i = 0; i <= two; i++) {
-            uint8_t lo, hi;
-            if (indirect) {
-              if (data_ram || das >= 0x8000) {
-                lo = data[das];
-                hi = data[(uint16_t)(das + 1)];
-              } else {
-                lo = ReadBank(data, data_ram, dasb, das);
-                hi = ReadBank(data, data_ram, dasb, (uint16_t)(das + 1));
-              }
-              das += 2;
-            } else {
-              lo = ReadBank(table, table_ram, a1b, a2a);
-              hi = ReadBank(table, table_ram, a1b, (uint16_t)(a2a + 1));
-              a2a += 2;
-            }
-            if (i)
-              value1 = (hi << 8 | lo) & 0x3ff;
-            else
-              value0 = (hi << 8 | lo) & 0x3ff;
-          }
-        }
-        ntrl--;
-        transfer = ntrl & 0x80;
-        if (!(ntrl & 0x7f)) {
-          // The next entry, as HdmaNextEntry.
-          if (table_ram || (a2a >= 0x8000 && a2a <= 0xfffd)) {
-            const uint8_t *p = table + a2a;
-            ntrl = p[0];
-            if (indirect)
-              das = p[1] | p[2] << 8;
-            a2a += indirect ? 3 : 1;
-          } else {
-            ntrl = ReadBank(table, table_ram, a1b, a2a++);
-            if (indirect) {
-              das = ReadBank(table, table_ram, a1b, a2a++);
-              das |= ReadBank(table, table_ram, a1b, a2a++) << 8;
-            }
-          }
-          terminated = ntrl == 0;
-          transfer = true;
+    taken |= bit0 | bit1;
+    patched |= 1 << channel;
+    c->hdma_terminated = b->end <= kSnesLines;
+    for (int i = 0; i < b->nseg; i++) {
+      int line = b->seg[i], a = b->das[line];
+      for (int j = 0; j <= two; j++) {
+        int x = a + 2 * j;
+        int value = (ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)x) |
+                     ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) & 0x3ff;
+        AddPatch(line, j ? half1 : half0, value);
+        // The last is what HDMA leaves in the registers.
+        if (i == b->nseg - 1) {
+          lefts[num_lefts].half = j ? half1 : half0;
+          lefts[num_lefts++].value = value;
         }
       }
-      uint16_t *line = (uint16_t *)line_ofs[v];
+    }
+  }
+}
+
+// A baked table's data in RAM, a line at a time: the halfword at each line's address, held on
+// those with none, into |out| (a half of a line_ofs line every 8 halfwords). Returns the bits of the
+// addresses ORed, to see whether any was odd (the ARM7TDMI would rotate the halfword). (Their own
+// functions, so the loops keep their constants in registers; and the walk is over pointers.)
+__attribute__((noinline)) static uint32_t ScrollLine1(uint16_t *out, const uint16_t *das,
+                                                      const uint8_t *data, int lines,
+                                                      uint32_t *last) {
+  uint32_t odd = 0, value = *last;
+  const uint16_t *end = das + lines;
+  do {
+    uint32_t a = *das++;
+    if (a != kNoTransfer) {
+      odd |= a;
+      value = *(const uint16_t *)(data + a) & 0x3ff;
+    }
+    *out = value;
+    out += 8;
+  } while (das != end);
+  *last = value;
+  return odd;
+}
+
+// And for two registers, from the halfword at the address and the next. (An address of 0xfffe has
+// the next wrap around the bank: that counts as odd.)
+__attribute__((noinline)) static uint32_t ScrollLine2(uint16_t *out0, uint16_t *out1,
+                                                      const uint16_t *das, const uint8_t *data,
+                                                      int lines, uint32_t *last) {
+  uint32_t odd = 0, value0 = last[0], value1 = last[1];
+  const uint16_t *end = das + lines;
+  do {
+    uint32_t a = *das++;
+    if (a != kNoTransfer) {
+      const uint8_t *p = data + a;
+      odd |= a | (a + 2) >> 16;
+      value0 = *(const uint16_t *)p & 0x3ff;
+      value1 = *(const uint16_t *)(p + 2) & 0x3ff;
+    }
+    *out0 = value0;
+    *out1 = value1;
+    out0 += 8;
+    out1 += 8;
+  } while (das != end);
+  last[0] = value0;
+  last[1] = value1;
+  return odd;
+}
+
+// A channel that isn't patches, with its table baked and its data in RAM, when nothing else
+// wrote the registers: a line at a time, from the first line it transfers on. False if it
+// can't (see ScrollLine1).
+static bool HdmaScrollsBaked(const HdmaChannel *d, uint32_t (*line_ofs)[4]) {
+  const BakedTable *b = Baked(d);
+  if (!b || !d->data_ram)
+    return false;
+  SnesDmaChannel *c = d->c;
+  PpuRegs *r = &g_snes_hw.r;
+  bool two = d->bytes == 4;
+  int bit, half0 = ScrollHalf(d, 0, &bit), half1 = two ? ScrollHalf(d, 1, &bit) : 0;
+  // (No lines to write if it never transfers: nothing is left in the registers either.)
+  int first = 0;
+  while (first < kSnesLines && b->das[first] == kNoTransfer)
+    first++;
+  if (first < kSnesLines) {
+    uint16_t *ofs16 = (uint16_t *)line_ofs;
+    uint32_t value[2] = {0, 0};
+    uint32_t odd;
+    if (two)
+      odd = ScrollLine2(ofs16 + first * 8 + half0, ofs16 + first * 8 + half1, b->das + first,
+                        d->data, kSnesLines - first, value);
+    else
+      odd = ScrollLine1(ofs16 + first * 8 + half0, b->das + first, d->data, kSnesLines - first,
+                        value);
+    if (odd & 1)
+      return false;
+    // As HDMA left the registers, for the next frame.
+    ((half0 & 1) ? r->vofs : r->hofs)[half0 >> 1] = value[0];
+    if (two)
+      ((half1 & 1) ? r->vofs : r->hofs)[half1 >> 1] = value[1];
+  }
+  c->hdma_terminated = b->end <= kSnesLines;
+  return true;
+}
+
+// Lines |v| to |v| + |run| of a channel's registers (|half0|, and |half1| if |two|; |bit0| and
+// |bit1| in |written|), with the values it has (-1: it hasn't written the register, or the CPU
+// has since). The CPU's write of a register ends the value, until the channel transfers another.
+static inline void ScrollRun(uint16_t *ofs16, int v, int run, const uint8_t *written, bool two,
+                             int half0, int half1, int bit0, int bit1, int *value0, int *value1) {
+  int v0 = *value0, v1 = *value1;
+  if (!written) {
+    uint16_t *p = ofs16 + v * 8;
+    if (v0 >= 0) {
+      for (int i = 0; i < run; i++)
+        p[i * 8 + half0] = v0;
+    }
+    if (two && v1 >= 0) {
+      for (int i = 0; i < run; i++)
+        p[i * 8 + half1] = v1;
+    }
+  } else {
+    for (int end = v + run; v < end; v++) {
       uint8_t w = written[v];
       if (w & bit0)
-        value0 = -1;
-      else if (value0 >= 0)
-        line[half0] = value0;
+        v0 = -1;
+      else if (v0 >= 0)
+        ofs16[v * 8 + half0] = v0;
       if (two) {
         if (w & bit1)
-          value1 = -1;
-        else if (value1 >= 0)
-          line[half1] = value1;
+          v1 = -1;
+        else if (v1 >= 0)
+          ofs16[v * 8 + half1] = v1;
       }
-      if (terminated && value0 < 0 && (!two || value1 < 0))
+    }
+  }
+  *value0 = v0;
+  *value1 = v1;
+}
+
+// (|written|: the scroll registers the CPU wrote on each line, or NULL if it wrote none.) A channel
+// that isn't baked (its first frame, or its table in RAM, as Ridley's lava): in ROM. It goes along
+// the table an entry at a time, not a line: the lines of an entry have the same value, but where
+// the channel transfers on every one (an entry that repeats).
+ROM_CODE static void HdmaScrollsUnbaked(HdmaChannel *d, uint32_t (*line_ofs)[4],
+                                        const uint8_t *written) {
+  PpuRegs *r = &g_snes_hw.r;
+  SnesDmaChannel *c = d->c;
+  const uint8_t *table = d->table, *data = d->data;
+  bool table_ram = d->table_ram, data_ram = d->data_ram, indirect = d->indirect;
+  uint8_t a1b = c->a1b, dasb = c->dasb, ntrl = c->ntrl;
+  uint16_t a2a = c->a2a, das = c->das;
+  bool transfer = c->hdma_do_transfer, terminated = c->hdma_terminated;
+  bool two = d->bytes == 4;
+  // Its registers (one, or two): their bits in |written|, their halves of
+  // line_ofs, and their values (or -1, before it writes them).
+  int bit0, bit1 = 0, half0 = ScrollHalf(d, 0, &bit0), half1 = two ? ScrollHalf(d, 1, &bit1) : 0;
+  int value0 = -1, value1 = -1;
+  uint16_t *ofs16 = (uint16_t *)line_ofs;
+  for (int v = 0; v < kSnesLines;) {
+    if (terminated) {
+      // What it left in the registers stays, unless the CPU wrote them.
+      if (value0 < 0 && (!two || value1 < 0))
         break;
+      ScrollRun(ofs16, v, kSnesLines - v, written, two, half0, half1, bit0, bit1, &value0,
+                &value1);
+      break;
     }
-    if (!b) {
-      c->ntrl = ntrl;
-      c->a2a = a2a;
-      c->das = das;
-      c->hdma_do_transfer = transfer;
-      c->hdma_terminated = terminated;
+    // This entry's lines, or as many as are left of the frame.
+    int count = ntrl & 0x7f, lines = count ? count : 128;
+    bool repeat = count && (ntrl & 0x80);
+    int left = lines < kSnesLines - v ? lines : kSnesLines - v;
+    for (int done = 0; done < left;) {
+      if (transfer) {
+        for (int i = 0; i <= two; i++) {
+          uint8_t lo, hi;
+          if (indirect) {
+            if (data_ram || das >= 0x8000) {
+              lo = data[das];
+              hi = data[(uint16_t)(das + 1)];
+            } else {
+              lo = ReadBank(data, data_ram, dasb, das);
+              hi = ReadBank(data, data_ram, dasb, (uint16_t)(das + 1));
+            }
+            das += 2;
+          } else {
+            lo = ReadBank(table, table_ram, a1b, a2a);
+            hi = ReadBank(table, table_ram, a1b, (uint16_t)(a2a + 1));
+            a2a += 2;
+          }
+          if (i)
+            value1 = (hi << 8 | lo) & 0x3ff;
+          else
+            value0 = (hi << 8 | lo) & 0x3ff;
+        }
+      }
+      // The same value to the entry's end, or the next line it transfers on.
+      int run = repeat ? 1 : left - done;
+      ScrollRun(ofs16, v, run, written, two, half0, half1, bit0, bit1, &value0, &value1);
+      v += run;
+      done += run;
+      transfer = repeat;
     }
-    // As HDMA left the registers, for the next frame.
-    if (value0 >= 0)
-      ((half0 & 1) ? r->vofs : r->hofs)[half0 >> 1] = value0;
-    if (two && value1 >= 0)
-      ((half1 & 1) ? r->vofs : r->hofs)[half1 >> 1] = value1;
+    if (left < lines) {
+      ntrl -= left;
+      transfer = ntrl & 0x80;
+      break;
+    }
+    // The next entry, as HdmaNextEntry.
+    if (table_ram || (a2a >= 0x8000 && a2a <= 0xfffd)) {
+      const uint8_t *p = table + a2a;
+      ntrl = p[0];
+      if (indirect)
+        das = p[1] | p[2] << 8;
+      a2a += indirect ? 3 : 1;
+    } else {
+      ntrl = ReadBank(table, table_ram, a1b, a2a++);
+      if (indirect) {
+        das = ReadBank(table, table_ram, a1b, a2a++);
+        das |= ReadBank(table, table_ram, a1b, a2a++) << 8;
+      }
+    }
+    terminated = ntrl == 0;
+    transfer = true;
+  }
+  c->ntrl = ntrl;
+  c->a2a = a2a;
+  c->das = das;
+  c->hdma_do_transfer = transfer;
+  c->hdma_terminated = terminated;
+  // As HDMA left the registers, for the next frame.
+  if (value0 >= 0)
+    ((half0 & 1) ? r->vofs : r->hofs)[half0 >> 1] = value0;
+  if (two && value1 >= 0)
+    ((half1 & 1) ? r->vofs : r->hofs)[half1 >> 1] = value1;
+}
+
+// And a channel with its table baked, which is all but the first frame's: from the baked
+// table, with the lines where the CPU wrote a register left out (|num_written| of them).
+static void HdmaScrollsOne(HdmaChannel *d, uint32_t (*line_ofs)[4], const uint8_t *written,
+                           int num_written) {
+  const BakedTable *b = Baked(d);
+  if (!b) {
+    HdmaScrollsUnbaked(d, line_ofs, num_written ? written : NULL);
+    return;
+  }
+  PpuRegs *r = &g_snes_hw.r;
+  SnesDmaChannel *c = d->c;
+  const uint8_t *data = d->data;
+  bool data_ram = d->data_ram;
+  uint8_t dasb = c->dasb;
+  bool two = d->bytes == 4;
+  int bit0, bit1 = 0, half0 = ScrollHalf(d, 0, &bit0), half1 = two ? ScrollHalf(d, 1, &bit1) : 0;
+  int value0 = -1, value1 = -1;
+  if (b) {
+    // From the baked table: the data, on the lines it transfers; in runs
+    // of lines between those where something else wrote the registers.
+    uint8_t mask = bit0 | (two ? bit1 : 0);
+    uint16_t *ofs16 = (uint16_t *)line_ofs;
+    const uint16_t *das_at = b->das;
+    for (int v = 0; v < kSnesLines;) {
+      int end = kSnesLines;
+      if (num_written) {
+        for (end = v; end < kSnesLines && !(written[end] & mask);)
+          end++;
+      }
+      if (data_ram && !two) {
+        for (; v < end; v++) {
+          uint16_t a = das_at[v];
+          if (a != kNoTransfer)
+            value0 = (data[a] | data[(uint16_t)(a + 1)] << 8) & 0x3ff;
+          if (value0 >= 0)
+            ofs16[v * 8 + half0] = value0;
+        }
+      } else if (data_ram) {
+        for (; v < end; v++) {
+          uint16_t a = das_at[v];
+          if (a != kNoTransfer) {
+            value0 = (data[a] | data[(uint16_t)(a + 1)] << 8) & 0x3ff;
+            value1 = (data[(uint16_t)(a + 2)] | data[(uint16_t)(a + 3)] << 8) & 0x3ff;
+          }
+          if (value0 >= 0)
+            ofs16[v * 8 + half0] = value0;
+          if (value1 >= 0)
+            ofs16[v * 8 + half1] = value1;
+        }
+      }
+      // Lines with data elsewhere than RAM, or where something else wrote
+      // a register.
+      for (; v < kSnesLines && (v < end || v == end); v++) {
+        uint16_t a = das_at[v];
+        if (a != kNoTransfer) {
+          value0 = (ReadBank(data, data_ram, dasb, a) |
+                    ReadBank(data, data_ram, dasb, (uint16_t)(a + 1)) << 8) & 0x3ff;
+          if (two)
+            value1 = (ReadBank(data, data_ram, dasb, (uint16_t)(a + 2)) |
+                      ReadBank(data, data_ram, dasb, (uint16_t)(a + 3)) << 8) & 0x3ff;
+        }
+        uint8_t w = written[v];
+        if (w & bit0)
+          value0 = -1;
+        else if (value0 >= 0)
+          ofs16[v * 8 + half0] = value0;
+        if (two) {
+          if (w & bit1)
+            value1 = -1;
+          else if (value1 >= 0)
+            ofs16[v * 8 + half1] = value1;
+        }
+      }
+    }
+    c->hdma_terminated = b->end <= kSnesLines;
+  }
+  // As HDMA left the registers, for the next frame.
+  if (value0 >= 0)
+    ((half0 & 1) ? r->vofs : r->hofs)[half0 >> 1] = value0;
+  if (two && value1 >= 0)
+    ((half1 & 1) ? r->vofs : r->hofs)[half1 >> 1] = value1;
+}
+
+// The channels that write only scroll registers, for all the frame, on their own, after the
+// others: Norfair's heat and Maridia's water write them on every line, from tables of a line an
+// entry. A channel at a time, its state in registers, as HdmaWindows: from a line it writes a
+// register on, line_ofs has that value for it, until a line where something else (the IRQ, after
+// HDMA on its line) wrote the register (|written|). Not those that are patches, unless |all|
+// (the CPU wrote a register, or the channels aren't those BuildPatches saw).
+static void HdmaScrolls(uint32_t (*line_ofs)[4], const uint8_t *written, int num_written,
+                        bool all) {
+  PpuRegs *r = &g_snes_hw.r;
+  for (int i = 0; !all && i < num_lefts; i++) {
+    const Patch *p = &lefts[i];
+    ((p->half & 1) ? r->vofs : r->hofs)[p->half >> 1] = p->value;
+  }
+  for (int k = hdma_count; k < hdma_scrolls; k++) {
+    HdmaChannel *d = &hdma[k];
+    if (!all && (patched >> (d->c - g_snes_hw.dma) & 1))
+      continue;
+    if (all || num_written || !HdmaScrollsBaked(d, line_ofs))
+      HdmaScrollsOne(d, line_ofs, written, num_written);
   }
 }
 
@@ -1390,15 +1791,23 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
   SnesHw *h = &g_snes_hw;
   SnesHw_HdmaInit();
   HdmaWindows(line_windows);
-  // The scroll registers the CPU wrote on each line, for HdmaScrolls.
-  static uint8_t written[kSnesLines], written_at[kSnesLines];
+  BuildPatches();
+  BeginPieces(line_ofs, line_state);
+  // The scroll registers the CPU wrote on each line, for HdmaScrolls (as a rule it writes none:
+  // the IRQ's registers aren't these). When it does, the rest of the frame's lines are written
+  // one at a time (|all|).
+  static uint8_t written[kSnesLines];
   int num_written = 0;
-  memset(written, 0, sizeof(written));
+  bool all = false;
   int n = 0;
+  hdma_redecoded = false;
   h->regs_dirty = h->scroll_dirty = true;
   h->scroll_written = 0;
   // The scrolling, as line_ofs has it.
   uint32_t ofs[4];
+  // The lines since |piece| that have the same state and scrolling, as one piece.
+  int piece = 0, piece_state = -1;
+  uint32_t piece_ofs[4] = {0, 0, 0, 0};
   // A line shows the registers as HDMA and the IRQ at the end of the line
   // before it left them (as src/snes/snes.c draws a frame).
   for (int v = 0; v < kSnesLines;) {
@@ -1424,20 +1833,50 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
       for (int i = 0; i < 4; i++)
         ofs[i] = h->r.hofs[i] | (uint32_t)h->r.vofs[i] << 16;
     }
-    if (h->scroll_written) {
+    // (Or the channels changed partway down, so they aren't those BuildPatches decided on: from
+    // here every channel is a line at a time, and nothing is kept.)
+    if (h->scroll_written | hdma_redecoded) {
+      hdma_redecoded = false;
       written[v] = h->scroll_written;
-      written_at[num_written++] = v;
+      num_written++;
       h->scroll_written = 0;
+      if (!all && v > piece)
+        EmitPiece(piece, v, piece_state, piece_ofs);
+      all = true;
     }
-    for (int end = v + quiet; v < end; v++) {
-      line_state[v] = n - 1;
-      line_ofs[v][0] = ofs[0];
-      line_ofs[v][1] = ofs[1];
-      line_ofs[v][2] = ofs[2];
-      line_ofs[v][3] = ofs[3];
+    if (all) {
+      for (int end = v + quiet; v < end; v++) {
+        line_state[v] = n - 1;
+        line_ofs[v][0] = ofs[0];
+        line_ofs[v][1] = ofs[1];
+        line_ofs[v][2] = ofs[2];
+        line_ofs[v][3] = ofs[3];
+      }
+      continue;
     }
+    if (n - 1 != piece_state || ofs[0] != piece_ofs[0] || ofs[1] != piece_ofs[1] ||
+        ofs[2] != piece_ofs[2] || ofs[3] != piece_ofs[3]) {
+      if (v > piece)
+        EmitPiece(piece, v, piece_state, piece_ofs);
+      piece = v;
+      piece_state = n - 1;
+      for (int i = 0; i < 4; i++)
+        piece_ofs[i] = ofs[i];
+    }
+    v += quiet;
   }
+  if (!all)
+    EmitPiece(piece, kSnesLines, piece_state, piece_ofs);
   if (hdma_scrolls > hdma_count)
-    HdmaScrolls(line_ofs, written, written_at, num_written);
+    HdmaScrolls(line_ofs, written, num_written, all);
+  if (num_written)
+    memset(written, 0, sizeof(written));
+  if (all || next_over) {
+    last_pieces = last_varying = 0;
+  } else {
+    memcpy(last_start, next_start, sizeof(last_start));
+    last_pieces = next_pieces;
+    last_varying = varying;
+  }
   return n;
 }
