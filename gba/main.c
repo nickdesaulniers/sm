@@ -132,6 +132,12 @@ void gba_main(void) {
     // (Less the sound's, which interrupts them: see Audio_Background.)
     uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();
+    // SoftReset (the file select's B, the game over menu) only sets game_state to
+    // 0xffff: on the SNES the reset vector runs, and the PC build resumes the boot
+    // coroutine after its logo (see RtlRunFrameCompare). Without this the next frame
+    // indexes the state table with -1 and jumps into the weeds.
+    if (game_state == 0xffff)
+      coroutine_state_0 = 3;
 #if SM_TRACE
     {
       uint32_t hash = 0;
