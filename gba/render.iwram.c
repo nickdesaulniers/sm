@@ -1870,20 +1870,30 @@ ROM_CODE static void SetSquashMatrices(void) {
 // its first tile. Its middle goes where the SNES's would be, squashed
 // (sprites below line 224 are partly above the screen).
 // - 8 lines high (mostly text), as it is: squashed, its row 3 would go. But
-//   not when |stacked|, with another above or below it (|stacked|: the
-//   frame around the equipment screen's selection is such pieces: unscaled,
-//   it came out taller than what it frames and cut the item's letters).
+//   |stacked| kScaled, as higher ones (the frame around the equipment
+//   screen's selection: unscaled, it came out taller than what it frames and
+//   cut the item's letters); or kTopHalf or kBottomHalf, the halves of a
+//   16-line letter, unsquashed, about where its middle would go (squashed,
+//   with each half's middle put where it would go, they overlapped by 2
+//   lines: B and S came out as D and 8).
 // - Higher, scaled by a matrix. Not flipped left to right by one, though:
 //   the GBA flips by a scale of -1 about the middle, which takes columns
 //   width..1, not width - 1..0. UpdateTiles puts each tile flipped at 31 -
 //   its column, and those, in reverse order, are the sprite flipped.
+enum { kScaled = 1, kTopHalf, kBottomHalf };
 ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, int shape,
-                                 bool stacked) {
+                                 int stacked) {
   uint8_t attr = e[3];
   int height = kObjHeight[shape], y = e[1] >= kSnesLines ? e[1] - 256 : e[1];
   int middle = (((y + height / 2) * 3) >> 2) - kSquashTop;
   int column = e[2] & 15;
-  if (height == 8 && !stacked) {
+  if (stacked >= kTopHalf) {
+    // Where the 16-line sprite's middle would go: its line 8, or this one's
+    // 0 or 8.
+    int joint = (((stacked == kTopHalf ? y + 8 : y) * 3) >> 2) - kSquashTop;
+    o[0] = ((stacked == kTopHalf ? joint - 8 : joint) & 0xff) | (shape >> 2) << 14;
+    o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
+  } else if (height == 8 && !stacked) {
     o[0] = ((middle - 4) & 0xff) | (shape >> 2) << 14;
     o[1] = ((x - kXOffset) & 0x1ff) | (attr & 0xc0) << 6 | (shape & 3) << 14;
   } else {
@@ -1895,12 +1905,14 @@ ROM_CODE static int SquashSprite(volatile uint16_t *o, const uint8_t *e, int x, 
   return (attr & 1) * 512 + (e[2] >> 4) * 32 + column;
 }
 
-// The 8-line sprites with another 8-line sprite 8 lines above or below at
-// the same x, as bits, set in |stacked|: on the equipment screen (only), the
-// frame around the selection. In one pass, by a table of the sprites' places
-// (|x| | |y| << 9, plus 1; 0 for none), not by comparing each with the others:
-// the pause screens show over a hundred sprites.
-ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t stacked[4]) {
+// The 8-line sprites with another 8-line sprite 8 lines above them at the
+// same x, as bits, set in |above|, and below, in |below|: the halves of the
+// 16-line letters of headings (the planet map's PLANET ZEBES), and on the
+// equipment screen, the frame around the selection. In one pass, by a table
+// of the sprites' places (|x| | |y| << 9, plus 1; 0 for none), not by
+// comparing each with the others: the pause screens show over a hundred.
+ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t above[4],
+                                        uint32_t below[4]) {
   // (Kept a slot short of full, or a search for a place not in it wouldn't
   // end: on the stack, which has room for 512 bytes more, not twice that.)
   enum { kSlots = 128 };
@@ -1934,7 +1946,7 @@ ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t stacked[
       while (places[slot] && places[slot] != near)
         slot = (slot + 1) & (kSlots - 1);
       if (places[slot])
-        stacked[i >> 5] |= 1u << (i & 31);
+        (dy < 0 ? above : below)[i >> 5] |= 1u << (i & 31);
     }
   }
 }
@@ -1943,9 +1955,9 @@ ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t stacked[
 // ROM: it's menus' and the like.
 ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
   const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
-  uint32_t stacked_bits[4] = {0, 0, 0, 0};
-  if (EquipmentScreen())
-    FindStackedSprites(shapes, stacked_bits);
+  uint32_t above[4] = {0, 0, 0, 0}, below[4] = {0, 0, 0, 0};
+  FindStackedSprites(shapes, above, below);
+  bool equipment = EquipmentScreen();
   for (int i = 0; i < 128; i++) {
     if (!(blocks >> (i >> 2) & 1))
       continue;
@@ -1957,7 +1969,11 @@ ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
     }
     volatile uint16_t *o = &GBA_OAM[i * 4];
     int x = e[0] | (hi & 1) << 8, shape = shapes[hi >> 1];
-    bool stacked = stacked_bits[i >> 5] >> (i & 31) & 1;
+    int up = above[i >> 5] >> (i & 31) & 1, down = below[i >> 5] >> (i & 31) & 1;
+    // Scaled, on the equipment screen; elsewhere a letter's halves kept
+    // whole, as the top or bottom of a 16-line sprite.
+    int stacked = equipment ? (up | down ? kScaled : 0)
+                            : up == down ? 0 : down ? kTopHalf : kBottomHalf;
     int tile = SquashSprite(o, e, x, shape, stacked);
     int priority = (e[3] >> 4) & 3;
     o[2] = tile | (bg3_mid ? 3 - priority : (kObjPriorities >> (priority * 2)) & 3) << 10 |
