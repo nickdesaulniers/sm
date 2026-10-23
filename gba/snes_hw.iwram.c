@@ -124,6 +124,31 @@ _Static_assert(offsetof(PpuRegs, bgnba[1]) - offsetof(PpuRegs, bgmode) == 7 &&
 __attribute__((noinline)) static void WriteBBusRest(uint8_t adr, uint8_t val) {
   SnesHw *h = &g_snes_hw;
   PpuRegs *r = &h->r;
+  // (The registers from COLDATA up are a few, far apart: a table of jumps for them would be
+  // as big as all the code for them.)
+  if (adr >= 0x32) {
+    if (adr == 0x32) {
+      if (val & 0x20) r->coldata[0] = val & 0x1f;
+      if (val & 0x40) r->coldata[1] = val & 0x1f;
+      if (val & 0x80) r->coldata[2] = val & 0x1f;
+      h->regs_dirty = true;
+    } else if (adr == 0x33) {
+      r->setini = val;
+      h->regs_dirty = true;
+    } else if (adr - 0x40u < 4) {
+      RtlApuWrite(0x2100 + adr, val);
+    } else if (adr == 0x80) {
+      g_ram[wram_port_addr] = val;
+      wram_port_addr = (wram_port_addr + 1) & 0x1ffff;
+    } else if (adr == 0x81) {
+      wram_port_addr = (wram_port_addr & 0x1ff00) | val;
+    } else if (adr == 0x82) {
+      wram_port_addr = (wram_port_addr & 0x100ff) | (val << 8);
+    } else if (adr == 0x83) {
+      wram_port_addr = (wram_port_addr & 0x0ffff) | ((val & 1) << 16);
+    }
+    return;
+  }
   switch (adr) {
   case 0x00: r->inidisp = val; h->regs_dirty = true; break;
   case 0x01:
@@ -230,23 +255,6 @@ __attribute__((noinline)) static void WriteBBusRest(uint8_t adr, uint8_t val) {
     }
     h->cgram_high = !h->cgram_high;
     break;
-  case 0x32:
-    if (val & 0x20) r->coldata[0] = val & 0x1f;
-    if (val & 0x40) r->coldata[1] = val & 0x1f;
-    if (val & 0x80) r->coldata[2] = val & 0x1f;
-    h->regs_dirty = true;
-    break;
-  case 0x33: r->setini = val; h->regs_dirty = true; break;
-  case 0x40: case 0x41: case 0x42: case 0x43:
-    RtlApuWrite(0x2100 + adr, val);
-    break;
-  case 0x80:
-    g_ram[wram_port_addr] = val;
-    wram_port_addr = (wram_port_addr + 1) & 0x1ffff;
-    break;
-  case 0x81: wram_port_addr = (wram_port_addr & 0x1ff00) | val; break;
-  case 0x82: wram_port_addr = (wram_port_addr & 0x100ff) | (val << 8); break;
-  case 0x83: wram_port_addr = (wram_port_addr & 0x0ffff) | ((val & 1) << 16); break;
   }
 }
 
@@ -504,6 +512,56 @@ ROM_CODE static uint16_t VramBytes(uint16_t p, uint16_t inc, const uint8_t *src,
   return p;
 }
 
+// The rarer ways of FastDma, out of IWRAM (one function, for one thunk): |what| is kCgramBytes
+// for a palette not in whole 16-color blocks of aligned words, kOamBytes for OAM in other than
+// whole uploads, kVramWrap for words to VRAM that wrap around its end or at a stride, or else
+// the palette or OAM a byte at a time, and Mode 7's bytes to one half of each word of VRAM
+// (maps and tiles, say). False for anything else.
+enum { kOtherDma, kCgramBytes, kOamBytes, kVramWrap };
+
+ROM_CODE static bool FastDmaRare(SnesDmaChannel *c, int what, const uint8_t *src,
+                                 uint32_t count) {
+  SnesHw *h = &g_snes_hw;
+  uint8_t mode = c->dmap & 7;
+  if (what == kCgramBytes) {
+    CopyBytes(&g_cgram[h->cgram_ptr], src, count);
+    h->cgram_changed = ~0u;
+  } else if (what == kOamBytes) {
+    oam_prev_blocks = 0;
+    uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
+    if (low > count)
+      low = count;
+    CopyBytes(&g_oam[h->oam_addr], src, low);
+    CopyBytes(&g_oam[h->oam_addr + low], src + low, count - low);
+    h->oam_changed = ~0u;
+  } else if (what == kVramWrap) {
+    uint16_t p = h->vram_ptr, inc = h->vram_inc;
+    if (inc != 1) {
+      h->vram_ptr = VramWordsStrided(p, inc, src, count);
+      return true;
+    }
+    // In up to two pieces, as VRAM wraps around.
+    uint32_t words = count / 2;
+    while (words) {
+      uint32_t n = 0x8000 - (p & 0x7fff);
+      n = n < words ? n : words;
+      UploadVram(p, src, n);
+      src += n * 2;
+      p += n;
+      words -= n;
+    }
+    h->vram_ptr = p;
+  } else if ((c->bbad == 0x22 || c->bbad == 0x04) && (mode == 0 || mode == 2)) {
+    PaletteOrOamBytes(c->bbad, src, count);
+  } else if ((c->bbad == 0x18 || c->bbad == 0x19) && mode == 0 && !(h->vmain & 0x0c) &&
+             !!(h->vmain & 0x80) == (c->bbad == 0x19)) {
+    h->vram_ptr = VramBytes(h->vram_ptr, h->vram_inc, src, count, c->bbad == 0x19);
+  } else {
+    return false;
+  }
+  return true;
+}
+
 // DMA from the A bus to the PPU's memories without going through WriteBBus
 // a byte at a time: palettes, OAM and VRAM, from a span of RAM or ROM, as
 // the game does almost all its DMA. Returns false for anything else.
@@ -524,8 +582,7 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
       h->cgram_changed |= CopyChanged((uint32_t *)&g_cgram[h->cgram_ptr], (const uint32_t *)src,
                                       count >> 4, h->cgram_ptr >> 3);
     } else {
-      CopyBytes(&g_cgram[h->cgram_ptr], src, count);
-      h->cgram_changed = ~0u;
+      FastDmaRare(c, kCgramBytes, src, count);
     }
     h->cgram_ptr += count / 2;
     h->cgram_dirty = true;
@@ -552,39 +609,19 @@ static bool FastDma(SnesDmaChannel *c, uint32_t count) {
       h->oam_changed |= CopyChanged((uint32_t *)g_oam, (const uint32_t *)src, blocks, 0) |
                         (high & 1) * 0xffffu | (high >> 1 & 1) * 0xffff0000u;
     } else {
-      oam_prev_blocks = 0;
-      uint32_t low = h->oam_addr < 0x200 ? 0x200 - h->oam_addr : 0;
-      if (low > count)
-        low = count;
-      CopyBytes(&g_oam[h->oam_addr], src, low);
-      CopyBytes(&g_oam[h->oam_addr + low], src + low, count - low);
-      h->oam_changed = ~0u;
+      FastDmaRare(c, kOamBytes, src, count);
     }
     h->oam_addr = (h->oam_addr + count) & 0x3ff;
-  } else if ((c->bbad == 0x22 || c->bbad == 0x04) && (mode == 0 || mode == 2)) {
-    PaletteOrOamBytes(c->bbad, src, count);
   } else if (c->bbad == 0x18 && mode == 1 && no_remap && inc_on_high && !(count & 1)) {
     uint16_t p = h->vram_ptr, inc = h->vram_inc;
-    if (inc == 1) {
-      // In up to two pieces, as VRAM wraps around.
-      uint32_t words = count / 2;
-      while (words) {
-        uint32_t n = 0x8000 - (p & 0x7fff);
-        n = n < words ? n : words;
-        UploadVram(p, src, n);
-        src += n * 2;
-        p += n;
-        words -= n;
-      }
+    uint32_t words = count / 2;
+    if (inc == 1 && 0x8000 - (p & 0x7fff) >= words) {
+      UploadVram(p, src, words);
+      h->vram_ptr = p + words;
     } else {
-      p = VramWordsStrided(p, inc, src, count);
+      FastDmaRare(c, kVramWrap, src, count);
     }
-    h->vram_ptr = p;
-  } else if ((c->bbad == 0x18 || c->bbad == 0x19) && mode == 0 && no_remap &&
-             inc_on_high == (c->bbad == 0x19)) {
-    // Bytes to one half of each word: Mode 7's maps and tiles, say.
-    h->vram_ptr = VramBytes(h->vram_ptr, h->vram_inc, src, count, c->bbad == 0x19);
-  } else {
+  } else if (!FastDmaRare(c, kOtherDma, src, count)) {
     return false;
   }
   c->a1t += count;
@@ -778,13 +815,26 @@ ROM_CODE static const uint8_t *BankPtr(uint8_t bank, bool *ram) {
   return (const uint8_t *)((uintptr_t)RomFixedPtr(bank << 16 | 0x8000) - 0x8000);
 }
 
-static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_t addr) {
-  if (ram || addr >= 0x8000)
-    return p[addr];
+// The lower half of a bank that isn't RAM: never read in the scenes profiled, so out of IWRAM.
+ROM_CODE static uint8_t ReadBankLow(uint8_t bank, uint16_t addr) {
   // The first 8 KB of RAM, in the lower banks: HDMA tables, often.
   if (addr < 0x2000 && !(bank & 0x40))
     return g_ram[addr];
   return SnesHw_ReadA(bank << 16 | addr);
+}
+
+// (For the code in the cartridge, which can't inline ReadBank from IWRAM.)
+ROM_CODE static inline uint8_t ReadBankRom(const uint8_t *p, bool ram, uint8_t bank,
+                                           uint16_t addr) {
+  if (ram || addr >= 0x8000)
+    return p[addr];
+  return ReadBankLow(bank, addr);
+}
+
+static inline uint8_t ReadBank(const uint8_t *p, bool ram, uint8_t bank, uint16_t addr) {
+  if (ram || addr >= 0x8000)
+    return p[addr];
+  return ReadBankLow(bank, addr);
 }
 
 ROM_CODE static void HdmaDecode(void) {
@@ -847,6 +897,17 @@ ROM_CODE static void HdmaDecode(void) {
     hdma[k] = sorted[k];
 }
 
+// HdmaNextEntry for a table not in RAM or the upper half of a LoROM bank (which none of the
+// scenes profiled has).
+ROM_CODE static void HdmaNextEntrySlow(HdmaChannel *d) {
+  SnesDmaChannel *c = d->c;
+  c->ntrl = ReadBankRom(d->table, d->table_ram, c->a1b, c->a2a++);
+  if (d->indirect) {
+    c->das = ReadBankRom(d->table, d->table_ram, c->a1b, c->a2a++);
+    c->das |= ReadBankRom(d->table, d->table_ram, c->a1b, c->a2a++) << 8;
+  }
+}
+
 // Reads a channel's next table entry: its line count, and the address of
 // its data if indirect.
 static void HdmaNextEntry(HdmaChannel *d) {
@@ -863,11 +924,7 @@ static void HdmaNextEntry(HdmaChannel *d) {
       c->a2a = a + 1;
     }
   } else {
-    c->ntrl = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
-    if (d->indirect) {
-      c->das = ReadBank(d->table, d->table_ram, c->a1b, c->a2a++);
-      c->das |= ReadBank(d->table, d->table_ram, c->a1b, c->a2a++) << 8;
-    }
+    HdmaNextEntrySlow(d);
   }
   c->hdma_terminated = c->ntrl == 0;
   c->hdma_do_transfer = true;
@@ -1247,10 +1304,9 @@ ROM_CODE static void HdmaWindows(uint32_t *line_windows) {
   // A channel at a time, each of its registers' bytes of every line's word
   // (WH0 in the low byte), in turn.
   uint8_t *out = (uint8_t *)line_windows;
-  // (Bytes through the pointers as a rule, as ReadBank has them: it's in
-  // IWRAM, and a call from here, from the cartridge, costs a thunk.)
+  // (Bytes through the pointers as a rule, as ReadBankRom has them.)
 #define WINDOW_READ(p, ram, bank, addr) \
-  ((ram) || (addr) >= 0x8000 ? (p)[addr] : ReadBank(p, ram, bank, addr))
+  ((ram) || (addr) >= 0x8000 ? (p)[addr] : ReadBankLow(bank, addr))
   for (int k = hdma_scrolls; k < hdma_windows; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
@@ -1504,8 +1560,8 @@ ROM_CODE static void BuildPatches(void) {
         // (From RAM or ROM's upper half, a halfword in place, or else ReadBank has to.)
         int value = (d->data_ram || ((uint16_t)x >= 0x8000 && (uint16_t)x != 0xffff)
                          ? d->data[(uint16_t)x] | d->data[(uint16_t)(x + 1)] << 8
-                         : ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)x) |
-                               ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) &
+                         : ReadBankRom(d->data, d->data_ram, c->dasb, (uint16_t)x) |
+                               ReadBankRom(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) &
                     0x3ff;
         AddPatch(line, j ? half1 : half0, value);
         // The last is what HDMA leaves in the registers.
@@ -1677,13 +1733,13 @@ ROM_CODE static void HdmaScrollsUnbaked(HdmaChannel *d, uint32_t (*line_ofs)[4],
               lo = data[das];
               hi = data[(uint16_t)(das + 1)];
             } else {
-              lo = ReadBank(data, data_ram, dasb, das);
-              hi = ReadBank(data, data_ram, dasb, (uint16_t)(das + 1));
+              lo = ReadBankRom(data, data_ram, dasb, das);
+              hi = ReadBankRom(data, data_ram, dasb, (uint16_t)(das + 1));
             }
             das += 2;
           } else {
-            lo = ReadBank(table, table_ram, a1b, a2a);
-            hi = ReadBank(table, table_ram, a1b, (uint16_t)(a2a + 1));
+            lo = ReadBankRom(table, table_ram, a1b, a2a);
+            hi = ReadBankRom(table, table_ram, a1b, (uint16_t)(a2a + 1));
             a2a += 2;
           }
           if (i)
@@ -1712,10 +1768,10 @@ ROM_CODE static void HdmaScrollsUnbaked(HdmaChannel *d, uint32_t (*line_ofs)[4],
         das = p[1] | p[2] << 8;
       a2a += indirect ? 3 : 1;
     } else {
-      ntrl = ReadBank(table, table_ram, a1b, a2a++);
+      ntrl = ReadBankRom(table, table_ram, a1b, a2a++);
       if (indirect) {
-        das = ReadBank(table, table_ram, a1b, a2a++);
-        das |= ReadBank(table, table_ram, a1b, a2a++) << 8;
+        das = ReadBankRom(table, table_ram, a1b, a2a++);
+        das |= ReadBankRom(table, table_ram, a1b, a2a++) << 8;
       }
     }
     terminated = ntrl == 0;
@@ -1788,11 +1844,11 @@ static void HdmaScrollsOne(HdmaChannel *d, uint32_t (*line_ofs)[4], const uint8_
       for (; v < kSnesLines && (v < end || v == end); v++) {
         uint16_t a = das_at[v];
         if (a != kNoTransfer) {
-          value0 = (ReadBank(data, data_ram, dasb, a) |
-                    ReadBank(data, data_ram, dasb, (uint16_t)(a + 1)) << 8) & 0x3ff;
+          value0 = (ReadBankRom(data, data_ram, dasb, a) |
+                    ReadBankRom(data, data_ram, dasb, (uint16_t)(a + 1)) << 8) & 0x3ff;
           if (two)
-            value1 = (ReadBank(data, data_ram, dasb, (uint16_t)(a + 2)) |
-                      ReadBank(data, data_ram, dasb, (uint16_t)(a + 3)) << 8) & 0x3ff;
+            value1 = (ReadBankRom(data, data_ram, dasb, (uint16_t)(a + 2)) |
+                      ReadBankRom(data, data_ram, dasb, (uint16_t)(a + 3)) << 8) & 0x3ff;
         }
         uint8_t w = written[v];
         if (w & bit0)
@@ -1911,8 +1967,8 @@ ROM_CODE void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int
       if (c->hdma_do_transfer) {
         for (int j = 0; j < d->bytes; j++)
           WriteColdata(coldata, d->indirect
-                                    ? ReadBank(d->data, d->data_ram, c->dasb, c->das++)
-                                    : ReadBank(d->table, d->table_ram, c->a1b, c->a2a++));
+                                    ? ReadBankRom(d->data, d->data_ram, c->dasb, c->das++)
+                                    : ReadBankRom(d->table, d->table_ram, c->a1b, c->a2a++));
       }
       c->ntrl--;
       c->hdma_do_transfer = c->ntrl & 0x80;
@@ -1968,6 +2024,56 @@ static bool SameRegs(const PpuRegs *a, const PpuRegs *b) {
   return !((x[11] ^ y[11]) & 0x00ffffff) && !((x[12] ^ y[12]) & 0xff000000);
 }
 
+// SnesHw_RunDisplay from line |v| (of which the first |quiet| are done with HDMA) to the
+// frame's end a line at a time, once the CPU has written scroll registers or HDMA changed:
+// a state per change and a scrolling per line. Returns the number of states, and of lines the
+// CPU wrote scroll registers on (|written|'s) in the high half.
+ROM_CODE static uint32_t RunDisplayAll(PpuRegs *states, int n, uint8_t *line_state,
+                                       uint32_t (*line_ofs)[4], int v, int quiet, uint32_t *ofs,
+                                       uint8_t *written) {
+  SnesHw *h = &g_snes_hw;
+  int num_written = 0;
+  for (;;) {
+    if (h->scroll_written | hdma_redecoded) {
+      hdma_redecoded = false;
+      written[v] = h->scroll_written;
+      num_written++;
+      h->scroll_written = 0;
+    }
+    for (int end = v + quiet; v < end; v++) {
+      line_state[v] = n - 1;
+      line_ofs[v][0] = ofs[0];
+      line_ofs[v][1] = ofs[1];
+      line_ofs[v][2] = ofs[2];
+      line_ofs[v][3] = ofs[3];
+    }
+    if (v >= kSnesLines)
+      break;
+    // The same line by line walk as SnesHw_RunDisplay's.
+    bool irq = (h->nmitimen & 0x30) && h->vtime < kSnesLines;
+    quiet = HdmaQuietLines((irq && h->vtime >= v ? h->vtime : kSnesLines) - v);
+    if (quiet) {
+      HdmaSkipLines(quiet);
+    } else {
+      SnesHw_HdmaRunLine();
+      if (irq && v == h->vtime)
+        Vector_IRQ();
+      quiet = 1;
+    }
+    if (h->regs_dirty) {
+      h->regs_dirty = false;
+      if (!n || !SameRegs(&states[n - 1], &h->r))
+        states[n++] = h->r;
+    }
+    if (h->scroll_dirty) {
+      h->scroll_dirty = false;
+      for (int i = 0; i < 4; i++)
+        ofs[i] = h->r.hofs[i] | (uint32_t)h->r.vofs[i] << 16;
+    }
+  }
+  return n | (uint32_t)num_written << 16;
+}
+
 int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
                       uint32_t (*line_ofs)[4]) {
   SnesHw *h = &g_snes_hw;
@@ -2018,23 +2124,13 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
     // (Or the channels changed partway down, so they aren't those BuildPatches decided on: from
     // here every channel is a line at a time, and nothing is kept.)
     if (h->scroll_written | hdma_redecoded) {
-      hdma_redecoded = false;
-      written[v] = h->scroll_written;
-      num_written++;
-      h->scroll_written = 0;
-      if (!all && v > piece)
+      if (v > piece)
         EmitPiece(piece, v, piece_state, piece_ofs);
       all = true;
-    }
-    if (all) {
-      for (int end = v + quiet; v < end; v++) {
-        line_state[v] = n - 1;
-        line_ofs[v][0] = ofs[0];
-        line_ofs[v][1] = ofs[1];
-        line_ofs[v][2] = ofs[2];
-        line_ofs[v][3] = ofs[3];
-      }
-      continue;
+      uint32_t done = RunDisplayAll(states, n, line_state, line_ofs, v, quiet, ofs, written);
+      n = done & 0xffff;
+      num_written = done >> 16;
+      break;
     }
     if (n - 1 != piece_state || ofs[0] != piece_ofs[0] || ofs[1] != piece_ofs[1] ||
         ofs[2] != piece_ofs[2] || ofs[3] != piece_ofs[3]) {

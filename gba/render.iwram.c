@@ -1681,6 +1681,15 @@ ROM_CODE static void UpdateChunkTilesSquashed(uint32_t c, bool bg12, bool bg3, u
   ChunkTiles(c, true, bg12, bg3, bg12_base, bg3_base);
 }
 
+// Says once per address that BG2's tiles are somewhere other than BG1's.
+ROM_CODE static void WarnBg2Tiles(uint16_t bg2_base, uint16_t bg12_base) {
+  static uint16_t warned_bg2_base = 0xffff;
+  if (warned_bg2_base != bg2_base) {
+    printf("render: BG2 tiles at 0x%x, BG1's at 0x%x (not supported yet)\n", bg2_base, bg12_base);
+    warned_bg2_base = bg2_base;
+  }
+}
+
 static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) {
   SnesHw *h = &g_snes_hw;
   uint16_t bg12_base = (r->bgnba[0] & 0xf) << 12;
@@ -1688,11 +1697,8 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
   uint16_t bg3_base = (r->bgnba[1] & 0xf) << 12;
   uint16_t obj0 = (h->obsel & 7) << 13;
   uint16_t obj1 = (obj0 + ((((h->obsel >> 3) & 3) + 1) << 12)) & 0x7fff;
-  static uint16_t warned_bg2_base = 0xffff;
-  if (bg2_base != bg12_base && (r->tm & 2) && warned_bg2_base != bg2_base) {
-    printf("render: BG2 tiles at 0x%x, BG1's at 0x%x (not supported yet)\n", bg2_base, bg12_base);
-    warned_bg2_base = bg2_base;
-  }
+  if (bg2_base != bg12_base && (r->tm & 2))
+    WarnBg2Tiles(bg2_base, bg12_base);
   if (bg12_base != conv.bg12_base || bg3_base != conv.bg3_base || obj0 != conv.obj_base[0] ||
       obj1 != conv.obj_base[1] || squash != conv.squashed) {
     conv.squashed = squash;

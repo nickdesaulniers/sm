@@ -10,7 +10,7 @@
 AudioVoice g_audio_voices[8] IWRAM_BSS;
 // (Words, for the DMA, as silence's.)
 int8_t g_audio_buffers[2][kAudioBuffers][kAudioFrameSamples] __attribute__((aligned(4)));
-volatile uint8_t g_audio_play IWRAM_BSS, g_audio_queued IWRAM_BSS;
+volatile uint8_t g_audio_play, g_audio_queued;
 
 AudioMix g_audio_mix IWRAM_BSS;
 
@@ -86,11 +86,11 @@ static void Echo(int32_t *wet, int n) {
   echo_pos = pos;
 }
 
-uint16_t g_audio_noise_period IWRAM_BSS;
+uint16_t g_audio_noise_period;
 // The DSP's noise, as src/snes/dsp.c's dsp_handleNoise: a 15-bit LFSR, and
 // the DSP's samples (8.8) since it stepped.
 static int16_t noise IWRAM_DATA = -0x4000;
-static uint32_t noise_time IWRAM_BSS;
+static uint32_t noise_time;
 
 // Adds |n| of the noise's samples, times |vol|, to |sum|; |samples| has them
 // once they're made (|first|: not yet), for the voices after the first with
@@ -151,7 +151,7 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   Audio_OutputEcho(left, right, sums, n, vol);
 }
 
-uint32_t g_audio_underruns IWRAM_BSS;
+uint32_t g_audio_underruns;
 
 ROM_CODE void Audio_VBlank(void) {
   const int8_t *l = silence, *r = silence;
