@@ -960,7 +960,9 @@ typedef struct BakedTable {
 } BakedTable;
 enum { kNoTransfer = 0xffff, kNoEnd = 0xffff };
 
-ROM_CODE static void BakedSegments(const BakedTable *table) {
+// (In IWRAM: a table that slides, as Norfair's lava does, is gone through every few frames, and
+// the cartridge's loop took 40 cycles a line.)
+__attribute__((noinline, minsize)) static void BakedSegments(const BakedTable *table) {
   BakedTable *b = (BakedTable *)table;
   int n = 0, a = kNoTransfer;
   for (int v = 0; v < kSnesLines; v++) {
@@ -1425,11 +1427,9 @@ ROM_CODE static int ScrollHalf(const HdmaChannel *d, int i, int *bit) {
 // Looks at the channels HdmaScrolls has: which are patches, and what they are.
 ROM_CODE static void BuildPatches(void) {
   num_patches = num_lefts = patched = varying = 0;
-  bool later = false;
-  // The registers the patches write. A second channel on one of them is a line at a time: the
-  // line path has the later channel's value hold over the first's later lines, which patches
-  // merged by line wouldn't.
-  int taken = 0;
+  // The registers that channels not patches write: a channel on one of them is a line at a time
+  // too, as the lines come after the patches. (On other registers the order doesn't matter.)
+  int taken_lines = 0;
   for (int k = hdma_count; k < hdma_scrolls; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
@@ -1438,26 +1438,39 @@ ROM_CODE static void BuildPatches(void) {
     if (two)
       half1 = ScrollHalf(d, 1, &bit1);
     const BakedTable *b = Baked(d);
-    // (After a channel that isn't, the others are HdmaScrolls' too: its lines come after.)
-    if (b && !later && b->nseg == kUnknownSegs)
+    if (b && !(taken_lines & (bit0 | bit1)) && b->nseg == kUnknownSegs)
       BakedSegments(b);
-    if (!b || later || (taken & (bit0 | bit1)) || b->nseg > kMaxSegs ||
+    if (!b || (taken_lines & (bit0 | bit1)) || b->nseg > kMaxSegs ||
         num_patches + b->nseg * (1 + two) > kMaxPatches) {
-      later = true;
+      taken_lines |= bit0 | bit1;
       varying |= 1 << (half0 >> 1);
       if (two)
         varying |= 1 << (half1 >> 1);
       continue;
     }
-    taken |= bit0 | bit1;
     patched |= 1 << channel;
     c->hdma_terminated = b->end <= kSnesLines;
+    // From the line it first transfers on, the channel's value holds over an earlier channel's
+    // later patches of the registers (the line path has it so: HUD and room each write BG3's).
+    if (b->nseg) {
+      int n = 0;
+      for (int i = 0; i < num_patches; i++) {
+        Patch *p = &patches[i];
+        if (p->line < b->seg[0] || (p->half != half0 && !(two && p->half == half1)))
+          patches[n++] = *p;
+      }
+      num_patches = n;
+    }
     for (int i = 0; i < b->nseg; i++) {
       int line = b->seg[i], a = b->das[line];
       for (int j = 0; j <= two; j++) {
         int x = a + 2 * j;
-        int value = (ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)x) |
-                     ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) & 0x3ff;
+        // (From RAM or ROM's upper half, a halfword in place, or else ReadBank has to.)
+        int value = (d->data_ram || ((uint16_t)x >= 0x8000 && (uint16_t)x != 0xffff)
+                         ? d->data[(uint16_t)x] | d->data[(uint16_t)(x + 1)] << 8
+                         : ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)x) |
+                               ReadBank(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) &
+                    0x3ff;
         AddPatch(line, j ? half1 : half0, value);
         // The last is what HDMA leaves in the registers.
         if (i == b->nseg - 1) {
@@ -2012,4 +2025,12 @@ int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windo
     last_varying = varying;
   }
   return n;
+}
+
+// (The pieces are lines with the same scrolling, as RunDisplay left them; none if it wrote the
+// lines one at a time.)
+ROM_CODE const uint8_t *SnesHw_OfsRunStarts(int *count, int *words) {
+  *count = last_pieces;
+  *words = last_varying;
+  return last_pieces ? last_start : NULL;
 }

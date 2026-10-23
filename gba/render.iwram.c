@@ -614,6 +614,107 @@ __attribute__((noinline)) static void ScrollStream(uint32_t (*out)[4], int n, in
   }
 }
 
+// |n| lines of one stream line |row|, in stm of 8 registers (two lines).
+__attribute__((noinline)) static void FillLines(uint32_t (*out)[4], int n, const uint32_t *row) {
+  __asm__ volatile(
+      "ldmia %[row], {r4-r7}\n\t"
+      "mov r8, r4\n\t"
+      "mov r9, r5\n\t"
+      "mov r10, r6\n\t"
+      "mov r11, r7\n\t"
+      "subs %[n], %[n], #2\n\t"
+      "bmi 2f\n\t"
+      "1: stmia %[out]!, {r4-r11}\n\t"
+      "subs %[n], %[n], #2\n\t"
+      "bpl 1b\n\t"
+      "2: cmn %[n], #1\n\t"
+      "stmiaeq %[out]!, {r4-r7}"
+      : [out] "+r"(out), [n] "+r"(n)
+      : [row] "r"(row)
+      : "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "cc", "memory");
+}
+
+// And |n| (at least 1) lines whose rows differ in one word only: |row| (its fifth word the ADD
+// to the scrolling) but for that word, which is each line's in |ofs| (the first's, then a row
+// on: 16 bytes) plus ADD. In assembly, like ScrollStream; one for each word (BG3's, BG2's, and
+// BG2's when it is the split BG, which is in the stream twice).
+#define FILL_VARYING(name, T, COPY)                                                            \
+  __attribute__((naked, noinline)) static void name(uint32_t(*out)[4], int n,                 \
+                                                    const uint32_t *ofs, const uint32_t *row) { \
+    __asm__ volatile("push {r4-r7}\n\t"                                                        \
+                     "ldr r12, [r3, #16]\n\t"                                                  \
+                     "ldmia r3, {r4-r7}\n\t"                                                   \
+                     "1: ldr " T ", [r2], #16\n\t"                                             \
+                     "add " T ", " T ", r12\n\t" COPY "stmia r0!, {r4-r7}\n\t"                 \
+                     "subs r1, r1, #1\n\t"                                                     \
+                     "bne 1b\n\t"                                                              \
+                     "pop {r4-r7}\n\t"                                                         \
+                     "bx lr");                                                                 \
+  }
+FILL_VARYING(FillBg3, "r4", "")
+FILL_VARYING(FillBg2, "r7", "")
+FILL_VARYING(FillBg2Split, "r7", "mov r5, r7\n\t")
+#undef FILL_VARYING
+
+// The lines of ScrollStream's, in runs where line_ofs has the one row (see SnesHw_OfsRunStarts),
+// but for one word at most: those are one stream line, filled by FillLines (or FillVarying). The
+// same run is often there already, from the frame before last (this stream's last): then it isn't
+// written again, EWRAM's stores being what they cost. (|fill_runs|, by stream, are the runs as
+// written: first line and lines; |new_runs| this frame's so far.)
+enum { kFillRuns = 8 };
+static uint8_t fill_runs[2][kFillRuns][2], new_runs[kFillRuns][2];
+static uint8_t num_fill_runs[2], num_new_runs, old_run;
+
+ROM_CODE static void ScrollRuns(uint32_t (*out)[4], int n, int s, int g) {
+  int count, varying;
+  const uint8_t *starts = SnesHw_OfsRunStarts(&count, &varying);
+  // (Only BG2's and BG3's, that differ with HDMA in the game.)
+  if (!starts || (varying != 0 && varying != 2 && varying != 4)) {
+    ScrollStream(out, n, s, g);
+    return;
+  }
+  int k = 0;
+  while (k + 1 < count && starts[k + 1] <= s)
+    k++;
+  for (;;) {
+    int next = k + 1 < count ? starts[k + 1] : kSnesLines;
+    int m = next - s < n ? next - s : n;
+    if (m < 3) {
+      ScrollStream(out, m, s, g);
+    } else {
+      const uint32_t *ofs = line_ofs[s];
+      const uint32_t add = kXOffset | (uint32_t)(s + 1 - g) << 16;
+      const uint32_t row[5] = {ofs[2] + add, (split_bg2 ? ofs[1] : ofs[0]) + add, ofs[0] + add,
+                               ofs[1] + add, add};
+      if (varying == 4) {
+        FillBg3(out, m, &ofs[2], row);
+      } else if (varying) {
+        (split_bg2 ? FillBg2Split : FillBg2)(out, m, &ofs[1], row);
+      } else {
+        bool same = false;
+        if (m >= 4 && num_new_runs < kFillRuns) {
+          new_runs[num_new_runs][0] = g;
+          new_runs[num_new_runs++][1] = m;
+          while (old_run < num_fill_runs[back] && fill_runs[back][old_run][0] < g)
+            old_run++;
+          same = old_run < num_fill_runs[back] && fill_runs[back][old_run][0] == g &&
+                 fill_runs[back][old_run][1] == m && out[0][0] == row[0] && out[0][1] == row[1] &&
+                 out[0][2] == row[2] && out[0][3] == row[3];
+        }
+        if (!same)
+          FillLines(out, m, row);
+      }
+    }
+    n -= m;
+    if (!n)
+      return;
+    out += m;
+    s += m;
+    g += m;
+    k++;
+  }
+}
+
 // Whether two lines' registers are the same, but for the scrolling: then
 // so are their GBA registers but for the stream. (Maridia's water and
 // Norfair's heat have different scrolling on every line.)
@@ -1252,6 +1353,7 @@ void Render_CaptureFrame(void) {
   LineRegs l;
   bool windows = false;
   built_regs = NULL;
+  num_new_runs = old_run = 0;
   for (int g = 0, state_end, run = 0; g < kGbaLines; g = state_end, run++) {
     int state = line_state[SnesLine(g)];
     const PpuRegs *r = &line_states[state];
@@ -1275,13 +1377,15 @@ void Render_CaptureFrame(void) {
       else if (frame_mode7)
         Mode7Stream(stream + g, end - g, l.stream, 0, 0);
       else
-        ScrollStream(stream + g, end - g, s, g);
+        ScrollRuns(stream + g, end - g, s, g);
       if (l.ctl.dispcnt & (3 << 13)) {
         LineWindows(g, end, s);
         windows = true;
       }
     }
   }
+  memcpy(fill_runs[back], new_runs, sizeof(new_runs));
+  num_fill_runs[back] = num_new_runs;
   for (int i = 0; i < 4; i++)
     stream[kGbaLines][i] = stream[kGbaLines - 1][i];
   KeepLayersOn(segs, num_segs);

@@ -122,6 +122,11 @@ enum { kSnesLines = 224 };
 // VOFS << 16, as in the GBA's BGnHOFS and BGnVOFS.
 int SnesHw_RunDisplay(PpuRegs *states, uint8_t *line_state, uint32_t *line_windows,
                       uint32_t (*line_ofs)[4]);
+// After it, the lines (ascending, the first 0) that the rows of line_ofs are the same from: |count|
+// of them, or NULL if every line's may differ (the CPU wrote scroll registers, or the lines
+// were written one at a time). Between them the rows differ only in the words (bit n: BGn+1's)
+// of |varying|, which channels write a line at a time.
+const uint8_t *SnesHw_OfsRunStarts(int *count, int *varying);
 // Then, where HDMA changes the fixed color (COLDATA) on its own: the
 // states' is their first line's, but for |color_line|'s, which is that
 // line's (the one the palette shows).
