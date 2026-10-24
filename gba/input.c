@@ -141,12 +141,6 @@ uint16_t Input_ReadJoypad(void) {
   button_config_itemswitch = kSnesSelect;
   button_config_aim_up_R = kSnesR;
   button_config_aim_down_L = kSnesL;
-  // The X-ray scope shines while the run button is held, with it selected:
-  // so, while it's selected, as R holds it, R is the run button. Otherwise
-  // Select picking it would turn it on, and letting go of R wouldn't turn it
-  // off.
-  if (hud_item_index != kItemXray || (keys & kKeyR))
-    joy |= kSnesB;
   if (keys & kKeyB) joy |= kSnesX;
   if (keys & kKeyL) {
     if (keys & kKeyDown)
@@ -159,6 +153,15 @@ uint16_t Input_ReadJoypad(void) {
   if ((pressed & kKeySelect) && (keys & kKeyR) && !InMorphBall() &&
       samus_movement_type != kMovementType_16_Grappling)
     PickNextRItem();
+  // The X-ray scope shines while the run button is held, with it selected:
+  // so it's held, with the scope selected, only while R readies the scope.
+  // Not while the game still has it selected but R readies something else
+  // (Select picked another, or R was let go of): the game switches items
+  // only once the scope is off, and with the run button held it would
+  // shine on, or come back on before the switch.
+  bool xray = (keys & kKeyR) && r_item == kItemXray && !InMorphBall();
+  if (hud_item_index != kItemXray || xray)
+    joy |= kSnesB;
   return joy;
 }
 
