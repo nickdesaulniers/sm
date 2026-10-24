@@ -153,7 +153,10 @@ static uint16_t Glyph(char c) {
 enum { kBg2Map = 0x5800, kColumns = 32 };
 
 // Writes a line of text to a row of BG2's map, centered. (The map's rows 25,
-// 26 and 29 are blank, in view, with the room map showing.)
+// 26 and 29 are blank, in view, with the room map showing; rows 27 and 28
+// hold the game's own buttons, which DrawMap replaces.) Lines on
+// neighboring rows touch, and squashed they ran together, so DrawMap leaves
+// a row between them.
 static void DrawRow(int row, const char *text) {
   uint16_t line[kColumns];
   int len = 0;
@@ -264,10 +267,15 @@ static void DrawMap(void) {
   Text t = {{0}, 0};
   PutStation(&t);
   DrawRow(25, t.s);
+  // The game's buttons here (the map's scrolling, A start, B cancel, with
+  // their icons on two rows) left out Select and L; these say all of them,
+  // a row apart.
   Text l = {{0}, 0};
-  Put(&l, "L  ");
+  Put(&l, "SELECT NEXT   L ");
   Put(&l, loadout ? "ALL ITEMS" : "AS SAVED");
-  DrawRow(26, l.s);
+  DrawRow(27, l.s);
+  DrawRow(28, "");
+  DrawRow(29, "DPAD SCROLL  A SPAWN  B BACK");
 }
 
 static void Apply(void) {

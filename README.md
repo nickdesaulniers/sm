@@ -177,9 +177,11 @@ The map shows every room of the area, as if its map station had been used
 up), and every station, visited or not: the area's save stations and
 elevators, then the **debug stations**, numbered from 16, that no file ever
 had. The one picked is the one the blinking marker is on. Under the map, a
-line names it (or its room's number, in hex, for the unnamed), then the
-loadout. For a boss's door the marker stays at the station that the spawn
-loads, and the line names the boss.
+line names it (or its room's number, in hex, for the unnamed), then a line
+for Select (next) and L (the loadout, as saved or ALL ITEMS), and one for the
+other buttons, each in a row of its own so they stay readable on the GBA's
+squashed screen. For a boss's door the marker stays at the station that the
+spawn loads, and the line names the boss.
 
 <p align="center">
   <img src="docs/images/dev-map.png" width="240" alt="The whole map of an area with a station picked, and the loadout under it">

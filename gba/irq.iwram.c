@@ -63,29 +63,41 @@ ROM_CODE void Display_Start(void) {
 // for a present that ran on past VBlank (see main.c's WaitForVBlank). The
 // lines before showed the last frame's registers, over the new tiles where
 // they changed.
+//
+// The DMA copies the stream's next line at this line's HBlank, so this has
+// to be set up before it: begun in HBlank, or running past the line's end,
+// it would copy that line's registers a line late, and every line from here
+// on would show its neighbor's row of tiles (the rows the squashed menus
+// leave out, as black dashes; the planet map's, with the sprites of every
+// area's label to convert). So it waits out an HBlank, and starts again if
+// the line changed under it.
 ROM_CODE void Display_Resume(void) {
   const DisplayFrame *d = g_display;
-  unsigned line = REG_VCOUNT;
   if (!d)
     return;
-  if (line >= kGbaLines) {
-    Display_Start();
-    return;
-  }
-  REG_DMACNT(0) = 0;
-  // The segment the next line is in: its registers now, and the stream
-  // from that line, at this line's HBlank.
-  int i = 0;
-  while (i + 1 < d->num_segments && d->segments[i + 1].first_line <= line + 1)
-    i++;
-  SetSegment(d, &d->segments[i]);
-  Patch(d, i >= d->patch_segment ? d->patch_color : d->restore_color);
-  int words = d->stream_words;
-  REG_WIN0V = REG_WIN1V = kGbaLines;
-  REG_DMASAD(0) = (uintptr_t)(d->stream + words * (line + 1));
-  REG_DMADAD(0) = d->stream_dest;
-  REG_DMACNT(0) = words | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
-  next_segment = i + 1;
+  unsigned line;
+  do {
+    while (REG_DISPSTAT & 2) {}  // HBlank
+    line = REG_VCOUNT;
+    if (line >= kGbaLines) {
+      Display_Start();
+      return;
+    }
+    REG_DMACNT(0) = 0;
+    // The segment the next line is in: its registers now, and the stream
+    // from that line, at this line's HBlank.
+    int i = 0;
+    while (i + 1 < d->num_segments && d->segments[i + 1].first_line <= line + 1)
+      i++;
+    SetSegment(d, &d->segments[i]);
+    Patch(d, i >= d->patch_segment ? d->patch_color : d->restore_color);
+    int words = d->stream_words;
+    REG_WIN0V = REG_WIN1V = kGbaLines;
+    REG_DMASAD(0) = (uintptr_t)(d->stream + words * (line + 1));
+    REG_DMADAD(0) = d->stream_dest;
+    REG_DMACNT(0) = words | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
+    next_segment = i + 1;
+  } while (REG_VCOUNT != line || (REG_DISPSTAT & 2));
   ScheduleSegment(d);
 }
 
