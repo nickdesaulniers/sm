@@ -970,10 +970,15 @@ static void HdmaNextEntry(HdmaChannel *d) {
   c->hdma_do_transfer = true;
 }
 
+// The times SnesHw_HdmaInit has run: the game doesn't write HDMA tables between that and the
+// frame's end.
+static uint32_t display_runs;
+
 // The fixed color as it was before line 0, for SnesHw_HdmaColdata.
 static uint8_t coldata_before[3];
 
 ROM_CODE void SnesHw_HdmaInit(void) {
+  display_runs++;
   for (int i = 0; i < 8; i++) {
     SnesDmaChannel *c = &g_snes_hw.dma[i];
     c->hdma_terminated = false;
@@ -1199,15 +1204,104 @@ ROM_CODE static BakedTable *LeastUsed(BakedTable *baked, int n, const BakedTable
   return b;
 }
 
-// The channel's table, baked, if it's in ROM and indirect; or NULL.
+// Whether |n| bytes at |b| are |a|'s (aligned to a word): memcmp is in Thumb, and slow.
+ROM_CODE static bool SameBytes(const uint8_t *a, const uint8_t *b, int n) {
+  if ((uintptr_t)b & 3)
+    return !memcmp(a, b, n);
+  const uint32_t *x = (const uint32_t *)a, *y = (const uint32_t *)b;
+  for (; n >= 4; n -= 4) {
+    if (*x++ != *y++)
+      return false;
+  }
+  return !memcmp(x, y, n);
+}
+
+// A scroll table in RAM that the game sets up and leaves be, baked: Phantoon's ripple has its entries
+// (of 32 lines each, with the data's addresses) written once, and the data they point to every
+// frame. It's baked when it's seen the same twice, and no longer when it's not, byte for
+// byte: a copy of the table (up to its end, or the frame's last line) is what it's compared
+// with, once a frame. The ones that change every frame (Ridley's lava) are only copied, every
+// 16th frame, and go the slow way.
+ROM_CODE static const BakedTable *BakedRam(const HdmaChannel *d, BakedTable *baked, int n,
+                                           uint32_t key, uint32_t now) {
+  enum { kSnapshot = 48 };
+  static struct {
+    uint32_t key;
+    int len;
+    uint32_t checked;  // the display_runs the table was last found the same on
+    bool baked;        // (b, below, is of it)
+    uint8_t bytes[kSnapshot] __attribute__((aligned(4)));
+  } snap;
+  BakedTable *b = NULL;
+  const SnesDmaChannel *c = d->c;
+  const uint8_t *p = d->table + c->a1t;
+  if (snap.baked && snap.key == key) {
+    for (int i = 0; i < n; i++) {
+      if (baked[i].key == key)
+        b = &baked[i];
+    }
+    if (b && (snap.checked == display_runs || SameBytes(snap.bytes, p, snap.len))) {
+      snap.checked = display_runs;
+      b->used = now;
+      return b;
+    }
+    snap.baked = false;
+    if (b)
+      b->key = 0;
+    b = NULL;
+  }
+  // (Not baked: a table that changes every frame would cost the copy every one, so it's looked
+  // at every 16th, to see that it's the same as then.)
+  if (now & 15)
+    return NULL;
+  int len = 0, lines = 0, transfers = 0;
+  for (;;) {
+    if (len > kSnapshot - 3 || c->a1t + len > 0xfffd)
+      return NULL;
+    uint8_t ntrl = p[len];
+    len += ntrl ? 3 : 1;
+    if (!ntrl)
+      break;
+    int count = ntrl & 0x7f ? ntrl & 0x7f : 128;
+    lines += count;
+    transfers += ntrl > 0x80 ? count : 1;
+    if (lines > kSnesLines)  // (BakeLines reads one entry past the frame's lines)
+      break;
+  }
+  // (A table of a few long entries is quicker as it is, an entry at a time: Crateria's haze.)
+  if (transfers < kSnesLines / 2)
+    return NULL;
+  if (snap.key != key || snap.len != len || !SameBytes(snap.bytes, p, len)) {
+    memcpy(snap.bytes, p, len);
+    snap.key = key;
+    snap.len = len;
+    return NULL;
+  }
+  b = LeastUsed(baked, n, NULL, now);
+  b->key = 0;
+  if (!BakeLines(d->table, c->a1t, 0, d->bytes, 0, kSnesLines - 1, b->das, &b->end, &b->last_a,
+                 &b->last_v))
+    return NULL;
+  b->nseg = kUnknownSegs;
+  b->key = key;
+  b->used = now;
+  snap.baked = true;
+  snap.checked = display_runs;
+  return b;
+}
+
+// The channel's table, baked, if it's indirect and in ROM (or RAM that stays, see BakedRam); or
+// NULL.
 ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
   enum { kBaked = 6 };  // (Norfair has as many going)
   static BakedTable baked[kBaked];
   const SnesDmaChannel *c = d->c;
-  if (!d->indirect || d->table_ram || c->a1t < 0x8000)
+  if (!d->indirect || c->a1t < 0x8000)
     return NULL;
   uint32_t key = (uint32_t)c->a1b << 16 | c->a1t | (uint32_t)d->bytes << 24;
   uint32_t now = g_vblank_count;
+  if (d->table_ram)
+    return d->scroll ? BakedRam(d, baked, kBaked, key, now) : NULL;
   for (int i = 0; i < kBaked; i++) {
     if (baked[i].key == key) {
       baked[i].used = now;
@@ -1285,14 +1379,20 @@ ROM_CODE static const BakedTable *Baked(const HdmaChannel *d) {
     b->used = now;
     return b;
   }
-  // Baked the second time a table's asked for: some start at another place
-  // every frame (as a door's fade scrolls), and baking them would only
-  // double the work of going through them.
+  // Baked the second time a table's asked for, or when it starts a little from one
+  // that was (a power bomb's blast moves its table by a few entries a frame, and
+  // would never be asked for at the same place; the next frames slide it): some
+  // start at another place every frame (as a door's fade scrolls), and baking
+  // them would only double the work of going through them.
   static uint32_t seen[8];
   static int next_seen;
   bool again = false;
-  for (int i = 0; i < 8; i++)
-    again |= seen[i] == key;
+  for (int i = 0; i < 8; i++) {
+    uint32_t other = seen[i];
+    // (Within 0x300 bytes of it, in the same bank and at the same bytes a line.)
+    if (other && !((other ^ key) >> 16))
+      again |= (other & 0xffff) - (key & 0xffff) + 0x2ff < 0x5ff;
+  }
   if (!again) {
     seen[next_seen] = key;
     next_seen = (next_seen + 1) & 7;
@@ -2089,6 +2189,60 @@ ROM_CODE void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int
     memcpy(g_snes_hw.r.coldata, coldata, 3);  // as HDMA left it, for the next frame
     return;
   }
+  // The tables in ROM give the same colors every frame the channels start as they did: the
+  // lines the color changes on, remembered (a door room's, of the Bomb Torizo's: two channels
+  // of 2 and 1 bytes a line, which the loop below takes 53k cycles a frame to run).
+  enum { kKeyWords = 17, kChanges = 16 };
+  static uint32_t cached_key[kKeyWords];
+  static uint32_t cached_change[kChanges];  // line << 24 | color
+  static int cached_changes = -1;           // (-1: none)
+  static uint8_t cached_terminated;         // the channels', a bit each
+  uint32_t key[kKeyWords] = {0};
+  bool rom = hdma_total - hdma_windows < 5;
+  for (int k = hdma_windows; k < hdma_total && rom; k++) {
+    const HdmaChannel *d = &hdma[k];
+    const SnesDmaChannel *c = d->c;
+    int i = 4 * (k - hdma_windows);
+    key[i] = c->a1b | c->a2a << 8 | c->ntrl << 24;
+    key[i + 1] = c->das | c->dasb << 16 | d->bytes << 24 | d->indirect << 28 |
+                 c->hdma_terminated << 29 | c->hdma_do_transfer << 30;
+    // (Past the lower half of the bank, where ReadBankRom goes to other places than ROM.)
+    rom = !d->table_ram && !d->data_ram && c->a2a >= 0x8000 && (!d->indirect || c->das >= 0x8000);
+  }
+  key[16] = coldata[0] | coldata[1] << 8 | coldata[2] << 16;
+  if (rom && cached_changes >= 0 && !memcmp(key, cached_key, sizeof(key))) {
+    // A state's color is the one its first line (or color_line) ends with. Its lines are
+    // together, so a word of four of the previous state's is skipped.
+    uint32_t color = key[16];
+    int next = 0, prev = -1;
+    bool aligned = !((uintptr_t)line_state & 3);
+    for (int v = 0; v < kSnesLines;) {
+      uint32_t distance = color_line - v;
+      if (aligned && prev >= 0 && distance >= 4 && v + 4 <= kSnesLines &&
+          *(const uint32_t *)(line_state + v) == (uint32_t)prev * 0x01010101u) {
+        v += 4;
+        continue;
+      }
+      int s = line_state[v];
+      if (s != prev || v == color_line) {
+        while (next < cached_changes && (cached_change[next] >> 24) <= (uint32_t)v)
+          color = cached_change[next++] & 0xffffff;
+        uint8_t *o = states[s].coldata;
+        o[0] = color, o[1] = color >> 8, o[2] = color >> 16;
+      }
+      prev = s;
+      v++;
+    }
+    if (cached_changes)
+      color = cached_change[cached_changes - 1] & 0xffffff;
+    coldata[0] = color, coldata[1] = color >> 8, coldata[2] = color >> 16;
+    for (int k = hdma_windows; k < hdma_total; k++)
+      hdma[k].c->hdma_terminated = cached_terminated >> (k - hdma_windows) & 1;
+    memcpy(g_snes_hw.r.coldata, coldata, 3);
+    return;
+  }
+  int changes = rom ? 0 : -1;
+  uint32_t last = key[16];
   int prev = -1;
   for (int v = 0; v < kSnesLines; v++) {
     for (int k = hdma_windows; k < hdma_total; k++) {
@@ -2107,6 +2261,16 @@ ROM_CODE void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int
       if (!(c->ntrl & 0x7f))
         HdmaNextEntry(d);
     }
+    if (changes >= 0) {
+      uint32_t color = coldata[0] | coldata[1] << 8 | coldata[2] << 16;
+      if (color != last) {
+        last = color;
+        if (changes == kChanges)
+          changes = -1;
+        else
+          cached_change[changes++] = (uint32_t)v << 24 | color;
+      }
+    }
     int s = line_state[v];
     if (s != prev || v == color_line) {
       PpuRegs *r = &states[s];
@@ -2114,6 +2278,13 @@ ROM_CODE void SnesHw_HdmaColdata(PpuRegs *states, const uint8_t *line_state, int
     }
     prev = s;
   }
+  if (changes >= 0) {
+    memcpy(cached_key, key, sizeof(key));
+    cached_terminated = 0;
+    for (int k = hdma_windows; k < hdma_total; k++)
+      cached_terminated |= hdma[k].c->hdma_terminated << (k - hdma_windows);
+  }
+  cached_changes = changes;
   memcpy(g_snes_hw.r.coldata, coldata, 3);  // as HDMA left it, for the next frame
 }
 
