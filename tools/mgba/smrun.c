@@ -39,6 +39,13 @@
 // With STOP_ON=TEXT, it stops (a few frames after the shot a line may ask
 // for) at the first log line containing TEXT, before FRAMES.
 //
+// With FORK=ADDR:V1,V2,... (ADDR in hex, the Vs in decimal) as well, once
+// SHOT_ON has saved its first picture it keeps the machine's whole state,
+// and runs on from it once for each V, with V written as a 32-bit word at
+// ADDR first, each run until its next picture: so each is independent of
+// the others (and of which of them ran before), as a tour of the rooms that
+// goes through them one after another isn't (see tools/room-tour.sh).
+//
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
 //
 // With SAVE=FILE.sav, the cartridge's SRAM starts as that file's (which is
@@ -50,6 +57,7 @@
 #include <mgba/core/core.h>
 #include <mgba/core/blip_buf.h>
 #include <mgba/core/log.h>
+#include <mgba/core/serialize.h>
 #include <mgba/core/timing.h>
 #include <mgba/internal/arm/arm.h>
 #include <mgba-util/vfs.h>
@@ -104,6 +112,34 @@ static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level
             sscanf(shot + strlen(shot_text), " %63s", shot_label);
         }
     }
+}
+
+// FORK's: the state kept, the address and values, how many have run, and the
+// frame the run began (it is given up after kForkMaxFrames).
+enum {
+    kForkMaxValues = 4096,
+    kForkMaxFrames = 6000,
+    kForkSaveFlags = SAVESTATE_SAVEDATA | SAVESTATE_RTC
+};
+static struct VFile* fork_state;
+static uint32_t fork_addr, fork_values[kForkMaxValues];
+static int fork_n, fork_next, fork_run_from;
+
+// Runs from the kept state with the next value, or says there is none.
+static bool fork_run(struct mCore* core, int frame) {
+    if (fork_next >= fork_n)
+        return false;
+    fork_state->seek(fork_state, 0, SEEK_SET);
+    if (!mCoreLoadStateNamed(core, fork_state, kForkSaveFlags)) {
+        fprintf(stderr, "can't load the saved state\n");
+        exit(1);
+    }
+    core->rawWrite32(core, fork_addr, -1, fork_values[fork_next]);
+    shot_frame = 0;
+    fork_run_from = frame;
+    printf("[%d] fork: %u\n", frame, (unsigned) fork_values[fork_next++]);
+    fflush(stdout);
+    return true;
 }
 
 struct Keys {
@@ -373,6 +409,16 @@ int main(int argc, char** argv) {
         pcs_cycles = calloc((pcs_hi - pcs_lo) / 2 + 1, sizeof *pcs_cycles);
         pcs_count = calloc((pcs_hi - pcs_lo) / 2 + 1, sizeof *pcs_count);
     }
+    if (getenv("FORK")) {
+        const char* spec = getenv("FORK");
+        fork_addr = strtoul(spec, NULL, 16);
+        const char* colon = strchr(spec, ':');
+        for (const char* p = colon ? colon + 1 : ""; *p && fork_n < kForkMaxValues;) {
+            fork_values[fork_n++] = strtoul(p, NULL, 10);
+            const char* comma = strchr(p, ',');
+            p = comma ? comma + 1 : p + strlen(p);
+        }
+    }
     int frames = atoi(argv[2]);
     const char* shots = argc > 3 ? argv[3] : "";
     const char* prefix = argc > 4 ? argv[4] : "shot";
@@ -414,6 +460,20 @@ int main(int argc, char** argv) {
             dump_memory(core, path);
             snprintf(path, sizeof path, "%s%s.png", prefix, shot_label);
             write_png(path, pixels, width, height, width);
+            if (fork_n) {
+                // (The first picture keeps the state: it is where the runs begin.)
+                if (!fork_state) {
+                    fork_state = VFileMemChunk(NULL, 0);
+                    mCoreSaveStateNamed(core, fork_state, kForkSaveFlags);
+                }
+                if (!fork_run(core, i))
+                    break;
+            }
+        }
+        if (fork_run_from && i - fork_run_from > kForkMaxFrames) {
+            printf("[%d] fork: no picture in %d frames\n", i, kForkMaxFrames);
+            if (!fork_run(core, i))
+                break;
         }
         if (stop_frame == i)
             break;

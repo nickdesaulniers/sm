@@ -316,6 +316,22 @@ against ground truth headlessly. Build these tools early.
   get to the interesting state in seconds. `-DSM_TOUR_ONLY=0x...,0x...`
   tours only some rooms, `-DSM_TOUR_SETTLE` stays longer in each (bosses
   need seconds to wake), and `-DSM_TOUR_FIRST` starts elsewhere (Ceres).
+- **A tour that shards:** the tour goes from room to room, so where Samus
+  stands in a room, where the camera is, the frame and random counters, the
+  scroll registers all come from the rooms before it: a room's picture and
+  its cost depend on them, and no room can be run without going through all
+  that precede it (a shard that starts in the middle gets other pictures
+  for nearly every room, however many rooms it warms up with). For
+  parallel runs, `smrun`'s `FORK=ADDR:V1,V2,...` keeps the machine's whole
+  state when the first `SHOT_ON` picture is saved (the landing site), and
+  runs on from it once per value, with the value written at `ADDR` first
+  (the tour's `tour_next`, from `llvm-nm`: the room it goes to next), each
+  until its next picture. Each room is then entered from the landing site's
+  state, whichever process runs it: pictures and cycle counts are the same
+  with 1 shard or 10 (to the cycle), and with the rooms in any order. Its
+  pictures are not the chained tour's (245 of 252 differ, Samus's place
+  among them, though d2aa and d646 still have her outside the room), so a
+  baseline for it is made by it.
 - **Sanitizers on the PC build:** ASan and UBSan on the PC build and
   `hostrun` find the game's out-of-bounds indexing before it bites the GBA.
 
