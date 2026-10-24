@@ -49,15 +49,16 @@ typedef struct Scenario {
   // are the debug stations); or, with |boss| from 1, the area's boss door
   // of that number (dev_tools.c's, in the map's order).
   uint8_t area, station, boss;
-  const char *preset;  // dev_tools.c's names
-  uint8_t beams;       // dev_tools.c's: 0 as the preset's, or 1 + 12 * charge + set
+  // The loadout is ALL ITEMS; with these beams (the game's bits) instead, if
+  // not -1.
+  int16_t beams;
   const char *script;
 } Scenario;
 
-// The beam sets (wave 1, ice 2, spazer 4, plasma 8), as dev_tools.c's number
-// them, without the charge beam and with.
-#define BEAMS(n) (1 + (n))
-#define CHARGED(n) (13 + (n))
+// The beam sets (wave 1, ice 2, spazer 4, plasma 8) in the game's bits,
+// without the charge beam (0x1000) and with.
+#define BEAMS(n) (n)
+#define CHARGED(n) (0x1000 + (n))
 
 // ---- The weapons, in the room east of the landing site (Crateria's debug
 // station 17, 94FD): Samus stands on a ledge, 90 pixels from a door that she
@@ -72,8 +73,8 @@ typedef struct Scenario {
   "B*130 @ -*1 -*5 @ -*8 @ -*30 @"
 
 #define BEAM(n, name) \
-  {"beam-" name, kRoom, "ALL ITEMS", BEAMS(n), kBeamScript}, \
-  {"beam-" name "-charge", kRoom, "ALL ITEMS", CHARGED(n), kBeamScript}
+  {"beam-" name, kRoom, BEAMS(n), kBeamScript}, \
+  {"beam-" name "-charge", kRoom, CHARGED(n), kBeamScript}
 
 // Samus faces the door; R readies missiles (then, with Select, the next of
 // supers, the grapple beam and the X-ray scope).
@@ -93,7 +94,7 @@ typedef struct Scenario {
 #define kBossScript \
   "-*30 @ (" kFight " -*70 @)x3 " kSelectSupers "(" kFight " -*70 @)x3"
 
-#define BOSS(name, area, n) {"boss-" name, area, 0, n, "ALL ITEMS", 0, kBossScript}
+#define BOSS(name, area, n) {"boss-" name, area, 0, n, -1, kBossScript}
 
 // The lava (or acid) first at Samus's feet and then rising past her, from a
 // station of a room that has it.
@@ -112,28 +113,28 @@ static const Scenario kScenarios[] = {
   BEAM(9, "plasma-wave"),
   BEAM(10, "plasma-ice"),
   BEAM(11, "plasma-ice-wave"),
-  {"missile", kRoom, "ALL ITEMS", BEAMS(0),
+  {"missile", kRoom, BEAMS(0),
    kFace "R*10 @ R+B*2 -*5 @ -*10 @ (R+B*2 -*25)x3 @ -*40 @"},
-  {"super", kRoom, "ALL ITEMS", BEAMS(0),
+  {"super", kRoom, BEAMS(0),
    kFace kSelectSupers "R*10 @ R+B*2 -*5 @ -*10 @ (R+B*2 -*25)x3 @ -*40 @"},
-  {"bomb", kRoom, "ALL ITEMS", BEAMS(0),
+  {"bomb", kRoom, BEAMS(0),
    kFace kMorph "@ B*2 -*30 @ -*8 @ -*8 @ (B*2 -*12)x3 -*20 @ -*10 @ -*60 @"},
-  {"power-bomb", kRoom, "ALL ITEMS", BEAMS(0),
+  {"power-bomb", kRoom, BEAMS(0),
    kFace kMorph "R*10 @ R+B*2 -*10 @ -*20 @ -*30 @ -*40 @ -*60 @"},
-  {"xray", kRoom, "ALL ITEMS", BEAMS(0),
+  {"xray", kRoom, BEAMS(0),
    kFace kSelectXray "R*30 @ R*60 @ -*30 @"},
-  {"grapple", 4, 17, 0, "ALL ITEMS", BEAMS(0),
+  {"grapple", 4, 17, 0, BEAMS(0),
    "-*20 >136,140 -*200 LEFT*4 -*60 @ " kSelectGrapple "R+UP+B*20 @ R+UP+B*40 @ R+UP+B*40 @ -*30 @"},
-  {"screw-attack", kRoom, "ALL ITEMS", BEAMS(0),
+  {"screw-attack", kRoom, BEAMS(0),
    kFace "A+LEFT*30 @ A*30 @ A*30 @ -*60 @"},
-  {"space-jump", kRoom, "ALL ITEMS", BEAMS(0),
+  {"space-jump", kRoom, BEAMS(0),
    kFace "A+LEFT*30 -*4 (A*4 -*6)x12 @ A+RIGHT*30 @ -*60 @"},
   // Running right from the Wrecked Ship's debug station 16 (CA08), on 60
   // blocks of flat floor: the speed booster builds up in about 3 seconds.
   // Then a shinespark: crouch at speed, jump, aim.
-  {"speed-booster", 3, 16, 0, "ALL ITEMS", BEAMS(0),
+  {"speed-booster", 3, 16, 0, BEAMS(0),
    "-*30 @ RIGHT*60 @ RIGHT*60 @ RIGHT*60 @ RIGHT*60 @ RIGHT*40 @ -*30 @"},
-  {"shinespark", 3, 16, 0, "ALL ITEMS", BEAMS(0),
+  {"shinespark", 3, 16, 0, BEAMS(0),
    "-*30 RIGHT*140 @ DOWN*4 -*20 @ A*4 -*4 RIGHT*3 -*10 @ -*20 @ -*20 @ -*40 @ -*60 @"},
   // ---- Norfair's lava and acid, in the rooms of its debug stations.
   {"lava-aab5", 2, 0, 0, "ALL ITEMS", 0, kLavaScript},
@@ -156,7 +157,7 @@ static const Scenario kScenarios[] = {
   BOSS("draygon", 4, 2),
   BOSS("mother-brain", 5, 1),
   // The Golden Torizo's room, at its left door (Norfair's debug station 22).
-  {"boss-golden-torizo", 2, 22, 0, "ALL ITEMS", 0, kBossScript},
+  {"boss-golden-torizo", 2, 22, 0, -1, kBossScript},
 };
 enum { kScenarioCount = sizeof(kScenarios) / sizeof(kScenarios[0]) };
 
@@ -266,7 +267,7 @@ static uint16_t Menus(void) {
       // The area's map: the station, the loadout and the beams.
       if (!s->boss)
         load_station_index = s->station;
-      Dev_Pick(s->preset, s->beams, s->boss);
+      Dev_Pick(s->beams, s->boss);
       if (phase_frames % 12 >= 4 || phase_frames < 30)
         return 0;
       spawned = true;

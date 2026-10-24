@@ -13,19 +13,23 @@
 // (Input_ReadJoypad2). This file adds the rest:
 //   - turning it on: hold L and R and press Start on the title screen or the
 //     file select (Dev_TryEnable). Until reset.
-//   - every station selectable, whether the file has visited it or not: the
-//     map's used bits are all set while it's on show, and put back after.
+//   - every station selectable, and every room of the map to see, whether the
+//     file has visited them or not: the map's used bits and the map stations'
+//     bytes (what shows an area's whole map) are all set while it's on show,
+//     and put back after.
 //   - the bosses' rooms, which the debug stations are next to, not in (but for
 //     the Golden Torizo's): after an area's last station, Select steps on to
 //     them (Warp), and the spawn goes through the room's door when the station
 //     it loaded has Samus ready.
-//   - a loadout, picked with L (what Samus has: Preset) and R (which beams:
-//     Beams) on the room map, drawn on its BG2 tilemap, in the map's own font;
-//     it's applied as the spawn loads.
+//   - a loadout, toggled with L on the room map: what the file has, or ALL
+//     ITEMS (Samus with everything the game lets her have at once). Drawn on
+//     the map's BG2 tilemap, in the map's own font; applied as the spawn
+//     loads.
 //   - in gameplay, hold L + R + Select and press A (invincibility, the game's
 //     debug_invincibility), B (refill), Left (freeze enemies, the game's
 //     debug_time_frozen_for_enemies) or Up (die: the game over's "yes" goes
 //     back to the map, to spawn again).
+//   - the SNES debug pad off (Dev_Frame says why).
 //   - the game's own Start + Select + L + R soft reset (ReadJoypadInputs
 //     checks it with enable_debug set) works in menus too.
 // A loadout spawn doesn't save: SaveToSram would write it over the player's
@@ -34,7 +38,7 @@
 // Not here, and why: the debug scroll save/load, the Draygon puppet and the
 // demo recorder's pause and hide (they read the controller 2 in code nothing
 // calls, or in a mode nothing enters), and the Golden Torizo room's X+Y+A+B
-// cheat (it gives its loadout, a preset here: "DEV TORIZO").
+// cheat (it gives its loadout, nearly ALL ITEMS).
 #include "dev_tools.h"
 
 #include <stdio.h>
@@ -55,37 +59,17 @@ enum {
   kMenuRoomMap = 10,
 };
 
-// What Samus has, as the game keeps it. Items: varia 1, spring ball 2, morph
-// ball 4, screw attack 8, gravity suit 0x20, hi-jump 0x100, space jump 0x200,
-// bombs 0x1000, speed booster 0x2000, grapple 0x4000, x-ray 0x8000. Beams:
-// wave 1, ice 2, spazer 4, plasma 8, charge 0x1000.
-typedef struct Preset {
-  const char *name;
-  uint16_t health, reserve, missiles, supers, bombs, items, collected, equipped;
-} Preset;
-
-// The first is the file as it is. None has spazer and plasma both equipped:
-// the game's pickups and equipment screen never allow it (a plasma beam takes
-// the spazer off).
-static const Preset kPresets[] = {
-  {"AS SAVED", 0, 0, 0, 0, 0, 0, 0, 0},
-  {"ALL ITEMS", 1499, 400, 230, 50, 50, 0xf32f, 0x100f, 0x100b},
-  {"NEW GAME", 99, 0, 0, 0, 0, 0, 0, 0},
-  {"EARLY", 299, 0, 20, 0, 0, 0x1004, 0x1000, 0x1000},
-  {"MID", 799, 100, 100, 20, 10, 0xb107, 0x1003, 0x1003},
-  {"LATE", 1199, 300, 150, 30, 20, 0xf32f, 0x1007, 0x1007},
-  // What the Golden Torizo room gives with its cheat (sm_aa.c). The cheat
-  // equips all four beams; with both spazer and plasma on no shots showed
-  // (tried on the GBA), so, as the game's pickups do, plasma takes it off.
-  {"DEV TORIZO", 700, 300, 100, 20, 20, 0xf337, 0x100f, 0x100b},
+// What ALL ITEMS gives Samus, as the game keeps it. Items: varia 1, spring
+// ball 2, morph ball 4, screw attack 8, gravity suit 0x20, hi-jump 0x100,
+// space jump 0x200, bombs 0x1000, speed booster 0x2000, grapple 0x4000, x-ray
+// 0x8000. Beams: wave 1, ice 2, spazer 4, plasma 8, charge 0x1000. Not both
+// spazer and plasma equipped: the game's pickups and equipment screen never
+// allow it (a plasma beam takes the spazer off), and with both on no shots
+// showed (tried on the GBA).
+enum {
+  kAllHealth = 1499, kAllReserve = 400, kAllMissiles = 230, kAllSupers = 50, kAllBombs = 50,
+  kAllItems = 0xf32f, kAllBeamsCollected = 0x100f, kAllBeamsEquipped = 0x100b,
 };
-enum { kPresetCount = sizeof(kPresets) / sizeof(kPresets[0]) };
-
-// Beams: 0 leaves the preset's, then every set the game allows without and
-// with the charge beam, n = 1 + 12 * charge + bits: of wave 1, ice 2, spazer 4
-// and plasma 8, those below 12, which are all but the ones with both spazer
-// and plasma.
-enum { kBeamCount = 25 };
 
 // The boss rooms, which the stations are not in (the debug ones are in the
 // rooms next to them): the map steps on to these, after an area's last
@@ -116,7 +100,8 @@ enum { kWarpCount = sizeof(kWarps) / sizeof(kWarps[0]) };
 // with Samus held outside a room (the room tour does), the game reads past
 // the end of g_ram, into what follows it, and where things are changes what
 // it finds.
-static uint8_t preset EWRAM_BSS, beams EWRAM_BSS;
+// Whether the loadout is ALL ITEMS, not what the file has.
+static bool loadout EWRAM_BSS;
 // On the room map, which of the area's warps is picked, from 1, or 0 for the
 // station; and the door of the one a spawn goes on through.
 static uint8_t warp EWRAM_BSS;
@@ -124,9 +109,13 @@ static uint16_t picked_door EWRAM_BSS, pending_door EWRAM_BSS;
 // Whether Select is the map's this frame (not taken for the warps).
 static bool select_free EWRAM_BSS;
 static bool save_blocked EWRAM_BSS;
-// The map's used station bits (8 save stations, 8 elevators, by area) as the
-// file has them, while the map shows them all.
-static uint8_t used_backup[16] EWRAM_BSS;
+#if SM_SCENARIOS
+// The beams a scenario has, in the game's bits (-1: the loadout's).
+static int16_t scn_beams EWRAM_BSS;
+#endif
+// The map's used station bits (8 save stations, 8 elevators, by area) and the
+// map stations' bytes (by area) as the file has them, while the map shows all.
+static uint8_t used_backup[16] EWRAM_BSS, map_backup[8] EWRAM_BSS;
 static bool used_set EWRAM_BSS;
 static uint16_t prev_state EWRAM_BSS;
 static bool drawn EWRAM_BSS;
@@ -138,7 +127,8 @@ void Dev_TryEnable(void) {
     return;
   enable_debug = 1;
   // As if for the first time: a reset may have come with the map up.
-  preset = beams = warp = 0;
+  loadout = false;
+  warp = 0;
   picked_door = pending_door = 0;
   save_blocked = used_set = drawn = false;
   prev_state = 0;
@@ -276,33 +266,8 @@ static void DrawMap(void) {
   DrawRow(25, t.s);
   Text l = {{0}, 0};
   Put(&l, "L  ");
-  Put(&l, kPresets[preset].name);
+  Put(&l, loadout ? "ALL ITEMS" : "AS SAVED");
   DrawRow(26, l.s);
-  Text b = {{0}, 0};
-  Put(&b, "R  ");
-  if (!beams) {
-    Put(&b, "BEAMS AS PRESET");
-  } else {
-    int n = beams - 1;
-    bool charge = n >= 12;
-    if (charge)
-      n -= 12;
-    uint8_t set = n;
-    if (!set && !charge)
-      Put(&b, "POWER BEAM ONLY");
-    if (charge)
-      Put(&b, "CHARGE ");
-    if (set & 2)
-      Put(&b, "ICE ");
-    if (set & 1)
-      Put(&b, "WAVE ");
-    if (set & 4)
-      Put(&b, "SPAZER ");
-    if (set & 8)
-      Put(&b, "PLASMA ");
-    // (A trailing space is a blank.)
-  }
-  DrawRow(29, b.s);
 }
 
 static void Apply(void) {
@@ -310,31 +275,25 @@ static void Apply(void) {
   // past the end of its RAM: 22 is the same room, with Samus in it.
   if (area_index == 2 && load_station_index == 21)
     load_station_index = 22;
-  const Preset *p = &kPresets[preset];
-  if (preset) {
+  if (loadout) {
     // Every boss alive again, to fight: the file may have killed them.
     memset(boss_bits_for_area, 0, 8);
-    samus_max_health = samus_health = p->health;
-    samus_max_reserve_health = samus_reserve_health = p->reserve;
-    reserve_health_mode = p->reserve ? 1 : 0;
-    samus_max_missiles = samus_missiles = p->missiles;
-    samus_max_super_missiles = samus_super_missiles = p->supers;
-    samus_max_power_bombs = samus_power_bombs = p->bombs;
-    collected_items = equipped_items = p->items;
-    collected_beams = p->collected;
-    equipped_beams = p->equipped;
+    samus_max_health = samus_health = kAllHealth;
+    samus_max_reserve_health = samus_reserve_health = kAllReserve;
+    reserve_health_mode = 1;
+    samus_max_missiles = samus_missiles = kAllMissiles;
+    samus_max_super_missiles = samus_super_missiles = kAllSupers;
+    samus_max_power_bombs = samus_power_bombs = kAllBombs;
+    collected_items = equipped_items = kAllItems;
+    collected_beams = kAllBeamsCollected;
+    equipped_beams = kAllBeamsEquipped;
   }
-  if (beams) {
-    int n = beams - 1;
-    uint16_t set = 0;
-    if (n >= 12) {
-      set = 0x1000;
-      n -= 12;
-    }
-    set |= n;
-    collected_beams = equipped_beams = set;
-  }
-  save_blocked = preset || beams;
+#if SM_SCENARIOS
+  // (The scenarios' beams, which no button picks.)
+  if (scn_beams >= 0)
+    collected_beams = equipped_beams = scn_beams;
+#endif
+  save_blocked = loadout;
   pending_door = picked_door;
   picked_door = 0;
 }
@@ -349,23 +308,39 @@ static void Refill(void) {
 
 bool Dev_Frame(uint16_t keys, uint16_t pressed) {
   uint16_t state = game_state;
-  // The map shows every station: the file's used bits all set while it's up.
+  // The map shows every station and every room: the file's used bits and map
+  // stations' bytes all set while it's up.
   if (state == kGameStateMap) {
     if (!used_set) {
       memcpy(used_backup, used_save_stations_and_elevators, sizeof(used_backup));
       memset(used_save_stations_and_elevators, 0xff, sizeof(used_backup));
+      memcpy(map_backup, map_station_byte_array, sizeof(map_backup));
+      memset(map_station_byte_array, 0xff, sizeof(map_backup));
       used_set = true;
     }
   } else if (used_set) {
     memcpy(used_save_stations_and_elevators, used_backup, sizeof(used_backup));
+    memcpy(map_station_byte_array, map_backup, sizeof(map_backup));
+    // (The room map's load took it from the bytes, for the pause screen's
+    // map and the save: the file's.)
+    has_area_map = map_station_byte_array[area_index];
     used_set = false;
   }
+  // The SNES's debug pad (ReadJoypadInputs: Select with L or R, and a
+  // third button) is off: it swallows those buttons, and its A toggles the
+  // IRQ (a jump through whatever handler a menu left), its B swaps Samus's
+  // missiles away and keeps them out of the file's reach. Select and R go
+  // together on the GBA: the map's Select step, R's item.
+  joypad_dbg_flags |= 0x4000;
+  // The planet map shows the areas by this index (the game's, past the six
+  // when Samus's room, or a new file's start, is in Ceres): none of them
+  // lit, if it's one of those.
+  if (state == kGameStateMap && menu_index < kMenuRoomMap && area_index > 5)
+    area_index = 0;
   select_free = true;
   if (state == kGameStateMap && menu_index == kMenuRoomMap) {
-    if ((pressed & kKeyL) && ++preset == kPresetCount)
-      preset = 0;
-    if ((pressed & kKeyR) && ++beams == kBeamCount)
-      beams = 0;
+    if (pressed & kKeyL)
+      loadout = !loadout;
     if (pressed & kKeySelect) {
       // The warps come after the area's last station, and then it starts
       // over: the game's step would have gone to its first.
@@ -381,7 +356,7 @@ bool Dev_Frame(uint16_t keys, uint16_t pressed) {
       }
     }
     static uint32_t shown EWRAM_BSS;
-    uint32_t now = preset | beams << 4 | load_station_index << 9 | area_index << 14 | warp << 17;
+    uint32_t now = loadout | load_station_index << 9 | area_index << 14 | warp << 17;
     if (!drawn || now != shown) {
       DrawMap();
       shown = now;
@@ -460,11 +435,9 @@ bool Dev_SelectFree(void) {
 }
 
 #if SM_SCENARIOS
-void Dev_Pick(const char *name, int n, int w) {
-  for (int i = 0; i < kPresetCount; i++)
-    if (!strcmp(kPresets[i].name, name))
-      preset = i;
-  beams = n;
+void Dev_Pick(int beams, int w) {
+  loadout = true;
+  scn_beams = beams;
   warp = w;
   // (The warps' spawn is at the area's last station.)
   if (w)

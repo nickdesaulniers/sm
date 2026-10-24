@@ -281,10 +281,14 @@ the demo recorder's pause (`HandleDemoRecorder_1`) are never called.
 The port reaches what it can with glue in `gba/` and no change to `src/`
 beyond one guard (`SaveToSram`): a button combination sets `enable_debug`
 (`gba/dev_tools.c`), the GBA's Select reads as controller 2's in the map
-(`ReadReg`'s JOY2L), and a loadout picker draws its text into the map's own
-tilemap. Two things to know. The map hides stations a file hasn't used, and
-a new file has none, so the glue sets the used bits while the map shows and
-puts them back. And its font: the game draws its menus' text in tiles (here
+(`ReadReg`'s JOY2L), and a loadout toggle draws its text into the map's own
+tilemap. Three things to know. The map hides stations a file hasn't used, and
+a new file has none, and the room map hides the rooms of an area without its
+map station, so the glue sets the used bits and the map stations' bytes while
+the map shows and puts them back (and `has_area_map`, which the room map's
+load took from them). The SNES's debug pad (`ReadJoypadInputs`: Select with L
+or R, then A toggles the IRQ, B swaps the missiles away) would be reached by
+the GBA's buttons, so `joypad_dbg_flags` has its off bit set. And its font: the game draws its menus' text in tiles (here
 the map's letters are tiles $30 to $49), so text for a screen is a tilemap
 write, with no font of the port's own, and it has to survive the squash
 (`kSquashLine`): the game's own 8x8 letters do.
@@ -366,7 +370,7 @@ the test's, not the port's.
 
 `gba/scenarios.c` (built only with `-DSM_SCENARIOS=ON`, so the cartridge is
 byte for byte the same without it) spawns Samus through the developer tools
-(`dev_tools.c`: a load station or a boss's door, a loadout, a beam set), then
+(`dev_tools.c`: a load station or a boss's door, with ALL ITEMS and, for the weapons, a beam set of the scenario's own), then
 feeds the GBA's buttons by a script, a word per run of frames
 (`B*2 -*10`, `R+B*3`, `( ... )xN`, `@` for a shot). The buttons go in where
 `input.c` reads the GBA's, so the real mapping is what's tested (R and Select

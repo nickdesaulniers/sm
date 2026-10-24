@@ -148,7 +148,8 @@ The cartridge can start Samus anywhere, with any loadout, to test a room, a
 fight or a weapon without playing up to it. It's the developers' own debug
 mode: the game keeps a switch (`enable_debug`) that makes the load-game map
 list every load station, the developers' spawn points among them. The
-cartridge's buttons turn it on, and add a loadout and the bosses' doors.
+cartridge's buttons turn it on, and add a loadout, the whole map and the
+bosses' doors.
 
 **Turning it on.** On the title screen or the file select, hold L and R and
 press Start. A sound tells you, and it lasts until the console is reset
@@ -163,15 +164,19 @@ there too (to play the intro instead, hold L from Start until the screen fades).
 |-------------|-------------------------------------------------------------------------|
 | Planet Zebes | Up and Left, Down and Right or Select: another area. A or Start: that area |
 | Area map    | Select: the next station; after an area's last, its bosses; then the first again. D-pad: scroll the map. A or Start: spawn. B: back to the areas |
-|             | L: the next loadout. R: the next beams                                  |
+|             | L: Samus as saved, or with ALL ITEMS                                    |
 
-Every station is there, visited or not: the area's save stations and
+The map shows every room of the area, as if its map station had been used
+(your file keeps what it had explored: the map is only dressed up while it's
+up), and every station, visited or not: the area's save stations and
 elevators, then the **debug stations**, numbered from 16, that no file ever
-had. Under the map, a line names the one picked (or its room's number, in
-hex, for the unnamed), then the loadout and the beams.
+had. The one picked is the one the blinking marker is on. Under the map, a
+line names it (or its room's number, in hex, for the unnamed), then the
+loadout. For a boss's door the marker stays at the station that the spawn
+loads, and the line names the boss.
 
 <p align="center">
-  <img src="docs/images/dev-map.png" width="240" alt="The map with a debug station, the loadout and the beams under it">
+  <img src="docs/images/dev-map.png" width="240" alt="The whole map of an area with a station picked, and the loadout under it">
   <img src="docs/images/dev-crocomire.png" width="240" alt="Crocomire, spawned into with all items">
   <img src="docs/images/dev-draygon.png" width="240" alt="Draygon's room, spawned into with all items">
 </p>
@@ -211,34 +216,24 @@ controls, goes through the door as if she had walked into it. (Crocomire's is
 the hatch in the ceiling of his room, as in the game. As there, beams don't
 hurt him: missiles in his mouth push him back.)
 
-**Loadouts.** L picks what Samus has; every one but the first makes every boss
-alive again, so that a file that has beaten them can fight them:
-
-| Name       | Energy | Reserve | Missiles | Super | Power bombs | Items                                | Beams                |
-|------------|-------:|--------:|---------:|------:|------------:|--------------------------------------|----------------------|
-| AS SAVED   | the file's | | | | | | |
-| ALL ITEMS  | 1499   | 400     | 230      | 50    | 50          | all                                  | charge, ice, wave, plasma (spazer collected) |
-| NEW GAME   | 99     | 0       | 0        | 0     | 0           | none                                 | power beam           |
-| EARLY      | 299    | 0       | 20       | 0     | 0           | morph ball, bombs                    | charge               |
-| MID        | 799    | 100     | 100      | 20    | 10          | varia, spring ball, morph ball, hi-jump, bombs, speed booster, x-ray | charge, ice, wave |
-| LATE       | 1199   | 300     | 150      | 30    | 20          | all                                  | charge, ice, wave, spazer |
-| DEV TORIZO | 700    | 300     | 100      | 20    | 20          | all but the screw attack             | charge, ice, wave, plasma (spazer collected) |
-
-R picks the beams instead, from the ones the game allows (never spazer and
-plasma together, as when it gives you a beam or in its equipment screen:
-plasma takes the spazer off), with and without the charge beam: from the power
-beam alone to charge, ice, wave and plasma. DEV TORIZO is what the developers'
-cheat in the Golden Torizo's room gives (A, B, X and Y together, as it loads).
-The cheat has all four beams on, spazer and plasma too, and with both no shots
-showed in testing, so this takes the spazer off.
+**Loadout.** L toggles between AS SAVED (what your file has) and ALL ITEMS:
+1499 energy, 400 reserve, 230 missiles, 50 super missiles and 50 power bombs,
+every item, and the charge, ice, wave and plasma beams (the spazer collected,
+but plasma takes it off, as when the game gives you a beam or in its equipment
+screen: with both on, no shots showed in testing). ALL ITEMS makes every boss
+alive again, so that a file that has beaten them can fight them.
 
 A spawn with a loadout can't save: it would write the loadout over your file,
-so saving does nothing until you spawn again with AS SAVED, or reset. Dying
+so saving does nothing until you spawn again AS SAVED, or reset. Dying
 goes back to the map, to spawn again.
 
 **In the game.** Hold L, R and Select, and press: A to turn invincibility on
 or off, B to refill energy and ammunition, Left to freeze the enemies or let
 them go, Up to die (and so to go back to the map).
+
+The SNES debug pad's own shortcuts (Select held with L or R, then A, B or
+X: they would turn on an interrupt that menus have no handler for, or take
+Samus's missiles away) are off.
 
 These are the game's own debug features that the buttons reach (there's more
 in the code: a Draygon that a second controller moves, a scroll position

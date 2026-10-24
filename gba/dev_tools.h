@@ -19,10 +19,10 @@ bool Dev_SaveBlocked(void);
 bool Dev_SelectFree(void);
 
 #if SM_SCENARIOS
-// For scenarios.c, on the room map: the loadout (a name from the list of
-// presets), the beams, and the area's boss door |warp|, from 1, or 0 for a
-// station: the way the buttons pick them.
-void Dev_Pick(const char *preset, int beams, int warp);
+// For scenarios.c, on the room map: the ALL ITEMS loadout, with these beams
+// (the game's bits, -1 to keep ALL ITEMS's), and the area's boss door |warp|,
+// from 1, or 0 for a station: the way the buttons pick them.
+void Dev_Pick(int beams, int warp);
 // Whether a spawn still has to go through its boss's door.
 bool Dev_SpawnPending(void);
 #endif
