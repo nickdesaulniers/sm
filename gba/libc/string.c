@@ -62,15 +62,6 @@ NO_BUILTIN int memcmp(const void *a, const void *b, size_t n) {
   return 0;
 }
 
-NO_BUILTIN void *memchr(const void *s, int c, size_t n) {
-  const unsigned char *p = s;
-  for (; n; --n, ++p) {
-    if (*p == (unsigned char)c)
-      return (void *)p;
-  }
-  return NULL;
-}
-
 NO_BUILTIN size_t strlen(const char *s) {
   const char *p = s;
   while (*p)

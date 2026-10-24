@@ -17,9 +17,6 @@ enum {
   kMgbaLogSend = 0x100,
 };
 
-FILE *const stdout = (FILE *)1;
-FILE *const stderr = (FILE *)2;
-
 static char line_buf[kMgbaLogMax];
 static size_t line_len;
 static int log_state;  // 0: not tried, 1: mGBA is listening, -1: it isn't
@@ -194,22 +191,6 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap) {
   return (int)o.len;
 }
 
-int snprintf(char *buf, size_t size, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int n = vsnprintf(buf, size, fmt, ap);
-  va_end(ap);
-  return n;
-}
-
-int sprintf(char *buf, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int n = vsnprintf(buf, SIZE_MAX, fmt, ap);
-  va_end(ap);
-  return n;
-}
-
 int vprintf(const char *fmt, va_list ap) {
   char buf[kMgbaLogMax];
   int n = vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -219,15 +200,6 @@ int vprintf(const char *fmt, va_list ap) {
 }
 
 int printf(const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int n = vprintf(fmt, ap);
-  va_end(ap);
-  return n;
-}
-
-int fprintf(FILE *f, const char *fmt, ...) {
-  (void)f;
   va_list ap;
   va_start(ap, fmt);
   int n = vprintf(fmt, ap);

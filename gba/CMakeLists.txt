@@ -3,7 +3,7 @@
 # The C library functions the compiler and the game expect (see libc/).
 add_library(gba_libc STATIC
     libc/stdio.c
-    libc/stdlib.c
+    libc/assert.c
     libc/string.c
     libc/memops.S
 )

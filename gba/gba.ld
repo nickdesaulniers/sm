@@ -34,7 +34,11 @@ SECTIONS {
         /* ROM_CODE (gba_hw.h): from *.iwram.c files, but not hot. */
         *(.romtext .romtext.*)
     } > rom
-    .rodata : { *(.rodata .rodata.*) } > rom
+    .rodata : {
+        /* Read by mGBA and flash carts for the save type: nothing refers to it. */
+        KEEP(*(.rodata.save_type))
+        *(.rodata .rodata.*)
+    } > rom
 
     .iwram : ALIGN(4) {
         __iwram_start = .;
@@ -75,8 +79,6 @@ SECTIONS {
     } > ewram AT> rom
     __data_lma = LOADADDR(.data);
 
-    __heap_start = .;
-    __heap_end = ORIGIN(ewram) + LENGTH(ewram);
 
     /* The end of the engine's image, padded to a multiple of 256 bytes:
        tools/make_cartridge.py appends the game's data, the SNES ROM among

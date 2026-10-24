@@ -14,8 +14,6 @@
 static uint8 sram[0x2000];
 uint8 *g_sram = sram;
 bool g_use_my_apu_code = true;
-bool g_debug_flag;
-int snes_frame_counter;
 
 // No game data appended to the cartridge (see cart_data.h): there's nothing
 // to run. A red screen, and why in mGBA's log.

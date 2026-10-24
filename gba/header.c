@@ -36,5 +36,5 @@ const GbaHeader header = {
 
 // mGBA picks the cartridge's save type from a string like this one: the
 // game's 8 KB of battery-backed SNES SRAM lives in the GBA's SRAM.
-__attribute__((used, aligned(4)))
+__attribute__((section(".rodata.save_type"), aligned(4)))
 const char save_type[] = "SRAM_V113";

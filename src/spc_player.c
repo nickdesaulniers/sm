@@ -1550,15 +1550,15 @@ static void Sfx3_Init(SpcPlayer *p) {
   Sfx_Init(p, &p->sfx3, p->sfx_chans_3, 2);
 }
 
+#if !SM_GBA  // (The GBA's player is static: gba/audio.c.)
 SpcPlayer *SpcPlayer_Create(void) {
   SpcPlayer *p = (SpcPlayer *)malloc(sizeof(SpcPlayer));
   memset(p, 0, sizeof(SpcPlayer));
-#if !SM_GBA
   p->dsp = dsp_init(p->ram);
-#endif
   p->reg_write_history = 0;
   return p;
 }
+#endif
 
 void SpcPlayer_Initialize(SpcPlayer *p) {
   Vector_Reset_Spc(p);

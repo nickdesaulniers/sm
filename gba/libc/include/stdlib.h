@@ -1,12 +1,6 @@
-// Minimal C library for the GBA. Implemented in ../stdlib.c.
+// Minimal C library for the GBA: nothing the cartridge calls, but the game's
+// files include it. (No allocator: everything is static.)
 #pragma once
 
 #include <stddef.h>
 
-// A bump allocator over the end of EWRAM: free() does nothing.
-void *malloc(size_t size);
-void *calloc(size_t count, size_t size);
-void free(void *p);
-_Noreturn void abort(void);
-_Noreturn void exit(int status);
-int abs(int x);
