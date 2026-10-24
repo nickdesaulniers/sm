@@ -34,25 +34,29 @@ own copy of the SNES ROM.
 
 ## Building the cartridge
 
-You need clang and lld (it's built with LLVM 22), CMake, Python 3 and git.
-There's no devkitARM or GCC. On Debian or Ubuntu:
+You need your own copy of the Super Metroid ROM: the Japan/USA release,
+"Super Metroid (Japan, USA) (En,Ja)", sha1
+`da957f0d63d14cb441d215462904c4fa8519c613`, named `sm.smc`. (A 512-byte copier
+header at its start is fine: it is dropped.) The cartridge contains the ROM, so
+it can't be shared.
+
+You also need clang and lld (it's built with LLVM 22), CMake, Python 3 and
+git. There's no devkitARM or GCC. On Debian or Ubuntu:
 
 ```
 sudo apt install clang lld llvm cmake python3 git
 ```
 
-Then:
+(Other systems, and Windows: [docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).)
 
-1. Clone this repository and check out the `gba-port` branch:
+1. Clone this repository's `gba-port` branch:
 
    ```
-   git clone -b gba-port https://github.com/<you>/sm.git
+   git clone -b gba-port <this repository's URL> sm
    cd sm
    ```
 
-2. Put your Super Metroid ROM in that directory and name it `sm.smc`. It must
-   be the US release without a copier header (sha1
-   `da957f0d63d14cb441d215462904c4fa8519c613`).
+2. Copy your ROM into that directory as `sm.smc`.
 
 3. Build:
 
@@ -60,21 +64,28 @@ Then:
    ./build-gba.sh
    ```
 
-   The first build also fetches LLVM's compiler-rt sources, a few MB, for the
-   division routines the ARM7TDMI lacks. It then compiles the game and
-   prepares the ROM's data for the GBA: the graphics are converted as the game
-   loads them, and the sound samples are decoded ahead of time.
+   The first build fetches LLVM's compiler-rt sources (about 30 MB) for the
+   division routines the ARM7TDMI lacks, then compiles the game and prepares
+   the ROM's data for the GBA: the graphics are converted as the game loads
+   them, and the sound samples are decoded ahead of time. It takes about a
+   minute. The script checks the ROM first, and says what is wrong if it
+   isn't the right one.
 
-4. The cartridge is `sm.gba`, in the same directory. Run it in
+4. The cartridge is `sm.gba`, in that directory. Run it in
    [mGBA](https://mgba.io) or on a flash cartridge. Saves go to the
    cartridge's SRAM (in an emulator, a `.sav` file next to `sm.gba`).
 
-Instead of building it all, you can download `sm-engine.gba` and
-`make_cartridge.py` from a release and add your ROM's data to the engine:
+Instead of building it all, you can download `sm-engine.gba`,
+`make_cartridge.py` and `squash_font.py` from a release into one folder and
+add your ROM's data to the engine, with Python 3 alone:
 
 ```
 python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
 ```
+
+Prerequisites for other systems, flash cartridges, saves, checking the ROM
+and what to do when something goes wrong are in
+[docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).
 
 ## Reading more
 

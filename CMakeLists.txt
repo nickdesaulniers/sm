@@ -21,10 +21,22 @@ set(CMAKE_C_EXTENSIONS ON)
 # tools/make_cartridge.py.
 set(SM_ROM "${CMAKE_SOURCE_DIR}/sm.smc" CACHE FILEPATH
     "The Super Metroid ROM to make sm.gba with (sha1 da957f0d63d14cb441d215462904c4fa8519c613)")
-if(NOT EXISTS "${SM_ROM}")
-    message(STATUS "SM_ROM: no ${SM_ROM}: building only sm-engine.gba")
-endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(EXISTS "${SM_ROM}")
+    # Say now what is wrong with the ROM, not after the whole build.
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py --check ${SM_ROM}
+        RESULT_VARIABLE rom_check_result
+        ERROR_VARIABLE rom_check_error)
+    if(NOT rom_check_result EQUAL 0)
+        message(FATAL_ERROR "${rom_check_error}")
+    endif()
+elseif(NOT SM_ROM STREQUAL "${CMAKE_SOURCE_DIR}/sm.smc")
+    message(FATAL_ERROR "SM_ROM: there is no file ${SM_ROM}")
+else()
+    message(STATUS "SM_ROM: no ${SM_ROM}: building only sm-engine.gba. For the cartridge, "
+                   "put your ROM there (or pass -DSM_ROM=<its path>) and configure again.")
+endif()
 
 # The code is not compiled -ffreestanding: that implies -fno-builtin, which
 # stops clang inlining memcpy/memset and similar. Instead it links -nostdlib

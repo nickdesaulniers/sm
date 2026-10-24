@@ -2,11 +2,15 @@
 """Makes the playable GBA cartridge from the engine and your Super Metroid ROM.
 
     make_cartridge.py sm-engine.gba sm.smc sm.gba
+    make_cartridge.py --check sm.smc
+
+The second form only checks the ROM, and says what is wrong with it.
 
 The engine (the build's sm-engine.gba, or a release's) has none of the
 game's data: this appends it, from your ROM, as gba/cart_data.h describes.
-The ROM must be the US release (sha1 da957f0d63d14cb441d215462904c4fa8519c613),
-with or without a copier's 512-byte header.
+The ROM must be the Japan/USA release, "Super Metroid (Japan, USA) (En,Ja)"
+(sha1 da957f0d63d14cb441d215462904c4fa8519c613), with or without a copier's
+512-byte header (which is dropped).
 
 Besides the ROM itself, the data has the game's audio samples, decoded from
 the SNES's BRR to the 8-bit PCM the GBA plays (gba/audio.c), and the menu
@@ -19,13 +23,19 @@ import sys
 
 sys.dont_write_bytecode = True  # (no tools/__pycache__ for squash_font)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import squash_font  # noqa: E402
+try:
+    import squash_font  # noqa: E402
+except ImportError:
+    sys.exit('squash_font.py is missing: keep it next to make_cartridge.py '
+             '(a release has both)')
 
 SNES_ROM_SHA1 = 'da957f0d63d14cb441d215462904c4fa8519c613'
 SNES_ROM_SIZE = 0x300000
 MAGIC = b'SMGBA\0\0\0'
 VERSION = 3
 HEADER_SIZE = 256
+COPIER_HEADER_SIZE = 512
+GBA_MAX_SIZE = 32 << 20
 
 # The SNES addresses of the game's uploads to the APU: the first is the
 # sound driver with its common samples, the others the music for each
@@ -166,19 +176,66 @@ def squash_section(rom):
             entries)
 
 
-def main():
-    if len(sys.argv) != 4:
-        sys.exit(__doc__.strip())
-    engine_path, rom_path, out_path = sys.argv[1:]
-    engine = open(engine_path, 'rb').read()
-    rom = open(rom_path, 'rb').read()
-    if len(rom) == SNES_ROM_SIZE + 512:
-        rom = rom[512:]
-    if hashlib.sha1(rom).hexdigest() != SNES_ROM_SHA1:
-        sys.exit(f'{rom_path}: not the Super Metroid ROM this needs '
-                 f'(sha1 {SNES_ROM_SHA1})')
+def load_rom(path):
+    """The ROM at path without a copier's header, or exits saying what is wrong."""
+    try:
+        with open(path, 'rb') as f:
+            rom = f.read()
+    except FileNotFoundError:
+        sys.exit(f'{path}: no such file. Put your Super Metroid ROM there, or give its path.')
+    except OSError as e:
+        sys.exit(f"{path}: can't be read ({e.strerror})")
+    if len(rom) == SNES_ROM_SIZE + COPIER_HEADER_SIZE:
+        print(f'{path}: dropping its {COPIER_HEADER_SIZE}-byte copier header', file=sys.stderr)
+        rom = rom[COPIER_HEADER_SIZE:]
+    have = hashlib.sha1(rom).hexdigest()
+    if have == SNES_ROM_SHA1:
+        return rom
+    why = []
+    if rom[:2] == b'PK':
+        why.append('this is a zip archive: extract the ROM from it')
+    elif len(rom) != SNES_ROM_SIZE:
+        why.append(f'its size is {len(rom)} bytes, not {SNES_ROM_SIZE} (3 MB): another game, '
+                   'a hack or a bad dump')
+    else:
+        why.append(f'its sha1 is {have}: a hack, another release or a bad dump')
+    why.append('this port is made for the Japan/USA release (En,Ja)')
+    sys.exit(f'{path}: not the Super Metroid ROM this needs (sha1 {SNES_ROM_SHA1}):\n  ' +
+             '\n  '.join(why))
+
+
+def check_engine(path, engine):
+    """Exits if the engine image can't be one this makes a cartridge from."""
+    if len(engine) < 0x1000 or engine[0xB2] != 0x96:
+        sys.exit(f"{path}: not a GBA image (the header's fixed byte, 0x96, is not at 0xB2). "
+                 "Give sm-engine.gba (the build's, or a release's).")
+    # The data starts at a multiple of 256 (gba.ld); the engine has the magic
+    # elsewhere too, as a string it compares with.
+    if any(engine[o:o + 8] == MAGIC for o in range(0x1000, len(engine), 256)):
+        sys.exit(f"{path}: already has the game's data in it. Give sm-engine.gba, not sm.gba.")
     if len(engine) % 256:
-        sys.exit(f'{engine_path}: not an engine image (its size is not a multiple of 256)')
+        sys.exit(f'{path}: not an engine image (its size is not a multiple of 256)')
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == '--check':
+        load_rom(args[1])
+        print(f'{args[1]}: the right ROM')
+        return
+    if len(args) != 3 or args[0].startswith('-'):
+        sys.exit(__doc__.strip())
+    engine_path, rom_path, out_path = args
+    try:
+        with open(engine_path, 'rb') as f:
+            engine = f.read()
+    except OSError as e:
+        sys.exit(f"{engine_path}: can't be read ({e.strerror}). Build the engine first "
+                 '(build-gba.sh does) or take sm-engine.gba from a release.')
+    check_engine(engine_path, engine)
+    rom = load_rom(rom_path)
+    if os.path.abspath(out_path) in (os.path.abspath(engine_path), os.path.abspath(rom_path)):
+        sys.exit(f'{out_path}: the output would overwrite an input; name another file')
     audio = audio_section(rom)
     audio_offset = HEADER_SIZE + len(rom)
     squash = squash_section(rom)
@@ -186,8 +243,18 @@ def main():
     header = MAGIC + struct.pack('<IIIIII', VERSION, len(rom), audio_offset, len(audio),
                                  squash_offset, len(squash))
     header += bytes(HEADER_SIZE - len(header))
-    with open(out_path, 'wb') as f:
-        f.write(engine + header + rom + audio + squash)
+    image = engine + header + rom + audio + squash
+    if len(image) > GBA_MAX_SIZE:
+        sys.exit(f"the cartridge would be {len(image)} bytes, more than a GBA's 32 MB")
+    tmp = out_path + '.tmp'  # (no half-written cartridge if this stops)
+    try:
+        with open(tmp, 'wb') as f:
+            f.write(image)
+        os.replace(tmp, out_path)
+    except OSError as e:
+        sys.exit(f"{out_path}: can't be written ({e.strerror})")
+    print(f'{out_path}: {len(image)} bytes (engine {len(engine)}, ROM {len(rom)}, '
+          f'audio {len(audio)}, fonts {len(squash)}); data version {VERSION}')
 
 
 if __name__ == '__main__':

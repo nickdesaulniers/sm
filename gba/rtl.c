@@ -15,19 +15,24 @@ static uint8 sram[0x2000];
 uint8 *g_sram = sram;
 bool g_use_my_apu_code = true;
 
-// No game data appended to the cartridge (see cart_data.h): there's nothing
-// to run. A red screen, and why in mGBA's log.
-static void MissingCartData(void) {
-  printf("sm: no game data: make the cartridge with tools/make_cartridge.py\n");
+// No usable game data appended to the cartridge (see cart_data.h): there's
+// nothing to run. A red screen, and why in mGBA's log.
+static void MissingCartData(const char *why) {
+  printf("sm: %s\n", why);
   REG_DISPCNT = 0;
   GBA_BG_PALETTE[0] = 0x001f;
   for (;;) {}
 }
 
 void RtlInit(void) {
-  if (memcmp(__cart_data.magic, CART_DATA_MAGIC, 8) || __cart_data.version != kCartDataVersion ||
-      __cart_data.snes_rom_size != kSnesRomSize)
-    MissingCartData();
+  if (memcmp(__cart_data.magic, CART_DATA_MAGIC, 8))
+    MissingCartData("no game data: make the cartridge with tools/make_cartridge.py");
+  if (__cart_data.version != kCartDataVersion)
+    MissingCartData("the game data is from another version of make_cartridge.py: "
+                    "use the one from the same release or commit as this engine");
+  if (__cart_data.snes_rom_size != kSnesRomSize)
+    MissingCartData("the game data's ROM is the wrong size: check it with "
+                    "make_cartridge.py --check");
   for (int i = 0; i < 0x2000; i++)
     sram[i] = GBA_SRAM[i];
 }

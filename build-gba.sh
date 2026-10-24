@@ -1,37 +1,65 @@
 #!/usr/bin/env bash
 # Builds the Game Boy Advance cartridge, sm.gba, from your own Super Metroid
-# ROM:
+# ROM, in one command:
 #
 #     ./build-gba.sh [ROM]
 #
-# ROM defaults to sm.smc here (the US release, headerless, sha1
-# da957f0d63d14cb441d215462904c4fa8519c613). Needs clang, lld, llvm-objcopy,
-# CMake, Python 3 and git (the first build fetches LLVM's compiler-rt
-# sources, a few MB). The cartridge comes out as sm.gba, here.
+# ROM defaults to sm.smc here: the Japan/USA release (sha1
+# da957f0d63d14cb441d215462904c4fa8519c613), with or without a 512-byte
+# copier header. Needs clang, lld, llvm-objcopy, CMake, Python 3 and git (the
+# first build also fetches LLVM's compiler-rt sources, about 30 MB, so it
+# needs the network once). The cartridge comes out as sm.gba, here, and the
+# build's files are in build-gba/. See docs/BUILDING-GBA.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 rom=${1:-sm.smc}
-want=da957f0d63d14cb441d215462904c4fa8519c613
 
-if [ ! -f "$rom" ]; then
-    echo "error: no ROM at $rom: put your Super Metroid ROM there, as sm.smc" >&2
+die() {
+    echo "error: $*" >&2
     exit 1
-fi
-for tool in clang ld.lld cmake python3 git; do
-    if ! command -v "$tool" >/dev/null; then
-        echo "error: $tool not found (see README.md)" >&2
-        exit 1
+}
+
+# What to install, by what's on this machine (the packages' names differ).
+install_hint() {
+    if command -v apt-get >/dev/null; then
+        echo "  sudo apt install clang lld llvm cmake python3 git"
+    elif command -v dnf >/dev/null; then
+        echo "  sudo dnf install clang lld llvm cmake python3 git"
+    elif command -v pacman >/dev/null; then
+        echo "  sudo pacman -S clang lld llvm cmake python git"
+    elif command -v brew >/dev/null; then
+        echo "  brew install llvm lld cmake python git"
+        echo "  (and put \$(brew --prefix llvm)/bin first in your PATH: Apple's own clang can't do this)"
+    else
+        echo "  install clang, lld, llvm, cmake, python3 and git with your system's package manager"
     fi
+}
+
+missing=
+for tool in clang ld.lld llvm-objcopy cmake python3 git; do
+    command -v "$tool" >/dev/null || missing="$missing $tool"
 done
-have=$(python3 -c 'import hashlib, sys; print(hashlib.sha1(open(sys.argv[1], "rb").read()).hexdigest())' "$rom")
-if [ "$have" != "$want" ]; then
-    echo "error: $rom isn't the ROM this was made for (sha1 $have, not $want)" >&2
-    echo "(a 512-byte copier header? the US release is needed, without one)" >&2
+if [ -n "$missing" ]; then
+    echo "error: not found:$missing" >&2
+    echo "Install them with, for example:" >&2
+    install_hint >&2
     exit 1
 fi
+if ! clang --print-targets 2>/dev/null | grep -q '^ *arm '; then
+    die "this clang ($(command -v clang)) can't compile for ARM. Use LLVM's own clang (22 was used), not Apple's or a build with ARM left out."
+fi
 
+[ -f "$rom" ] || die "no ROM at $rom: put your Super Metroid ROM here as sm.smc, or run ./build-gba.sh path/to/rom.smc"
+python3 tools/make_cartridge.py --check "$rom" || exit 1
+
+if [ ! -d build-gba/_deps/llvm-project ]; then
+    echo "The first build fetches LLVM's compiler-rt sources (about 30 MB) from github.com."
+fi
 cmake -B build-gba -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake \
-    -DCMAKE_BUILD_TYPE=Release -DSM_ROM="$(realpath "$rom")"
-cmake --build build-gba -j"$(nproc 2>/dev/null || echo 4)"
+    -DCMAKE_BUILD_TYPE=Release -DSM_ROM="$(cd "$(dirname "$rom")" && pwd)/$(basename "$rom")"
+cmake --build build-gba -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 cp build-gba/sm.gba sm.gba
-echo "made sm.gba: run it in mGBA, or on a flash cartridge"
+echo
+echo "Made $PWD/sm.gba ($(wc -c <sm.gba | tr -d ' ') bytes)."
+echo "Run it in mGBA (or another GBA emulator), or copy it to a flash cartridge's card."
+echo "Saves are the cartridge's SRAM: sm.sav next to it in an emulator."

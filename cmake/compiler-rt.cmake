@@ -15,16 +15,31 @@ if(SM_LLVM_SOURCE)
 else()
     set(llvm_source ${CMAKE_BINARY_DIR}/_deps/llvm-project)
     if(NOT EXISTS ${llvm_source}/compiler-rt/lib/builtins)
-        message(STATUS "Fetching llvm-project ${SM_LLVM_TAG} (sparse)")
+        message(STATUS "Fetching llvm-project ${SM_LLVM_TAG} (sparse, about 30 MB)")
+        file(REMOVE_RECURSE ${llvm_source})  # (a half-finished earlier try)
         execute_process(
             COMMAND git clone --quiet --depth 1 --branch ${SM_LLVM_TAG}
                     --filter=blob:none --sparse
                     https://github.com/llvm/llvm-project.git ${llvm_source}
-            COMMAND_ERROR_IS_FATAL ANY)
+            RESULT_VARIABLE clone_result)
+        if(NOT clone_result EQUAL 0)
+            message(FATAL_ERROR
+                "Couldn't fetch compiler-rt's sources: cloning tag ${SM_LLVM_TAG} of "
+                "github.com/llvm/llvm-project failed (see above).\n"
+                "Offline? Check llvm-project out elsewhere and pass "
+                "-DSM_LLVM_SOURCE=<that directory>.\n"
+                "No such tag? (clang says it is ${CMAKE_C_COMPILER_VERSION}; Apple's clang "
+                "numbers differently.) Pass -DSM_LLVM_TAG=llvmorg-<a release near yours>.")
+        endif()
         execute_process(
             COMMAND git -C ${llvm_source} sparse-checkout set
                     compiler-rt/lib/builtins
-            COMMAND_ERROR_IS_FATAL ANY)
+            RESULT_VARIABLE sparse_result)
+        if(NOT sparse_result EQUAL 0)
+            file(REMOVE_RECURSE ${llvm_source})
+            message(FATAL_ERROR "sparse-checkout of compiler-rt failed (see above); it needs "
+                "git 2.25 or newer. Or pass -DSM_LLVM_SOURCE=<an llvm-project checkout>.")
+        endif()
     endif()
 endif()
 
