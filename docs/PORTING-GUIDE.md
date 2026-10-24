@@ -297,6 +297,11 @@ against ground truth headlessly. Build these tools early.
   `tools/room_compare.py` ranks the rooms by the pixel difference from
   `snesref`. Re-run it after every renderer change and check that nothing
   regressed. One sweep found half a dozen renderer bugs that playing never had.
+- **Scenarios** (`tools/scenarios.sh`): `-DSM_SCENARIOS=ON` plays a list of
+  scripted scenarios without a player: the weapons (each of the 24 beam sets,
+  uncharged and charged, missiles, supers, bombs, power bombs, X-ray, grapple,
+  screw attack, space jump, speed booster, shinespark) and the ten bosses'
+  fights, to check each one's picture, speed and sound. See below.
 - **A sound oracle** (`tools/spcref.c`, `tools/compare_audio.py`): replay
   the game's sound requests through the original driver and an emulated
   DSP, then compare the loudness envelopes and spectra.
@@ -323,6 +328,45 @@ before debugging the renderer. The tour forces doors that the game would
 have locked, and leaving a boss fight that way (Kraid's) corrupts the next
 rooms' graphics on the SNES too. Bugs that show in `snesref`'s picture are
 the test's, not the port's.
+
+### The scenario tour
+
+`gba/scenarios.c` (built only with `-DSM_SCENARIOS=ON`, so the cartridge is
+byte for byte the same without it) spawns Samus through the developer tools
+(`dev_tools.c`: a load station or a boss's door, a loadout, a beam set), then
+feeds the GBA's buttons by a script, a word per run of frames
+(`B*2 -*10`, `R+B*3`, `( ... )xN`, `@` for a shot). The buttons go in where
+`input.c` reads the GBA's, so the real mapping is what's tested (R and Select
+for the other weapons, L to aim). The cartridge prints `scenario: NAME`,
+`tour: shot NAME-N` (for smrun's `SHOT_ON`) and the game's own "60 frames in N
+vblanks" lines; Samus's health and ammunition are always full. After a script
+the game resets to the title for the next scenario. The list is data in the
+file: add a scenario with a line. Which run is chosen by the buttons smrun
+holds at the start (or `-DSM_SCENARIO_ONLY=name,prefix*` at build time).
+
+```
+cmake -S . -B build-scn -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake \
+      -DSM_ROM=sm.smc -DSM_LLVM_SOURCE=... -DSM_SCENARIOS=ON    # (+ -DSM_AUDIO_LOG=ON for sound)
+cmake --build build-scn -j4
+tools/scenarios.sh tools/mgba/smrun tools/snesref build-scn out-scn   # JOBS=4 CHUNK=6
+```
+
+Results are in `out-scn`: `summary.txt` (a line a scenario: shots, worst and
+mean share of pixels that differ from `snesref`'s picture of the same memory,
+the slowest and mean frames per second of its 60-frame windows, game cycles a
+frame), `compare/NAME-N.png` (GBA, SNES and difference side by side),
+`compare.txt` (every shot, worst first), `shots/` (the pictures and memory
+dumps) and `raw/` (smrun's logs). All 44 scenarios, 465 shots, take about 25
+seconds. With `AUDIO=1 SPCREF=... ROM=sm.smc` (needs the `-DSM_AUDIO_LOG=ON`
+build) it records each scenario's sound instead, replays the same requests
+through the SNES's driver (`spcref`), and puts the loudness correlation, lag
+and level ratio in the summary (`audio/NAME.txt` has the spectra). Limits:
+the speed windows around a spawn are not the scenario's, so the first of each
+is dropped; the SNES reference runs at 59.94 frames a second and the GBA at
+59.73, so correlation falls as a scenario lengthens (the bosses' 80 seconds
+read lower than the weapons' 4); the picture comparison skips squashed
+screens; a script is open loop, so a fight that goes differently (a boss that
+doesn't start) still gets its shots.
 
 ## 6. Performance
 

@@ -34,37 +34,48 @@ def read_var(prefix, addr, size):
     return int.from_bytes(data[addr & region[1]:(addr & region[1]) + size], 'little', signed=True)
 
 
+def compare(snesref, sympath, s, shot, ref_path, out_png):
+    """Compares the picture |shot| (PNG) with the SNES's of the memory
+    dumped beside it (shot minus .png): draws the SNES's to |ref_path| and
+    the three-way sheet to |out_png|. Returns the fraction of pixels far off,
+    or None for a squashed screen (the GBA's picture isn't a crop of the
+    SNES's there)."""
+    prefix = shot[:-4]
+    subprocess.run([snesref, sympath, prefix, ref_path], check=True)
+    gba = np.asarray(Image.open(shot).convert('RGB')).astype(int)
+    ref = np.asarray(Image.open(ref_path).convert('RGB')).astype(int)
+    if read_var(prefix, s['squash'], 1):
+        return None
+    hud = read_var(prefix, s['hud'], 1)
+    y_offset = read_var(prefix, s['y_offset'], 4)
+    lines = [g + kHudBlankLines if hud and g < kGbaHudLines else
+             g + (kHudBlankLines if hud else 0) + y_offset for g in range(kGbaLines)]
+    crop = ref[lines, kXOffset:kXOffset + 240]
+    # The GBA's colors are 5 bits a channel, too, but its color math
+    # isn't all the SNES's: count what's far off.
+    bad = np.abs(gba - crop).max(axis=2) > 48
+    diff = crop // 3
+    diff[bad] = (255, 0, 0)
+    sheet = np.concatenate([gba, np.full((kGbaLines, 4, 3), 255), crop,
+                            np.full((kGbaLines, 4, 3), 255), diff], axis=1)
+    Image.fromarray(sheet.astype(np.uint8)).save(out_png)
+    return bad.mean()
+
+
 def main():
     snesref, sympath, d = sys.argv[1:4]
     out_dir = sys.argv[4] if len(sys.argv) > 4 else d
     s = syms(sympath)
     results = []
     for shot in sorted(glob.glob(os.path.join(d, 'r' + '[0-9a-f]' * 4 + '.png'))):
-        prefix = shot[:-4]
-        room = os.path.basename(prefix)[1:]
-        ref_path = os.path.join(out_dir, f'ref{room}.png')
-        subprocess.run([snesref, sympath, prefix, ref_path], check=True)
-        gba = np.asarray(Image.open(shot).convert('RGB')).astype(int)
-        ref = np.asarray(Image.open(ref_path).convert('RGB')).astype(int)
-        if read_var(prefix, s['squash'], 1):
-            continue
-        hud = read_var(prefix, s['hud'], 1)
-        y_offset = read_var(prefix, s['y_offset'], 4)
-        lines = [g + kHudBlankLines if hud and g < kGbaHudLines else
-                 g + (kHudBlankLines if hud else 0) + y_offset for g in range(kGbaLines)]
-        crop = ref[lines, kXOffset:kXOffset + 240]
-        # The GBA's colors are 5 bits a channel, too, but its color math
-        # isn't all the SNES's: count what's far off.
-        bad = np.abs(gba - crop).max(axis=2) > 48
-        frac = bad.mean()
-        results.append((frac, room))
-        diff = crop // 3
-        diff[bad] = (255, 0, 0)
-        sheet = np.concatenate([gba, np.full((kGbaLines, 4, 3), 255), crop,
-                                np.full((kGbaLines, 4, 3), 255), diff], axis=1)
-        Image.fromarray(sheet.astype(np.uint8)).save(os.path.join(out_dir, f'cmp{room}.png'))
+        room = os.path.basename(shot)[1:-4]
+        frac = compare(snesref, sympath, s, shot, os.path.join(out_dir, f'ref{room}.png'),
+                       os.path.join(out_dir, f'cmp{room}.png'))
+        if frac is not None:
+            results.append((frac, room))
     for frac, room in sorted(results, reverse=True):
         print(f'{room} {100 * frac:5.1f}%')
 
 
-main()
+if __name__ == '__main__':
+    main()

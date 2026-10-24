@@ -7,6 +7,9 @@
 #include "gba_hw.h"
 #include "input.h"
 #include "render.h"
+#if SM_SCENARIOS
+#include "scenarios.h"
+#endif
 #include "snes_hw.h"
 #include "tour.h"
 #include "sm_rtl.h"
@@ -129,6 +132,9 @@ void gba_main(void) {
 #if SM_ROOM_TOUR
     Tour_BeforeFrame();
 #endif
+#if SM_SCENARIOS
+    Scn_BeforeFrame();
+#endif
     // (Less the sound's, which interrupts them: see Audio_Background.)
     uint32_t t0 = Cycles(), a0 = g_audio_cycles;
     RunOneFrameOfGame();
@@ -191,6 +197,18 @@ void gba_main(void) {
         VBlankIntrWait();
         Audio_Kick();
       }
+#endif
+#if SM_SCENARIOS
+    // As the tour's hold, but not counted in the speed.
+    if (Scn_AfterFrame()) {
+      uint32_t held_from = g_vblank_count;
+      for (int i = 0; i < 4; i++) {
+        VBlankIntrWait();
+        Audio_Kick();
+      }
+      vblanks += g_vblank_count - held_from;
+      presented_at = g_vblank_count;
+    }
 #endif
     uint32_t game = (t1 - t0) - (a1 - a0), render = (t2 - t1) - (a2 - a1) + (t4 - t3) - (a4 - a3);
     uint32_t audio_now = a4 - presented_audio;

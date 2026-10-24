@@ -23,6 +23,9 @@
 #include "dev_tools.h"
 #include "gba_hw.h"
 #include "ida_types.h"
+#if SM_SCENARIOS
+#include "scenarios.h"
+#endif
 #include "sm_rtl.h"
 #include "variables.h"
 
@@ -97,6 +100,9 @@ uint16 GbaWantedHudItem(void) {
 uint16_t Input_ReadJoypad(void) {
   uint16_t prev = keys;
   keys = ~REG_KEYINPUT & 0x3ff;
+#if SM_SCENARIOS
+  keys = Scn_Keys(keys);
+#endif
   uint16_t pressed = keys & ~prev;
   // The developer tools (dev_tools.c): turned on by L and R held with Start,
   // on the title or the file select; they may use up a frame's buttons.
@@ -155,6 +161,13 @@ uint16_t Input_ReadJoypad(void) {
     PickNextRItem();
   return joy;
 }
+
+#if SM_SCENARIOS
+// For scenarios.c, between scenarios: what R readies is missiles again.
+void Input_Reset(void) {
+  r_item = kItemNone;
+}
+#endif
 
 // The SNES's second controller, which the game reads, with enable_debug set,
 // to step through the load stations on the room map with its Select

@@ -36,6 +36,9 @@
 // OUT_PREFIX<label>.png, and the memory as DUMP's does, to OUT_PREFIX<label>:
 // the label is the word after TEXT (gba/tour.c holds its frames for this).
 //
+// With STOP_ON=TEXT, it stops (a few frames after the shot a line may ask
+// for) at the first log line containing TEXT, before FRAMES.
+//
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
 //
 // With SAVE=FILE.sav, the cartridge's SRAM starts as that file's (which is
@@ -79,6 +82,8 @@ static int after_frame;  // when after_text appeared, or 0
 static const char* shot_text;
 static int shot_frame;  // when to save SHOT_ON's next, or 0
 static char shot_label[64];
+static const char* stop_text;
+static int stop_frame;  // when to stop, or 0
 
 static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level,
                       const char* format, va_list args) {
@@ -91,6 +96,8 @@ static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level
         fflush(stdout);
         if (after_text && !after_frame && strstr(line, after_text))
             after_frame = current_frame;
+        if (stop_text && !stop_frame && strstr(line, stop_text))
+            stop_frame = current_frame + 8;
         const char* shot = shot_text ? strstr(line, shot_text) : NULL;
         if (shot) {
             shot_frame = current_frame + 2;
@@ -345,6 +352,7 @@ int main(int argc, char** argv) {
     struct Keys keys = parse_schedule(getenv("KEYS"));
     after_text = getenv("AFTER");
     shot_text = getenv("SHOT_ON");
+    stop_text = getenv("STOP_ON");
     if (getenv("AUDIO")) {
         audio_out = fopen(getenv("AUDIO"), "wb");
         write_wav_header(audio_out, 0);
@@ -406,6 +414,8 @@ int main(int argc, char** argv) {
             snprintf(path, sizeof path, "%s%s.png", prefix, shot_label);
             write_png(path, pixels, width, height, width);
         }
+        if (stop_frame == i)
+            break;
         for (const char* s = shots; *s && t > 0;) {
             if (atoi(s) == t) {
                 char path[512];

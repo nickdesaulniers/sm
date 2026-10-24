@@ -455,3 +455,20 @@ bool Dev_Frame(uint16_t keys, uint16_t pressed) {
 bool Dev_SelectFree(void) {
   return select_free;
 }
+
+#if SM_SCENARIOS
+void Dev_Pick(const char *name, int n, int w) {
+  for (int i = 0; i < kPresetCount; i++)
+    if (!strcmp(kPresets[i].name, name))
+      preset = i;
+  beams = n;
+  warp = w;
+  // (The warps' spawn is at the area's last station.)
+  if (w)
+    load_station_index = LastStation(area_index);
+}
+
+bool Dev_SpawnPending(void) {
+  return pending_door != 0;
+}
+#endif
