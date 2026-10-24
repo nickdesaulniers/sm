@@ -1495,6 +1495,8 @@ typedef struct Patch {
   uint16_t value;
 } Patch;
 static Patch patches[kMaxPatches], lefts[kMaxPatches];
+// The channel (by number) of each of the patches, for BuildPatches.
+static uint8_t patch_channel[kMaxPatches];
 static uint8_t num_patches, num_lefts;
 // The channels (by number) that are patches, and the words (bits 0-3) that the rest write.
 static uint8_t patched, varying;
@@ -1600,13 +1602,16 @@ ROM_CODE static void EmitPiece(int a, int b, int state, const uint32_t *ofs) {
 }
 
 // Puts the patch where the lines go on from (it's one of a channel's few values).
-ROM_CODE static void AddPatch(int line, int half, int value) {
+ROM_CODE static void AddPatch(int line, int half, int value, int channel) {
   int i = num_patches++;
-  for (; i > 0 && patches[i - 1].line > line; i--)
+  for (; i > 0 && patches[i - 1].line > line; i--) {
     patches[i] = patches[i - 1];
+    patch_channel[i] = patch_channel[i - 1];
+  }
   patches[i].line = line;
   patches[i].half = half;
   patches[i].value = value;
+  patch_channel[i] = channel;
 }
 
 // A scroll register's halfword of line_ofs[line] (BG1's HOFS: 0, VOFS: 1, BG2's: 2, 3...)
@@ -1624,6 +1629,7 @@ ROM_CODE static void BuildPatches(void) {
   // The registers that channels not patches write: a channel on one of them is a line at a time
   // too, as the lines come after the patches. (On other registers the order doesn't matter.)
   int taken_lines = 0;
+  uint16_t chan_end[8];  // the line each patching channel's table ends on
   for (int k = hdma_count; k < hdma_scrolls; k++) {
     HdmaChannel *d = &hdma[k];
     SnesDmaChannel *c = d->c;
@@ -1645,15 +1651,39 @@ ROM_CODE static void BuildPatches(void) {
     patched |= 1 << channel;
     c->hdma_terminated = b->end <= kSnesLines;
     // From the line it first transfers on, the channel's value holds over an earlier channel's
-    // later patches of the registers (the line path has it so: HUD and room each write BG3's).
+    // later patches of the registers (the line path has it so: HUD and room each write BG3's),
+    // as far as it goes on transferring. Past its table's end the registers keep its value only
+    // until the earlier channel transfers again, which is what that channel's patch in effect
+    // there says: Norfair's lava writes BG3's VOFS on every line, and the BG3 scroll channel
+    // after it only on the first 32, for the HUD's.
+    chan_end[channel] = b->end;
     if (b->nseg) {
+      int last = b->end < kSnesLines ? b->end : kSnesLines;  // (the line after its last)
       int n = 0;
+      Patch carry[2];
+      uint8_t carry_channel[2];
+      bool carried[2] = {false, false};
       for (int i = 0; i < num_patches; i++) {
         Patch *p = &patches[i];
-        if (p->line < b->seg[0] || (p->half != half0 && !(two && p->half == half1)))
+        bool mine = p->half == half0 || (two && p->half == half1);
+        if (p->line < b->seg[0] || !mine || p->line >= last) {
+          patch_channel[n] = patch_channel[i];
           patches[n++] = *p;
+        } else if (chan_end[patch_channel[i]] > last) {
+          // (The latest, as they're in order of lines.)
+          carry[two && p->half == half1] = *p;
+          carry_channel[two && p->half == half1] = patch_channel[i];
+          carried[two && p->half == half1] = true;
+        }
       }
       num_patches = n;
+      for (int j = 0; j <= two && last < kSnesLines; j++) {
+        bool taken = false;
+        for (int i = 0; i < n; i++)
+          taken |= patches[i].line == last && patches[i].half == carry[j].half;
+        if (carried[j] && !taken)
+          AddPatch(last, carry[j].half, carry[j].value, carry_channel[j]);
+      }
     }
     for (int i = 0; i < b->nseg; i++) {
       int line = b->seg[i], a = b->das[line];
@@ -1665,7 +1695,7 @@ ROM_CODE static void BuildPatches(void) {
                          : ReadBankRom(d->data, d->data_ram, c->dasb, (uint16_t)x) |
                                ReadBankRom(d->data, d->data_ram, c->dasb, (uint16_t)(x + 1)) << 8) &
                     0x3ff;
-        AddPatch(line, j ? half1 : half0, value);
+        AddPatch(line, j ? half1 : half0, value, channel);
         // The last is what HDMA leaves in the registers.
         if (i == b->nseg - 1) {
           lefts[num_lefts].half = j ? half1 : half0;

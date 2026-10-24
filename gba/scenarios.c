@@ -23,6 +23,9 @@
 //   @          a shot of the frame the next word begins
 //   ( ... )xN  the words between, N times
 //   >X,Y       Samus to that place (pixels)
+//   ~N         the lava, acid or water's surface to N pixels below Samus's
+//              centre (-N for above), at its base: for a room's lava where she
+//              can't go (the camera follows her only so far)
 // The buttons are the GBA's (input.c makes the game's of them): B shoots, R
 // readies missiles (with Select, the others), L aims. Samus can't die, and
 // never runs out of ammunition.
@@ -92,6 +95,10 @@ typedef struct Scenario {
 
 #define BOSS(name, area, n) {"boss-" name, area, 0, n, "ALL ITEMS", 0, kBossScript}
 
+// The lava (or acid) first at Samus's feet and then rising past her, from a
+// station of a room that has it.
+#define kLavaScript "-*30 @ ~40 -*60 @ ~20 -*60 @ ~0 -*60 @ ~-30 -*60 @"
+
 static const Scenario kScenarios[] = {
   BEAM(0, "power"),
   BEAM(1, "wave"),
@@ -128,6 +135,17 @@ static const Scenario kScenarios[] = {
    "-*30 @ RIGHT*60 @ RIGHT*60 @ RIGHT*60 @ RIGHT*60 @ RIGHT*40 @ -*30 @"},
   {"shinespark", 3, 16, 0, "ALL ITEMS", BEAMS(0),
    "-*30 RIGHT*140 @ DOWN*4 -*20 @ A*4 -*4 RIGHT*3 -*10 @ -*20 @ -*20 @ -*40 @ -*60 @"},
+  // ---- Norfair's lava and acid, in the rooms of its debug stations.
+  {"lava-aab5", 2, 0, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b0dd", 2, 1, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b741", 2, 5, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-a7de", 2, 8, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-af3f", 2, 9, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b236", 2, 10, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-a923", 2, 17, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b37a", 2, 18, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b283", 2, 21, 0, "ALL ITEMS", 0, kLavaScript},
+  {"lava-b283-2", 2, 22, 0, "ALL ITEMS", 0, kLavaScript},
   BOSS("bomb-torizo", 0, 1),
   BOSS("spore-spawn", 1, 1),
   BOSS("kraid", 1, 2),
@@ -295,6 +313,14 @@ static bool NextWord(void) {
       samus_y_pos = Number(&script);
       samus_x_subpos = samus_y_subpos = 0;
       continue;
+    case '~': {
+      script++;
+      bool above = *script == '-';
+      script += above;
+      int n = Number(&script);
+      fx_base_y_pos = samus_y_pos + (above ? -n : n);
+      continue;
+    }
     case '(':
       script++;
       loops[loop_depth].start = script;

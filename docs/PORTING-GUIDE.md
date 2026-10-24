@@ -147,6 +147,15 @@ only real changes. Then:
   moves, so a cache keyed on the start address misses every frame. Slide
   the cached lines instead and bake only the new ones. Check any such
   shortcut against the line-by-line walk over every room.
+- **Two channels, one register.** The later channel wins a line, but a table
+  that ends (the HUD's BG3 scroll stops after line 31) stops writing, and the
+  earlier channel's value shows again from the next line. Folding a channel's
+  few values into "patches" by letting the later one hold forever hid Norfair's
+  lava and Lower Norfair's acid (the lava's BG3 scroll channel is before the
+  HUD's, and both write BG3's VOFS), and neither the tour nor `snesref` saw it:
+  the reference draws from the same captured lines. To check a capture, read
+  the per-line registers out of a dump, or move the lava next to Samus
+  (`scenarios.c`'s `~N`) and look.
 
 ### Color math and windows
 
