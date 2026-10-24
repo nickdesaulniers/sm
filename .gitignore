@@ -25,3 +25,4 @@ SDL2.dll
 /build-perfrooms/
 /build-astats/
 /.claude/
+__pycache__/
