@@ -7,16 +7,17 @@
   <br>
   <img src="docs/images/landing.png" width="240" alt="Samus leaves her ship in the rain">
   <img src="docs/images/bomb-torizo.png" width="240" alt="Bomb Torizo throws bombs at Samus">
-  <img src="docs/images/kraid.png" width="240" alt="Kraid">
+  <img src="docs/images/spore-spawn.png" width="240" alt="Spore Spawn opens its core as Samus clings to the wall">
   <br>
+  <img src="docs/images/kraid.png" width="240" alt="Kraid">
   <img src="docs/images/crocomire.png" width="240" alt="Crocomire swings at Samus">
   <img src="docs/images/golden-torizo.png" width="240" alt="Samus shoots the Golden Torizo, who throws his orbs and crescents">
-  <img src="docs/images/ridley.png" width="240" alt="Ridley">
   <br>
+  <img src="docs/images/ridley.png" width="240" alt="Ridley">
   <img src="docs/images/phantoon.png" width="240" alt="Phantoon">
   <img src="docs/images/botwoon.png" width="240" alt="Botwoon">
-  <img src="docs/images/draygon.png" width="240" alt="Draygon swoops and grabs Samus">
   <br>
+  <img src="docs/images/draygon.png" width="240" alt="Draygon swoops and grabs Samus">
   <img src="docs/images/golden-statue.png" width="240" alt="The golden statue at the entrance to Tourian">
   <img src="docs/images/mother-brain.png" width="240" alt="Mother Brain">
 </p>
