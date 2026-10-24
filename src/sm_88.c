@@ -1704,6 +1704,17 @@ void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
   uint16 v1 = 0;
   do {
     uint16 *v3 = (uint16 *)&g_ram[kHdmaScrollEntrys[v1].hdma_data_table_entry];
+#if SM_GBA
+    // The game's types are unaligned on the GBA, so the 32-bit add below is a
+    // dozen byte accesses. The ROM's entries are all 4-byte aligned, and then
+    // one word does it (the carry from low to high is the same).
+    if (((uintptr_t)v3 & 3) == 0) {
+      *(uint32_t *)v3 += (uint32_t)kHdmaScrollEntrys[v1].scroll_speed << 16 |
+                         kHdmaScrollEntrys[v1].scroll_subspeed;
+      v1++;
+      continue;
+    }
+#endif
     AddToHiLo(&v3[1], &v3[0], __PAIR32__(kHdmaScrollEntrys[v1].scroll_speed, kHdmaScrollEntrys[v1].scroll_subspeed));
     v1++;
   } while (sign16(v1 * 8 - 184));
@@ -1715,9 +1726,11 @@ void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
   uint16 r20 = layer1_y_pos + 224;
   uint16 v5 = 0;
   uint16 v6 = 3;
+  // The table is in ROM: read each row's top once, not at every test.
+  uint16 top_cur = kHdmaScrollEntrys[0].top_pos, top_next = kHdmaScrollEntrys[1].top_pos;
   do {
-    while ((int16)(r18 - kHdmaScrollEntrys[v5].top_pos) >= 0 && (int16)(r18 - kHdmaScrollEntrys[v5 + 1].top_pos) < 0) {
-      uint16 v8 = kHdmaScrollEntrys[v5 + 1].top_pos - r18;
+    while ((int16)(r18 - top_cur) >= 0 && (int16)(r18 - top_next) < 0) {
+      uint16 v8 = top_next - r18;
       r24 = v8;
       if (!sign16(v8 - 128)) {
         *(uint16 *)&scrolling_sky_bg2_indirect_hdma[v6] = 127;
@@ -1735,6 +1748,8 @@ void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
       }
     }
     ++v5;
+    top_cur = top_next;
+    top_next = kHdmaScrollEntrys[v5 + 1].top_pos;
   } while (sign16(v5 * 8 - 184));
   for (i = 1535 - r18; ; i = r24 - 127) {
     r24 = i;

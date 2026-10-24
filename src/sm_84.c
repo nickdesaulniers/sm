@@ -244,8 +244,15 @@ CoroutineRet PlmHandler_Async(void) {  // 0x8485B4
     return kCoroutineNone;
   plm_draw_tilemap_index = 0;
   for (plm_id = 78; (plm_id & 0x8000) == 0; plm_id -= 2) {
-    if (!plm_header_ptr[plm_id >> 1])
+    if (!plm_header_ptr[plm_id >> 1]) {
+      // Most slots are empty: step over a run of them without storing plm_id
+      // for each.
+      uint16 id = plm_id;
+      while (id != 0 && !plm_header_ptr[(id - 2) >> 1])
+        id -= 2;
+      plm_id = id;
       continue;
+    }
     CallPlmPreInstr(plm_pre_instrs[plm_id >> 1] | 0x840000, plm_id);
     if (--plm_instruction_timer[plm_id >> 1])
       continue;

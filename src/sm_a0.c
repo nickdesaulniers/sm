@@ -573,37 +573,30 @@ static void ProcessEnemyTilesets(void) {  // 0xA08D64
 
 void DetermineWhichEnemiesToProcess(void) {  // 0xA08EB6
   ++UNUSED_word_7E0E46;
-  cur_enemy_index = 0;
-  active_enemy_indexes_write_ptr = 0;
-  interactive_enemy_indexes_write_ptr = 0;
+  // The indexes and write pointers stay in locals: nothing the loops call reads
+  // them, and the byte-wise RAM stores would make the compiler reload each
+  // global after every one.
+  uint16 active_wp = 0, interactive_wp = 0;
   if (flag_process_all_enemies) {
-    do {
-      uint16 v5 = cur_enemy_index;
-      EnemyData *v6 = gEnemyData(cur_enemy_index);
+    for (uint16 idx = 0; idx != 2048; idx += 64) {
+      EnemyData *v6 = gEnemyData(idx);
       if (v6->enemy_ptr && v6->enemy_ptr != addr_kEnemyDef_DAFF) {
         if ((v6->properties & 0x200) != 0) {
           v6->enemy_ptr = 0;
         } else {
-          uint16 v7 = active_enemy_indexes_write_ptr;
-          int v8 = active_enemy_indexes_write_ptr >> 1;
-          active_enemy_indexes[v8] = cur_enemy_index;
-          interactive_enemy_indexes[v8] = v5;
-          active_enemy_indexes_write_ptr = v7 + 2;
+          active_enemy_indexes[active_wp >> 1] = idx;
+          interactive_enemy_indexes[active_wp >> 1] = idx;
+          active_wp += 2;
           if ((v6->properties & 0x400) == 0) {
-            uint16 v9 = interactive_enemy_indexes_write_ptr;
-            interactive_enemy_indexes[interactive_enemy_indexes_write_ptr >> 1] = v5;
-            interactive_enemy_indexes_write_ptr = v9 + 2;
+            interactive_enemy_indexes[interactive_wp >> 1] = idx;
+            interactive_wp += 2;
           }
         }
       }
-      cur_enemy_index += 64;
-    } while (sign16(cur_enemy_index - 2048));
-    active_enemy_indexes[active_enemy_indexes_write_ptr >> 1] = -1;
-    interactive_enemy_indexes[interactive_enemy_indexes_write_ptr >> 1] = -1;
+    }
   } else {
-    do {
-      uint16 v0 = cur_enemy_index;
-      EnemyData *v1 = gEnemyData(cur_enemy_index);
+    for (uint16 idx = 0; idx != 2048; idx += 64) {
+      EnemyData *v1 = gEnemyData(idx);
       if (v1->enemy_ptr && v1->enemy_ptr != addr_kEnemyDef_DAFF) {
         uint16 properties = v1->properties;
         if ((properties & 0x200) != 0) {
@@ -614,21 +607,21 @@ void DetermineWhichEnemiesToProcess(void) {  // 0xA08EB6
                    && (int16)(v1->x_width + layer1_x_pos + 256 - v1->x_pos) >= 0
                    && (int16)(v1->y_pos + 8 - layer1_y_pos) >= 0
                    && (int16)(layer1_y_pos + 248 - v1->y_pos) >= 0) {
-          uint16 v3 = active_enemy_indexes_write_ptr;
-          active_enemy_indexes[active_enemy_indexes_write_ptr >> 1] = cur_enemy_index;
-          active_enemy_indexes_write_ptr = v3 + 2;
+          active_enemy_indexes[active_wp >> 1] = idx;
+          active_wp += 2;
           if ((v1->properties & 0x400) == 0) {
-            uint16 v4 = interactive_enemy_indexes_write_ptr;
-            interactive_enemy_indexes[interactive_enemy_indexes_write_ptr >> 1] = v0;
-            interactive_enemy_indexes_write_ptr = v4 + 2;
+            interactive_enemy_indexes[interactive_wp >> 1] = idx;
+            interactive_wp += 2;
           }
         }
       }
-      cur_enemy_index += 64;
-    } while (sign16(cur_enemy_index - 2048));
-    active_enemy_indexes[active_enemy_indexes_write_ptr >> 1] = -1;
-    interactive_enemy_indexes[interactive_enemy_indexes_write_ptr >> 1] = -1;
+    }
   }
+  cur_enemy_index = 2048;
+  active_enemy_indexes_write_ptr = active_wp;
+  interactive_enemy_indexes_write_ptr = interactive_wp;
+  active_enemy_indexes[active_wp >> 1] = -1;
+  interactive_enemy_indexes[interactive_wp >> 1] = -1;
 }
 
 void CallEnemyAi(uint32 ea) {
