@@ -91,7 +91,8 @@ enum { kBeamCount = 25 };
 // rooms next to them): the map steps on to these, after an area's last
 // station, and the spawn goes through the door into the room as Samus
 // would, once the station's loaded (the door as the neighbor's door list
-// has it, bank $83).
+// has it, bank $83). (Spore Spawn's is the one from below: the camera in his
+// room is held at the arena, so Samus arriving at the top would be off screen.)
 typedef struct Warp {
   uint8_t area;
   uint16_t door;
@@ -100,7 +101,7 @@ typedef struct Warp {
 
 static const Warp kWarps[] = {
   {0, 0x8bc2, "BOMB TORIZO"},
-  {1, 0x8d2a, "SPORE SPAWN"},
+  {1, 0x8e3e, "SPORE SPAWN"},
   {1, 0x91b6, "KRAID"},
   {2, 0x93d2, "CROCOMIRE"},
   {2, 0x9a62, "RIDLEY"},
@@ -407,14 +408,16 @@ bool Dev_Frame(uint16_t keys, uint16_t pressed) {
     // (the fanfare, with its sound) is over and she has her controls.
     // The transition takes where she is in the doorway from the low bytes
     // of her position: the screen's far side for a door she goes right
-    // through, the near side for one she goes left through, and the door's
-    // lowest block (it has the door's top row; four blocks tall).
+    // through, the near side for one she goes left through, and standing on
+    // the floor below the door's lowest block (the door's top row is
+    // y_pos_plm, in the room she leaves; four blocks tall): her centre is 24
+    // above her feet.
     const DoorDef *door = get_DoorDef(pending_door);
     int dir = door->door_orientation & 3;
     int x_low, y_low;
     if (dir < 2) {
       x_low = dir ? 0x18 : 0xe8;
-      y_low = (door->y_pos_plm + 3) * 16 + 8;
+      y_low = (door->y_pos_plm + 4) * 16 - 24;
     } else {
       x_low = (door->x_pos_plm + 2) * 16;
       y_low = dir == 2 ? 0xc0 : 0x30;

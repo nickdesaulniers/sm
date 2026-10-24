@@ -173,7 +173,7 @@ static struct {
   uint16_t bg12_base, bg3_base, obj_base[2];
   uint8_t bgsc[2];
   uint8_t bg2_nba;  // BG12NBA: where BG2's tiles are, from BG1's
-  uint8_t bg_row[2];  // of 64x64 maps, the row of screens converted
+  uint8_t bg_row[2];  // of 64x64 maps, which row of screens each tile row comes from (Map64Key)
   uint8_t bg3_slot_sc[2];
   int blank_tile;
   int brightness;
@@ -1748,6 +1748,28 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
     conv.blank_tile = FindBlankTile(bg12_base, blank);
 }
 
+// Which of a 64x64 map's two rows of screens, of tiles 32 high, a GBA map of
+// 32 rows takes each tile row from (the GBA wraps at 256 lines, the SNES at
+// 512): the lines on show start in the row |key| & 1, at its tile row |key|
+// >> 1, and those before it are of the other, which the lines past the 256th
+// of it show. (A key of 0 or 1 has all of one: nothing wraps.)
+// The bits of the tile rows that come from the row of 0.
+ROM_CODE static uint32_t Map64Rows(uint32_t key) {
+  uint32_t from_top = ~0u << (key >> 1);  // the lines' row
+  return key & 1 ? ~from_top : from_top;
+}
+
+// The key of BG |bg|'s map (see Map64Rows): from the first line on show,
+// by the middle line's scrolling, and 0 or 1 if the lines on show stay in one
+// row.
+ROM_CODE static uint32_t Map64Key(int bg) {
+  int top = SnesLine(hud ? kGbaHudLines : 0);
+  int m = (VOFS(text_line, bg) + top + 1) & 511;
+  if ((m & 255) + SnesLine(kGbaLines - 1) - top < 256)
+    return m >> 8;
+  return (m >> 3 & 31) << 1 | m >> 8;
+}
+
 // (In ROM: what it calls does the work.)
 ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool force_split) {
   bool split_changed = split_bg2 != conv.split_bg2;
@@ -1755,10 +1777,12 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
   for (int bg = 0; bg < 2; bg++) {
     uint8_t sc = r->bgsc[bg];
     bool split = bg == split_bg2;
-    // A 64x64 map's top or bottom row, by the middle line (Kraid's room).
-    int row = (sc & 3) == 3 ? ((VOFS(text_line, bg) + text_line) >> 8) & 1 : 0;
-    bool moved = sc != conv.bgsc[bg] || row != conv.bg_row[bg] ||
-                 (bg && r->bgnba[0] != conv.bg2_nba);
+    // A 64x64 map's two rows of screens go into the GBA's one, a row of tiles
+    // from the one the lines on show have there (Kraid's room: his body
+    // wraps from the bottom row to the top): |key| (see Map64Key) says from
+    // which row each of the GBA's 32 tile rows comes.
+    uint32_t key = (sc & 3) == 3 ? Map64Key(bg) : 0;
+    bool moved = sc != conv.bgsc[bg] || (bg && r->bgnba[0] != conv.bg2_nba);
     // BG2's tiles at another base than BG1's (the area map coming in over
     // the planet's, on the file select's way to the game): the same tiles
     // converted, BG2's entries that many later. (Not if the base is before
@@ -1773,31 +1797,45 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
       memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
       memset(bg12_hi_cols[bg], 0, sizeof(bg12_hi_cols[bg]));
     }
+    // The tile rows from each SNES row of screens, and those that come from
+    // another than when last converted.
+    uint32_t from[2] = {~0u, 0}, redo = 0;
+    if ((sc & 3) == 3) {
+      from[0] = Map64Rows(key);
+      from[1] = ~from[0];
+      redo = from[0] ^ Map64Rows(conv.bg_row[bg]);
+    }
     conv.bgsc[bg] = sc;
-    conv.bg_row[bg] = row;
+    conv.bg_row[bg] = key;
     int screens = (sc & 3) ? 2 : 1;
-    for (int k = 0; k < screens; k++) {
-      uint16_t addr = (((sc & 0xfc) << 8) + (row * 2 + k) * 0x400) & 0x7fff;
-      uint8_t *counts = &bg12_hi[bg][k * 64];
-      uint16_t *cols = &bg12_hi_cols[bg][k * 2];
-      FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
-        uint32_t o = c * 16;
-        int hi;
-        const uint16_t *src = &g_vram[addr + o];
-        uint16_t later[16];
-        if (tile_add) {
-          for (int i = 0; i < 16; i++)
-            later[i] = (src[i] & 0xfc00) | ((src[i] + tile_add) & 0x3ff);
-          src = later;
+    for (int row = 0; row < ((sc & 3) == 3 ? 2 : 1); row++) {
+      for (int k = 0; k < screens; k++) {
+        uint16_t addr = (((sc & 0xfc) << 8) + (row * 2 + k) * 0x400) & 0x7fff;
+        uint8_t *counts = &bg12_hi[bg][k * 64];
+        uint16_t *cols = &bg12_hi_cols[bg][k * 2];
+        FOR_EACH_DIRTY_CHUNK(dirty, addr, changed || redo, c) {
+          uint32_t tile_row = 1u << (c >> 1);
+          if (!(from[row] & tile_row) ||
+              !(changed || (redo & tile_row) || (dirty[(addr >> 9) + (c >> 5)] >> (c & 31) & 1)))
+            continue;
+          uint32_t o = c * 16;
+          int hi;
+          const uint16_t *src = &g_vram[addr + o];
+          uint16_t later[16];
+          if (tile_add) {
+            for (int i = 0; i < 16; i++)
+              later[i] = (src[i] & 0xfc00) | ((src[i] + tile_add) & 0x3ff);
+            src = later;
+          }
+          if (split)
+            hi = Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o,
+                                  VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16,
+                                  conv.blank_tile);
+          else
+            hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16, 0);
+          cols[c & 1] += hi - counts[c];
+          counts[c] = hi;
         }
-        if (split)
-          hi = Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o,
-                                VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16,
-                                conv.blank_tile);
-        else
-          hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16, 0);
-        cols[c & 1] += hi - counts[c];
-        counts[c] = hi;
       }
     }
   }

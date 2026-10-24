@@ -435,6 +435,23 @@ ROM_CODE static void PaletteOrOamBytes(uint8_t bbad, const uint8_t *src, uint32_
 // DMA a byte at a time, through the B bus's registers: what FastDma
 // doesn't do, as seldom happens. (In ROM, for room in IWRAM.)
 ROM_CODE static void DmaBytes(SnesDmaChannel *c, uint32_t count) {
+  SnesHw *h = &g_snes_hw;
+  // VRAM's words to WRAM (the message boxes back up BG3's map so): its read
+  // port's buffer, then a word a pair of reads.
+  if ((c->dmap & 0x9f) == 0x81 && c->bbad == 0x39 && (h->vmain & 0x8c) == 0x80 &&
+      (c->a1b == 0x7e || c->a1b == 0x7f) && !(count & 1) && c->a1t + count <= 0x10000) {
+    uint8_t *dst = &g_ram[((c->a1b & 1) << 16) | c->a1t];
+    uint16_t p = h->vram_ptr, buf = h->vram_read_buf;
+    for (uint32_t i = 0; i < count; i += 2, p += h->vram_inc) {
+      dst[i] = buf;
+      dst[i + 1] = buf >> 8;
+      buf = g_vram[p & 0x7fff];
+    }
+    h->vram_ptr = p;
+    h->vram_read_buf = buf;
+    c->a1t += count;
+    return;
+  }
   uint8_t mode = c->dmap & 7;
   int step = (c->dmap & 0x08) ? 0 : (c->dmap & 0x10) ? -1 : 1;
   for (uint32_t j = 0; j < count; j++) {
