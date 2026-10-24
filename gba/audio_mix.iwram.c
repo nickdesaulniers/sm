@@ -121,6 +121,9 @@ void Audio_MixChunk(int8_t *left, int8_t *right, int n) {
   // the echo on, the voices with echo add to |wet|, the others to |dry|;
   // the echo's output follows (see Echo).
   int32_t sums[3 * kAudioChunk], *dry = sums, *wet = sums + kAudioChunk;
+  // (Audio_MixVoice may mix two samples past |n|, when it is 2 more than a
+  // multiple of 4: the chunk is, so that there is room.)
+  _Static_assert(kAudioChunk % 4 == 0, "Audio_MixVoice's room");
   int8_t noise_samples[kAudioChunk];
   bool noise_done = false;
   // (|wet| starts as the echo works on it, kEchoZero up, and |dry| as far

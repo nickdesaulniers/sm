@@ -7,7 +7,10 @@
 @ loop in Audio_MixChunk does, four at a time; or, played slower than half
 @ the mixer's rate, those between its samples, a sample at a time. At the
 @ end of the sample, it goes back to its loop, or is done (v->on false).
-@ Silent (v->vol 0), it only moves on.
+@ Silent (v->vol 0), it only moves on. (Those slower voices, when they
+@ don't get to the end in |n|, are done four at a time: for |n| 2 more than
+@ a multiple of 4, they add two samples past |n|, to words nothing reads, but
+@ |sum| needs room for them.)
 @
 @     void Audio_ClearSums(int32_t *sums, int n, int32_t value);
 @
@@ -29,7 +32,10 @@
 @ sides is a sum and a shift. (Audio_MixChunk starts the other voices' sums
 @ at 0x80008000 less, so that the sums add up as before.) The game's
 @ filter, 127 on the old word alone, is x - ((x + 127) >> 7) on a side: the
-@ loop does that, and any other in the block at 4.
+@ loop at 1 does that, and the one at 4 any other. (Both read the buffer's
+@ word first, the next old, and write over it after.) The sum of the taps,
+@ /128, passes 16 bits only for sets of taps that add up to over 128 (the
+@ game's last has 103 and -90): only those are clamped.
 @
 @     void Audio_EchoUnheard(int32_t *wet, int pairs, uint32_t *buf, EchoState *s);
 @
@@ -147,6 +153,7 @@ Audio_MixVoice:
     bne     1b
 6:
     str     r4, [r2, #V_POS]
+8:
     pop     {r4-r11, lr}
     bx      lr
     @ At the end of the sample, after the first of two: back to its loop,
@@ -232,13 +239,21 @@ Audio_MixVoice:
     sub     r11, r11, r12
     b       14b
 
-    @ Not to the end in these |n|: two at a time. The position is in two
-    @ parts, so that its sample changing comes as a carry: its fraction in the
-    @ top of r4 (r5 the step the same), and the index of the sample after
-    @ (r10), from the end's: r3, moved up to it, takes the index below 0,
-    @ and the end is a sign. r8 is the sample, r9 how far the next is from it.
+    @ Not to the end in these |n|: four at a time (when n is 2 more than
+    @ a multiple of four, the last two are two more than |n|: past the sums
+    @ it mixes, which nothing reads; and the voice's position is where r8
+    @ has it from the start, so the loop leaves it alone). The position is
+    @ in two parts, so that its sample changing comes as a carry: its
+    @ fraction in the top of r4 (r5 the step the same), and the index of the
+    @ sample after (r10), from the end's: r3, moved up to it, takes the
+    @ index below 0, and the end is a sign. r8 is the sample, r9 how far the
+    @ next is from it. [sp] has how far back its loop goes, in samples.
 12:
-    ldr     r6, [r2, #V_END]
+    str     r8, [r2, #V_POS]
+    ldr     r8, [r2, #V_LOOP_LEN]
+    movs    r8, r8, lsr #16
+    moveq   r8, #1
+    str     r8, [sp, #-4]!
     mov     r6, r6, lsr #16
     add     r3, r3, r6
     mov     r10, r4, lsr #16
@@ -249,28 +264,20 @@ Audio_MixVoice:
     mov     r5, r5, lsl #16
     bl      19f
 22:
-    mov     r11, r4, lsr #24
-    mul     lr, r9, r11
-    add     r11, r8, lr, asr #8
+    ldmia   r0, {r2, r6, r11, r12}
+    .irp    s, r2, r6, r11, r12
+    mov     lr, r4, lsr #24
+    mul     lr, r9, lr
+    add     lr, r8, lr, asr #8
+    mla     \s, r7, lr, \s
     adds    r4, r4, r5
     blcs    19f
-    mov     r12, r4, lsr #24
-    mul     lr, r9, r12
-    add     r12, r8, lr, asr #8
-    adds    r4, r4, r5
-    blcs    19f
-    ldmia   r0, {r6, lr}
-    mla     r6, r7, r11, r6
-    mla     lr, r7, r12, lr
-    stmia   r0!, {r6, lr}
-    subs    r1, r1, #2
-    bne     22b
-    ldr     r12, [r2, #V_END]
-    mov     r11, r4, lsr #16
-    add     r12, r10, r12, lsr #16
-    sub     r12, r12, #1
-    orr     r4, r11, r12, lsl #16
-    b       6b
+    .endr
+    stmia   r0!, {r2, r6, r11, r12}
+    subs    r1, r1, #4
+    bgt     22b
+    add     sp, sp, #4
+    b       8b
     @ On to the next sample (r8 ← r8 + r9), and how far the one after is
     @ from it. At the end (r10 is 0, and what's read is past it): its loop's
     @ first, or the last again, as 15 has it.
@@ -280,11 +287,9 @@ Audio_MixVoice:
     ldrsb   r9, [r3, r10]
     sub     r9, r9, r8
     bxmi    lr
-    ldr     r6, [r2, #V_LOOP_LEN]
-    movs    r6, r6, lsr #16
-    moveq   r6, #1
-    sub     r6, r10, r6
-    ldrsb   r9, [r3, r6]
+    ldr     r9, [sp]
+    sub     r9, r10, r9
+    ldrsb   r9, [r3, r9]
     sub     r9, r9, r8
     bx      lr
 
@@ -328,28 +333,33 @@ Audio_ClearSums:
     .type Audio_EchoPairs, %function
 Audio_EchoPairs:
     push    {r4-r11, lr}
-    push    {r3}
     ldr     r4, [r3, #S_FEEDBACK]
     ldr     r6, [r3, #S_OLD]
     ldr     r8, [r3, #S_LAST]
     ldr     r9, [r3, #S_FIR0]
     ldr     r12, [r3, #S_FIR1]
-    sub     r12, r12, #127
-    orr     r9, r9, r12         @ 0 if (0, 127), as the game has it
+    push    {r3, r9, r12}       @ the state, then the taps
     mov     r7, r8, lsl #16
     mov     r7, r7, asr #16     @ the last echo's left
     sub     r8, r8, r7
     mov     r8, r8, asr #16     @ and right
     mov     r5, #0xff
     orr     r5, r5, #0xff00
+    @ Which loop (r9 is its start, and where each pair goes back to): the
+    @ game's (0, 127) at 1, any other at 4.
+    sub     r10, r12, #127
+    orrs    r10, r10, r9
+    adreq   r9, 1f
+    adrne   r9, 4f
+    movne   pc, r9
 1:
     @ The filter, on the old word's sides, 0 to 0xffff (0x8000 more than
     @ they are). With (0, 127), x - ((x + 127) >> 7) is x * 127 >> 7. r10
-    @ left, r11 right.
+    @ left, r11 right. (The word at r2 is the next old, as the pair's
+    @ new word is written over it, below.)
     and     r10, r6, r5
     mov     r11, r6, lsr #16
-    cmp     r9, #0
-    bne     4f
+    ldr     r6, [r2]
     add     r12, r10, #127
     sub     r10, r10, #0x7f00   @ (0x8000 less, and 0x100 back from the shift)
     sub     r10, r10, r12, asr #7
@@ -359,40 +369,39 @@ Audio_EchoPairs:
 5:
     @ The pair's echo: halfway from the last, then the new.
     add     lr, r10, r11, lsl #16
-    add     r12, r7, r10
-    mov     r12, r12, asr #1
-    add     r6, r8, r11
-    mov     r6, r6, asr #1
-    add     r12, r12, r6, lsl #16
-    str     r12, [r0, #OUT]
     str     lr, [r0, #OUT + 4]
+    add     lr, r7, r10
+    mov     lr, lr, asr #1
+    add     r3, r8, r11
+    mov     r3, r3, asr #1
+    add     lr, lr, r3, lsl #16
+    str     lr, [r0, #OUT]
     mov     r7, r10
     mov     r8, r11
     @ The pair's average of the voices' echo, each side 0 to 0xffff, and
     @ the feedback.
-    mul     r6, r10, r4
+    mul     r3, r10, r4
     mul     r10, r11, r4
     ldmia   r0, {r11, r12}
-    and     lr, r11, r5
-    and     r3, r12, r5
-    add     lr, lr, r3
+    mov     lr, r11, lsr #16
+    add     lr, lr, r12, lsr #16
+    and     r11, r11, r5
+    and     r12, r12, r5
+    add     r11, r11, r12
+    mov     r11, r11, lsr #1
+    add     r11, r11, r3, asr #7
     mov     lr, lr, lsr #1
-    add     lr, lr, r6, asr #7
-    mov     r6, r11, lsr #16
-    add     r6, r6, r12, lsr #16
-    mov     r6, r6, lsr #1
-    add     r6, r6, r10, asr #7
-    orr     r3, lr, r6
+    add     lr, lr, r10, asr #7
+    orr     r3, r11, lr
     movs    r3, r3, lsr #16
     bne     3f
 2:
-    orr     r3, lr, r6, lsl #16
-    swp     r6, r3, [r2]        @ into the buffer, the word there is the next old
-    add     r2, r2, #4
+    orr     r3, r11, lr, lsl #16
+    str     r3, [r2], #4        @ into the buffer
     add     r0, r0, #8
     subs    r1, r1, #1
-    bne     1b
-    pop     {r3}
+    movne   pc, r9
+    ldr     r3, [sp], #12
     str     r6, [r3, #S_OLD]
     add     r7, r7, r8, lsl #16
     str     r7, [r3, #S_LAST]
@@ -400,44 +409,46 @@ Audio_EchoPairs:
     bx      lr
     @ Clamped to 16 bits (0 to 0xffff here).
 3:
+    cmp     r11, #0x10000
+    mvnhs   r11, r11, asr #31
+    movhs   r11, r11, lsr #16
     cmp     lr, #0x10000
     mvnhs   lr, lr, asr #31
     movhs   lr, lr, lsr #16
-    cmp     r6, #0x10000
-    mvnhs   r6, r6, asr #31
-    movhs   r6, r6, lsr #16
     b       2b
     @ The filter with two taps, the new word's and the old's: left in r10,
-    @ right in r11, their sides now what they are, and clamped.
+    @ right in r11, their sides now what they are, and clamped if they have
+    @ to be (rarely: see the top).
 4:
-    ldr     r3, [sp]
-    ldr     r12, [r2]
-    ldr     lr, [r3, #S_FIR0]
-    ldr     r3, [r3, #S_FIR1]
-    and     r6, r12, r5
-    mov     r12, r12, lsr #16
-    sub     r6, r6, #0x8000
+    and     r10, r6, r5
+    mov     r11, r6, lsr #16
+    ldr     r6, [r2]
+    and     r12, r6, r5
+    ldmib   sp, {r3, lr}
     sub     r12, r12, #0x8000
     sub     r10, r10, #0x8000
+    mul     r12, r3, r12
+    mla     r12, lr, r10, r12
+    mov     r10, r6, lsr #16
+    sub     r10, r10, #0x8000
     sub     r11, r11, #0x8000
-    mul     r6, lr, r6
-    mla     r6, r3, r10, r6
-    mul     r12, lr, r12
-    mla     r12, r3, r11, r12
-    mov     r10, r6, asr #7
-    mov     r11, r12, asr #7
-    mov     r6, r10, lsl #16
-    cmp     r10, r6, asr #16
-    movgt   r10, #0x7f00
-    orrgt   r10, r10, #0xff
-    mvnlt   r10, #0x7f00
-    biclt   r10, r10, #0xff
-    mov     r6, r11, lsl #16
-    cmp     r11, r6, asr #16
-    movgt   r11, #0x7f00
-    orrgt   r11, r11, #0xff
-    mvnlt   r11, #0x7f00
-    biclt   r11, r11, #0xff
+    mul     r10, r3, r10
+    mla     r10, lr, r11, r10
+    mov     r11, r10, asr #7
+    mov     r10, r12, asr #7
+    add     r3, r10, #0x8000
+    add     r12, r11, #0x8000
+    orr     r3, r3, r12
+    movs    r3, r3, lsr #16
+    beq     5b
+    mov     r3, #0x7f00
+    orr     r3, r3, #0xff
+    mov     r12, r10, lsl #16
+    cmp     r10, r12, asr #16
+    eorne   r10, r3, r10, asr #31
+    mov     r12, r11, lsl #16
+    cmp     r11, r12, asr #16
+    eorne   r11, r3, r11, asr #31
     b       5b
     .size Audio_EchoPairs, . - Audio_EchoPairs
 
