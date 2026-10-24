@@ -909,7 +909,12 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   // The pause menu's equipment screen (and its fades) puts its title (SAMUS) on
   // BG1's priority tiles, over BG2's priority tiles' (the map's, BRINSTAR),
   // which split_bg2 would put in front.
-  SetSplit(!EquipmentScreen() && shown[1] > shown[0] && (r->tm & 2));
+  // BG2 only on the sub screen, added to BG3 on the main one (Crocomire's
+  // fight): its priority tiles are his body, in front of BG1's others (the
+  // wall), behind BG1's (the floor); there are more of BG1's, but the
+  // floor is out of his way.
+  bool sub_only = (r->cgwsel & 2) && (r->ts & 2) && !(r->tm & 2);
+  SetSplit(!EquipmentScreen() && (sub_only ? shown[1] > 0 : shown[1] > shown[0] && (r->tm & 2)));
 }
 
 // The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
