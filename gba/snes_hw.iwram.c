@@ -20,7 +20,7 @@ uint8_t g_oam_used;
 // The blocks of sprites the last upload of all of OAM compared, with 1
 // added, or 0 if g_oam might differ from the game's anywhere (see FastDma).
 static uint8_t oam_prev_blocks;
-uint16_t g_vram[kVramWords];
+uint16_t g_vram[kVramWords] __attribute__((aligned(4)));
 uint32_t g_vram_dirty[kVramChunks / 32];
 // The game wrote HDMAEN: HDMA's decoded channels are out of date.
 static bool hdma_dirty IWRAM_BSS;
@@ -432,26 +432,45 @@ ROM_CODE static void PaletteOrOamBytes(uint8_t bbad, const uint8_t *src, uint32_
   oam_prev_blocks = 0;
 }
 
+// DMA from VRAM (VMDATALREAD and VMDATAHREAD) to RAM, as the X-ray scope's
+// setup reads the room's tilemaps, 4 KB in two frames, and the message boxes
+// back up BG3's map: a byte at a time, in DmaBytes, that took most of three
+// frames. Whole words, with the data
+// port's read ahead: the first is the word it holds, then VRAM's from the
+// address on. Only as the game does it: the address going up by a word after
+// the high byte, with no remapping. Returns false for any other.
+ROM_CODE static bool VramReadDma(SnesDmaChannel *c, uint32_t count) {
+  SnesHw *h = &g_snes_hw;
+  uint16_t p = h->vram_ptr;
+  if ((c->dmap & 0x9f) != 0x81 || c->bbad != 0x39 || (c->a1b != 0x7e && c->a1b != 0x7f) ||
+      (h->vmain & 0x8c) != 0x80 || h->vram_inc != 1 || (count & 1) ||
+      c->a1t + count > 0x10000 || 0x8000 - (p & 0x7fff) < count / 2)
+    return false;
+  uint8_t *dst = &g_ram[(c->a1b & 1) << 16 | c->a1t];
+  uint16_t buf = h->vram_read_buf;
+  const uint16_t *src = &g_vram[p & 0x7fff];
+  if (!(c->a1t & 1)) {
+    *(uint16_t *)dst = buf;
+    CopyBytes(dst + 2, (const uint8_t *)src, count - 2);
+    buf = src[count / 2 - 1];
+  } else {
+    for (uint32_t i = 0; i < count; i += 2) {
+      dst[i] = buf;
+      dst[i + 1] = buf >> 8;
+      buf = *src++;
+    }
+  }
+  h->vram_read_buf = buf;
+  h->vram_ptr = p + count / 2;
+  c->a1t += count;
+  return true;
+}
+
 // DMA a byte at a time, through the B bus's registers: what FastDma
 // doesn't do, as seldom happens. (In ROM, for room in IWRAM.)
 ROM_CODE static void DmaBytes(SnesDmaChannel *c, uint32_t count) {
-  SnesHw *h = &g_snes_hw;
-  // VRAM's words to WRAM (the message boxes back up BG3's map so): its read
-  // port's buffer, then a word a pair of reads.
-  if ((c->dmap & 0x9f) == 0x81 && c->bbad == 0x39 && (h->vmain & 0x8c) == 0x80 &&
-      (c->a1b == 0x7e || c->a1b == 0x7f) && !(count & 1) && c->a1t + count <= 0x10000) {
-    uint8_t *dst = &g_ram[((c->a1b & 1) << 16) | c->a1t];
-    uint16_t p = h->vram_ptr, buf = h->vram_read_buf;
-    for (uint32_t i = 0; i < count; i += 2, p += h->vram_inc) {
-      dst[i] = buf;
-      dst[i + 1] = buf >> 8;
-      buf = g_vram[p & 0x7fff];
-    }
-    h->vram_ptr = p;
-    h->vram_read_buf = buf;
-    c->a1t += count;
+  if ((c->dmap & 0x80) && VramReadDma(c, count))
     return;
-  }
   uint8_t mode = c->dmap & 7;
   int step = (c->dmap & 0x08) ? 0 : (c->dmap & 0x10) ? -1 : 1;
   for (uint32_t j = 0; j < count; j++) {
@@ -1358,34 +1377,96 @@ ROM_CODE static void HdmaWindows(uint32_t *line_windows) {
       data = g_ram;
       data_ram = true;
     }
-    for (int v = 0; v < kSnesLines; v++) {
-      if (!terminated) {
-        if (transfer) {
-          for (int j = 0; j < bytes; j++) {
-            uint8_t value;
-            if (indirect)
-              value = WINDOW_READ(data, data_ram, dasb, das), das++;
+    // The edges the channel writes (|shift|'s bytes of a line's word, |mask|), and the line's
+    // word as it has it, |cur|, which a transfer changes. The X-ray scope's takes a line an entry,
+    // 2 bytes a line (from RAM, a pair of edges: WH2's and WH3's), and the rest of the lines just
+    // as the last were; a power bomb's a line an entry too, for each edge (through Baked, if it
+    // can).
+    uint32_t shift[4], mask = 0, cur = wh[0] | wh[1] << 8 | wh[2] << 16 | (uint32_t)wh[3] << 24;
+    for (int j = 0; j < bytes; j++) {
+      shift[j] = (d->regs[j] - 0x26) * 8;
+      mask |= 0xffu << shift[j];
+    }
+    // Fast, for one edge (bytes 1) or a pair (WH0's and WH1's, or WH2's and WH3's) from RAM: the
+    // edges a line are |edge|, stored by |out_byte| or |out_pair| (a line's word, 4 bytes, is 2
+    // halfwords on).
+    bool fast = indirect && data_ram &&
+                (bytes == 1 || (bytes == 2 && shift[1] == shift[0] + 8 && !(shift[0] & 8)));
+    uint8_t *out_byte = (uint8_t *)line_windows + shift[0] / 8;
+    uint16_t *out_pair = (uint16_t *)line_windows + shift[0] / 16;
+    uint32_t edge = cur >> shift[0] & (bytes == 1 ? 0xff : 0xffff);
+    // The lines of an entry at a time: the count's, from the first line the frame has of them.
+    // The first line transfers if the channel is to, and the rest only if the entry repeats.
+    for (int v = 0; v < kSnesLines;) {
+      int n = ntrl & 0x7f ? ntrl & 0x7f : 128;
+      bool repeat = (ntrl & 0x80) && (ntrl & 0x7f);
+      if (terminated)
+        n = kSnesLines;
+      int lines = n < kSnesLines - v ? n : kSnesLines - v;
+      if (fast) {
+        // (Whole halfwords of data, if it starts on one.)
+        const uint8_t *p = data + das;
+        bool half = !(das & 1);
+        int i = 0;
+        if (!terminated && transfer) {
+          edge = bytes == 1 ? *p : half ? *(const uint16_t *)p : p[0] | p[1] << 8;
+          p += bytes, das += bytes;
+          if (bytes == 1)
+            out_byte[4 * v++] = edge;
+          else
+            out_pair[2 * v++] = edge;
+          i = 1;
+        }
+        if (repeat && !terminated && das + bytes * lines <= 0x10000) {
+          das += bytes * (lines - i);
+          for (; i < lines; i++, p += bytes) {
+            if (bytes == 1)
+              out_byte[4 * v++] = edge = *p;
             else
-              value = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
-            wh[d->regs[j] - 0x26] = value;
+              out_pair[2 * v++] = edge = half ? *(const uint16_t *)p : p[0] | p[1] << 8;
+          }
+        } else {
+          for (; i < lines; i++, v++) {
+            if (bytes == 1)
+              out_byte[4 * v] = edge;
+            else
+              out_pair[2 * v] = edge;
           }
         }
-        ntrl--;
-        transfer = ntrl & 0x80;
-        if (!(ntrl & 0x7f)) {
-          // The next entry, as HdmaNextEntry.
-          ntrl = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
-          if (indirect) {
-            das = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
-            das |= WINDOW_READ(table, table_ram, a1b, a2a) << 8, a2a++;
+      } else {
+        for (int i = 0; i < lines; i++, v++) {
+          if (!terminated && (i ? repeat : transfer)) {
+            for (int j = 0; j < bytes; j++) {
+              uint32_t value;
+              if (indirect)
+                value = WINDOW_READ(data, data_ram, dasb, das), das++;
+              else
+                value = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
+              cur = (cur & ~(0xffu << shift[j])) | value << shift[j];
+            }
           }
-          terminated = ntrl == 0;
-          transfer = true;
+          line_windows[v] = (line_windows[v] & ~mask) | (cur & mask);
         }
       }
-      for (int j = 0; j < bytes; j++)
-        out[v * 4 + d->regs[j] - 0x26] = wh[d->regs[j] - 0x26];
+      if (terminated)
+        break;
+      ntrl -= lines;
+      transfer = ntrl & 0x80;
+      if (!(ntrl & 0x7f)) {
+        // The next entry, as HdmaNextEntry.
+        ntrl = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
+        if (indirect) {
+          das = WINDOW_READ(table, table_ram, a1b, a2a), a2a++;
+          das |= WINDOW_READ(table, table_ram, a1b, a2a) << 8, a2a++;
+        }
+        terminated = ntrl == 0;
+        transfer = true;
+      }
     }
+    if (fast)
+      cur = (cur & ~mask) | edge << shift[0];
+    for (int i = 0; i < 4; i++)
+      wh[i] = cur >> (8 * i);
     c->ntrl = ntrl;
     c->a2a = a2a;
     c->das = das;

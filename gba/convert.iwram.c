@@ -193,19 +193,24 @@ ROM_CODE void Convert_Tiles2bpp(volatile uint32_t *dst, const uint16_t *src, int
 }
 
 // SNES map entries are vhopppcc cccccccc (flips, priority, palette, tile);
-// the GBA's are ppppvhcc cccccccc.
-static inline uint32_t MapEntry(uint32_t e, uint32_t pal_add) {
-  return (e & 0x3ff) | ((e >> 4) & 0xc00) | (((e & 0x1c00) << 2) + pal_add);
+// the GBA's are ppppvhcc cccccccc. Two entries at a time, in a word (the maps
+// are converted a chunk of 16 at a time, |dst| and |src| aligned to words, and
+// |count| even), with |pal_add| in both halves (and no carry out of them).
+static inline uint32_t MapEntries(uint32_t e, uint32_t pal_add) {
+  return (e & 0x03ff03ff) | ((e >> 4) & 0x0c000c00) | (((e & 0x1c001c00) << 2) + pal_add);
 }
 
 // Returns how many of the entries have the priority bit.
 int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add) {
-  uint32_t hi = 0;
-  for (int i = 0; i < count; i++) {
-    dst[i] = MapEntry(src[i], pal_add);
-    hi += src[i] & 0x2000;
+  volatile uint32_t *d = (volatile uint32_t *)dst;
+  const uint32_t *s = (const uint32_t *)src;
+  uint32_t hi = 0, add = pal_add | pal_add << 16;
+  for (int i = 0; i < count / 2; i++) {
+    uint32_t e = s[i];
+    d[i] = MapEntries(e, add);
+    hi += (e >> 13) & 0x00010001;
   }
-  return hi >> 13;
+  return (hi & 0xffff) + (hi >> 16);
 }
 
 // Splits a map in two by the priority bit: tiles in front of the
@@ -213,18 +218,17 @@ int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t
 // in the other. Returns how many are in front.
 int Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
                      int count, uint32_t blank) {
-  int n = 0;
-  for (int i = 0; i < count; i++) {
-    uint32_t e = src[i];
-    uint32_t g = MapEntry(e, 0);
-    if (e & 0x2000) {
-      hi[i] = g;
-      lo[i] = blank;
-      n++;
-    } else {
-      hi[i] = blank;
-      lo[i] = g;
-    }
+  volatile uint32_t *h = (volatile uint32_t *)hi, *l = (volatile uint32_t *)lo;
+  const uint32_t *s = (const uint32_t *)src;
+  uint32_t n = 0, blanks = blank | blank << 16;
+  for (int i = 0; i < count / 2; i++) {
+    uint32_t e = s[i], g = MapEntries(e, 0), p = (e >> 13) & 0x00010001;
+    // (A halfword of ones where the entry has the priority bit; and the
+    // blank's and the entry, swapped there.)
+    uint32_t front = (p << 16) - p, swap = (g ^ blanks) & front;
+    h[i] = blanks ^ swap;
+    l[i] = g ^ swap;
+    n += p;
   }
-  return n;
+  return (n & 0xffff) + (n >> 16);
 }

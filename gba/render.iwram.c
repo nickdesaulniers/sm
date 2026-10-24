@@ -150,6 +150,10 @@ static uint8_t bg12_layers[2] = {6, 8};
 // some of Brinstar's and the Wrecked Ship's rooms: then BG3 goes between
 // them, BG1 a priority higher and sprites too (see ColorMath).
 static bool bg3_mid;
+// How a power bomb's blast, the fixed color in the window that hides BG3, is
+// tinted: 0 for not (see Bg3Kind).
+static uint8_t blast_bg3;
+enum { kBg3Mixed, kBg3Black, kBg3Clear };
 // With the sub screen subtracted, how much the main screen keeps where the
 // sub screen's layers are, in 16ths (see SubtractWeight).
 static int subtract_weight;
@@ -411,9 +415,41 @@ ROM_CODE static uint8_t SubLayers(const PpuRegs *r) {
   return (r->cgadsub & 0x80) && (sub & subtract_layer) ? subtract_layer : sub;
 }
 
+// The sub screen's layers in |sub| that a window can hide (TSW, with a
+// window on the layer).
+ROM_CODE static uint8_t WindowedSub(const PpuRegs *r, uint8_t sub) {
+  uint8_t windowed = 0;
+  for (int i = 0; i < 3; i++) {
+    if ((sub & r->tsw & (1 << i)) && ((r->wsel[i >> 1] >> ((i & 1) * 4)) & 0xa))
+      windowed |= 1 << i;
+  }
+  return windowed;
+}
+
+// Whether line |r| is a power bomb's: BG3 alone on the sub screen, added
+// whole to the main screen, and hidden by a window (the blast's) where the
+// fixed color is what's added. (With the fixed color not in the window
+// alone, but where BG3 is transparent as well, that's not the blast's.)
+ROM_CODE static bool PowerBombRegs(const PpuRegs *r) {
+  uint8_t sub = r->ts & ~r->tm & 7;
+  if (!(r->cgwsel & 2) || (r->cgwsel & 0x30) || (r->cgadsub & 0xc0) || !(r->cgadsub & 0x3f) ||
+      sub != 4 || frame_mode7 || (r->inidisp & 0x80) ||
+      !(r->coldata[0] | r->coldata[1] | r->coldata[2]))
+    return false;
+  uint8_t windowed = WindowedSub(r, sub);
+  return windowed && FixedShows(r, windowed);
+}
+
+// The blast's tint (blast_bg3, a kBg3Black or kBg3Clear) on line |r|, or 0.
+ROM_CODE static int BlastTint(const PpuRegs *r) {
+  return blast_bg3 != kBg3Mixed && PowerBombRegs(r) ? blast_bg3 : 0;
+}
+
 // Returns the sub screen's layers it shows (CGADSUB's bits), or with
-// kFixedInWindows, the ones that windows hide, for the fixed color there.
-enum { kFixedInWindows = 0x80 };
+// kFixedInWindows, the ones that windows hide, for the fixed color there. Or
+// with kBlastTint, BG3 as the blast's tint (see Bg3Kind): it shows where
+// windows hide it on the SNES, and not elsewhere.
+enum { kFixedInWindows = 0x80, kBlastTint = 0x40 };
 ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   c->bld[0] = c->bld[1] = c->bld[2] = 0;
   uint8_t math = r->cgadsub & 0x3f;
@@ -426,6 +462,13 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
   if (r->cgwsel & 2) {
     uint8_t sub = SubLayers(r);
+    // A power bomb's blast, with BG3 transparent: the fixed color's added
+    // everywhere, in the palettes (FixedMath). Or BG3 solid black: BG3
+    // itself is the fixed color, in the window that hides it on the SNES
+    // and nowhere else (UpdatePalette patches its colors).
+    int tint = BlastTint(r);
+    if (tint == kBg3Clear)
+      return 0;
     // (Or the palette subtracts, as SubtractWeight chose.)
     if (subtract && (subtract_color & 0x8000) && !subtract_palettes)
       return 0;
@@ -445,14 +488,10 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     // that: the main screen brightens, by the brightest of the color's
     // channels (the GBA can't make it a color), where Windows has the
     // GBA's windows do it. Its layers don't show, here, elsewhere.
-    uint8_t windowed = 0;
-    for (int i = 0; i < 3; i++) {
-      if ((sub & r->tsw & (1 << i)) && ((r->wsel[i >> 1] >> ((i & 1) * 4)) & 0xa))
-        windowed |= 1 << i;
-    }
+    uint8_t windowed = WindowedSub(r, sub);
     int fixed = r->coldata[0] > r->coldata[1] ? r->coldata[0] : r->coldata[1];
     fixed = fixed > r->coldata[2] ? fixed : r->coldata[2];
-    if (windowed && fixed && !subtract && FixedShows(r, windowed)) {
+    if (windowed && fixed && !subtract && !tint && FixedShows(r, windowed)) {
       c->bld[0] = BlendLayers(math & ~sub) | 2 << 6;
       c->bld[2] = fixed * 33 >> 6;  // /31 * 16
       return windowed | kFixedInWindows;
@@ -491,7 +530,7 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     // where the sub screen's layers are, it darkens what's under them,
     // about as much as their colors do, and they don't show.
     c->bld[1] = subtract ? subtract_weight << 8 : half ? 8 | 8 << 8 : 16 | 16 << 8;
-    return sub;
+    return tint ? sub | kBlastTint : sub;
   }
   return 0;
 }
@@ -499,7 +538,7 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
 // What the SNES's windows do in each of the GBA's regions (see Windows):
 // WININ, WINOUT, or 0 if nothing.
 ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blending) {
-  bool fixed = sub & kFixedInWindows;
+  bool fixed = sub & kFixedInWindows, tint = sub & kBlastTint;
   sub &= 7;
   int math_region = (r->cgwsel >> 4) & 3, clip_region = (r->cgwsel >> 6) & 3;
   bool used = false;
@@ -520,6 +559,9 @@ ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blend
     bool clip = clip_region == 3 || (clip_region == 1 && !color) || (clip_region == 2 && color);
     if (clip)
       masked |= 0x1f & ~sub;
+    // The tint, where the SNES hides BG3.
+    if (tint)
+      masked ^= sub;
     if (fixed) {
       // The fixed color where the sub screen's layers are hidden.
       no_math |= (masked & sub) != sub;
@@ -574,11 +616,19 @@ ROM_CODE static void Windows(DisplaySegment *c, const PpuRegs *r, uint8_t sub) {
 
 // The windows' GBA WIN0H and WIN1H, from the SNES's edges, for the GBA lines
 // from |g| to |end| (the SNES's from |s|).
+// (A window's edges often stay as they were from line to line, as the other's go.)
 ROM_CODE static void LineWindows(int g, int end, int s) {
+  uint32_t in[2] = {~0u, ~0u}, out[2] = {0, 0};
   for (; g < end; g++, s++) {
     uint32_t wh = line_wh[s];
-    line_windows[g] = WindowH(wh & 0xff, (wh >> 8) & 0xff) |
-                      (uint32_t)WindowH((wh >> 16) & 0xff, wh >> 24) << 16;
+    for (int w = 0; w < 2; w++) {
+      uint32_t edges = (wh >> (16 * w)) & 0xffff;
+      if (edges != in[w]) {
+        in[w] = edges;
+        out[w] = WindowH(edges & 0xff, edges >> 8);
+      }
+    }
+    line_windows[g] = out[0] | out[1] << 16;
   }
 }
 
@@ -1303,6 +1353,69 @@ ROM_CODE static int OffsetEnd(int g, int end, bool mode7) {
   return end;
 }
 
+// What the BG3 on show in the gameplay area (the SNES lines |s0| to |s1|, at
+// line |s|'s scrolling) is: kBg3Clear if it's transparent, kBg3Black if it's
+// solid black, or else kBg3Mixed. They're how a power bomb's blast shows in
+// most rooms: the sub screen has BG3 added, the fixed color (the blast's)
+// where a window hides it, and where it's transparent. The GBA can't add a
+// color to the main screen where a window is. But a BG3 that's clear has the
+// fixed color everywhere (the palettes do that); and a BG3 that's black is
+// solid, so on top, added, in the fixed color, where the window hides it, it
+// does what the SNES's does.
+ROM_CODE static int Bg3Kind(const PpuRegs *r, int s, int s0, int s1) {
+  int sc = r->bgsc[2], wide = sc & 1, high = sc & 2, kind = -1;
+  const uint16_t *tiles = &g_vram[(r->bgnba[1] & 15) << 12];
+  uint16_t last = 0xffff;
+  // (Its rows by the VOFS + 1 rule.)
+  int row0 = (VOFS(s, 2) + 1 + s0) >> 3, row1 = (VOFS(s, 2) + 1 + s1) >> 3;
+  int col0 = HOFS(s, 2) >> 3;
+  for (int row = row0; row <= row1; row++) {
+    // (The row's first word; a screen to the right is 0x400 words on, and one below it is
+    // that or 0x800.)
+    int base = ((sc & 0xfc) << 8) + (row & 31) * 32 +
+               (high && (row & 32) ? (wide ? 0x800 : 0x400) : 0);
+    for (int col = col0; col <= col0 + 32; col++) {
+      int i = base + (col & 31) + (wide && (col & 32) ? 0x400 : 0);
+      uint16_t e = g_vram[i & 0x7fff] & 0x1fff;
+      if (e == last)
+        continue;
+      last = e;
+      const uint16_t *t = &tiles[((e & 0x3ff) * 8) & 0x7fff];
+      uint16_t p0 = t[0] & 0xff, p1 = t[0] >> 8;
+      if ((p0 && p0 != 0xff) || (p1 && p1 != 0xff))
+        return kBg3Mixed;
+      for (int y = 1; y < 8; y++) {
+        if (t[y] != t[0])
+          return kBg3Mixed;
+      }
+      int k = (p0 ? 1 : 0) | (p1 ? 2 : 0);
+      int this_kind = !k ? kBg3Clear : g_cgram[(e >> 10) * 4 + k] ? kBg3Mixed : kBg3Black;
+      if (this_kind == kBg3Mixed || (kind >= 0 && kind != this_kind))
+        return kBg3Mixed;
+      kind = this_kind;
+    }
+  }
+  return kind < 0 ? kBg3Mixed : kind;
+}
+
+// Whether the frame is a power bomb's, and how its blast is tinted (blast_bg3).
+// BG3's map is looked at every 8th frame of one.
+ROM_CODE static void FindBlast(void) {
+  static int kind_age;
+  static uint8_t kind;
+  if (text_line >= 0 && !frame_mode7 && PowerBombRegs(LINE_REGS(text_line))) {
+    if (kind_age-- <= 0) {
+      kind = Bg3Kind(LINE_REGS(text_line), text_line, SnesLine(hud ? kGbaHudLines : 0),
+                     SnesLine(kGbaLines - 1));
+      kind_age = 7;
+    }
+    blast_bg3 = kind;
+  } else {
+    blast_bg3 = kBg3Mixed;
+    kind_age = 0;
+  }
+}
+
 void Render_CaptureFrame(void) {
   SnesHw_RunDisplay(line_states, line_state, line_wh, line_ofs);
   // (The palette's line, as it was last frame: see FixedMath.)
@@ -1362,6 +1475,7 @@ void Render_CaptureFrame(void) {
   else
     SetSplit(false);
   bg3_mid = text_line >= 0 && !frame_mode7 && !split_bg2 && Bg3Between(LINE_REGS(text_line));
+  FindBlast();
   if (text_line >= 0 && !frame_mode7 && (LINE_REGS(text_line)->cgadsub & 0x80) &&
       (LINE_REGS(text_line)->cgwsel & 2))
     subtract_weight = SubtractWeight(LINE_REGS(text_line));
@@ -1440,6 +1554,10 @@ void Render_CaptureFrame(void) {
 ROM_CODE static uint32_t FixedMath(const PpuRegs *m) {
   int region = (m->cgwsel >> 4) & 3;
   bool sub = m->cgwsel & 2;
+  // A power bomb's with BG3 transparent: the fixed color's added to all the
+  // layers but BG3, which isn't on the main screen.
+  if (BlastTint(m) == kBg3Clear)
+    return (m->cgadsub & 0x3b) | (m->coldata[0] | m->coldata[1] << 5 | m->coldata[2] << 10) << 8;
   if ((sub && !((m->cgadsub & 0x80) && (subtract_color & 0x8000))) || !(m->cgadsub & 0x3f) ||
       region == 1 || region == 3)
     return 0;
@@ -1495,9 +1613,12 @@ ROM_CODE static void RecolorBlocks(uint32_t blocks, const uint8_t (*bd)[32],
 // The palette, at the brightness of line |r|, with line |m|'s color math
 // with the fixed color.
 ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_palettes) {
+  static uint32_t patches_tint;  // (the blast's color the patches have: see below)
   SnesHw *h = &g_snes_hw;
   int b = (r->inidisp & 0x80) ? 0 : (r->inidisp & 15);
   uint32_t math = FixedMath(m);
+  // The blast's color, if BG3 (black) is its tint, for patching BG3's.
+  uint32_t tint = BlastTint(m) == kBg3Black ? m->coldata[0] | m->coldata[1] << 5 | m->coldata[2] << 10 : 0;
   uint8_t subtracted = (subtract_color & 0x8000) && (m->cgwsel & 2) ? subtract_palettes : 0;
   // The colors to convert: those the game changed, or all, if what they're
   // converted by did, or if that's a lot of them. And BG3's, with colors
@@ -1522,7 +1643,7 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
     blocks = game_changed = ~0u;
   if (subtracted_frames)
     blocks |= 0xf;
-  if (!blocks)
+  if (!blocks && tint == patches_tint)
     return;
   conv.subtract_palettes = subtracted;
   conv.brightness = b;
@@ -1583,10 +1704,25 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
   static uint32_t patches_key;
   uint32_t key = subtract_color | b << 16 | (math >> 6 & 1) << 20 | subtracted << 21 |
                  bg3_palettes << 29;
-  if ((game_changed & 0xf) == 0 && key == patches_key)
+  if ((game_changed & 0xf) == 0 && key == patches_key && tint == patches_tint)
     return;
   patches_key = key;
+  patches_tint = tint;
   num_patches = 0;
+  if (tint) {
+    // BG3's colors all the blast's, the fixed color (see Bg3Kind).
+    uint16_t color = 0;
+    for (int ch = 0; ch < 15; ch += 5)
+      color |= Bright(tint >> ch & 31, b) << ch;
+    for (int p = 0; p < 8 && bg3_palettes; p++) {
+      for (int i = 1; i < 4; i++) {
+        patch_index[num_patches] = p * 16 + i;
+        patch_color[num_patches] = color;
+        restore_color[num_patches++] = GBA_BG_PALETTE[128 + p * 16 + i];
+      }
+    }
+    return;
+  }
   for (int p = 0; p < 8 && bg3_palettes; p++) {
     if (!(subtracted & (1 << p)))
       continue;
@@ -1821,7 +1957,7 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
           uint32_t o = c * 16;
           int hi;
           const uint16_t *src = &g_vram[addr + o];
-          uint16_t later[16];
+          uint16_t later[16] __attribute__((aligned(4)));
           if (tile_add) {
             for (int i = 0; i < 16; i++)
               later[i] = (src[i] & 0xfc00) | ((src[i] + tile_add) & 0x3ff);

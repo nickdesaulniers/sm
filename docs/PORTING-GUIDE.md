@@ -173,7 +173,15 @@ work:
   Stagger the sample points so they don't all fall on the same row of
   their tiles. If the effect layer shares palettes with the HUD, switch its
   colours in mid-frame.
-- **The fixed color:** fold it into the palette.
+- **The fixed color:** fold it into the palette. In a window where the
+  sub screen's layers are hidden, only the whole screen's brightening
+  (BLDY) is left, and white is no color: a power bomb's blast, yellow on the
+  SNES, came out pale grey. Its room's BG3 is the sub screen, solid black
+  but for the blast's window; so BG3 itself is the fixed color: its colors
+  patched to it, shown (and blended in) only where the window hides it on
+  the SNES, and not elsewhere. (If BG3 is clear, the fixed color is all over
+  the screen, and the palette has it.) Look at what the layer is before
+  trusting that: a BG3 with anything in it keeps the brightening.
 - **Windows:** SNES window 1 → WIN0, window 2 → WIN1, with their edges
   in the HBlank stream.
 
@@ -410,6 +418,13 @@ doesn't start) still gets its shots.
   Slow frames then borrow from fast ones: in Ridley's Ceres fight that was
   47 fps to 58 without saving a cycle. Profile "time in the BIOS" as a
   symptom: idle time in a game that can't keep up is time lost to waiting.
+
+- The scenario tour finds the one-off frames that a 60-frame mean hides
+  (the slowest frame of a window is in the log). The X-ray scope had three:
+  its setup reads the tilemaps back from VRAM by DMA (a byte at a time: 3
+  frames), its window HDMA is a table of a line an entry (generic code: a
+  third of a frame), and the game's own search for each block's X-ray entry
+  (272 of them in one frame; a small cache of the answers did it).
 
 ## 7. Pitfalls that cost the most
 
