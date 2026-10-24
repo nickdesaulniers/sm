@@ -7,9 +7,12 @@
 //           in morph ball; hold to look with the X-ray scope
 //   L       hold to aim diagonally: up, or down with Down held (SNES R, L)
 //   Select  with R held: pick what R readies, the HUD showing it: missiles,
-//           super missiles, grapple beam, X-ray scope, of those Samus has,
-//           round and round. The pick is kept for the next time R is held.
-//           Without R, Select does nothing
+//           super missiles, power bombs, grapple beam, X-ray scope, of those
+//           Samus has, round and round. The pick is kept for the next time
+//           R is held. Without R, Select does nothing. (In morph ball R
+//           readies power bombs whatever was picked, and Select does nothing.)
+//           With power bombs readied, a beam held charged long enough fires
+//           its special attack, as on the SNES
 //   Start   pause
 // and Samus always runs (SNES B held). Elsewhere, menus and the pause
 // screen included, the buttons are the SNES's buttons of the same names.
@@ -55,12 +58,15 @@ static bool HasItem(int item) {
 }
 
 static void PickNextRItem(void) {
-  static const uint8_t kRItems[] = {kItemNone, kItemSuperMissiles, kItemGrapple, kItemXray};
+  static const uint8_t kRItems[] = {kItemNone, kItemSuperMissiles, kItemPowerBombs,
+                                      kItemGrapple, kItemXray};
+  enum { kCount = sizeof(kRItems) };
   int i = 0;
-  while (i < 4 && kRItems[i] != r_item)
+  while (i < kCount && kRItems[i] != r_item)
     i++;
-  for (int n = 1; n <= 4; n++) {
-    int item = kRItems[(i + n) % 4];
+  for (int n = 1; n <= kCount; n++) {
+    int at = i + n;
+    int item = kRItems[at < kCount ? at : at - kCount];
     if (HasItem(item)) {
       r_item = item;
       return;

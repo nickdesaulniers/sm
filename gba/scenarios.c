@@ -77,10 +77,11 @@ typedef struct Scenario {
   {"beam-" name "-charge", kRoom, CHARGED(n), kBeamScript}
 
 // Samus faces the door; R readies missiles (then, with Select, the next of
-// supers, the grapple beam and the X-ray scope).
+// supers, power bombs, the grapple beam and the X-ray scope).
 #define kFace "-*20 LEFT*4 -*30 @ "
 #define kSelectSupers "R*2 R+SELECT*2 R*2 "
-#define kSelectGrapple kSelectSupers kSelectSupers
+#define kSelectPowerBombs kSelectSupers kSelectSupers
+#define kSelectGrapple kSelectPowerBombs kSelectSupers
 #define kSelectXray kSelectGrapple kSelectSupers
 // Down twice: crouch, then the morph ball.
 #define kMorph "DOWN*10 -*6 DOWN*10 -*20 "
@@ -119,6 +120,15 @@ static const Scenario kScenarios[] = {
    kFace kSelectSupers "R*10 @ R+B*2 -*5 @ -*10 @ (R+B*2 -*25)x3 @ -*40 @"},
   {"bomb", kRoom, BEAMS(0),
    kFace kMorph "@ B*2 -*30 @ -*8 @ -*8 @ (B*2 -*12)x3 -*20 @ -*10 @ -*60 @"},
+  // The charge beam's special attacks: power bombs readied, B held until the
+  // beam is fully charged (120 frames), then let go.
+#define COMBO(n, name) \
+  {"combo-" name, kRoom, CHARGED(n), \
+   kFace kSelectPowerBombs "R*10 @ R+B*60 @ R+B*58 @ R+B*6 @ R+B*20 @ -*10 @ -*30 @ -*60 @"}
+  COMBO(1, "wave"),
+  COMBO(2, "ice"),
+  COMBO(4, "spazer"),
+  COMBO(8, "plasma"),
   {"power-bomb", kRoom, BEAMS(0),
    kFace kMorph "R*10 @ R+B*2 -*10 @ -*20 @ -*30 @ -*40 @ -*60 @"},
   {"xray", kRoom, BEAMS(0),

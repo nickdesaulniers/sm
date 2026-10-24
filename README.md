@@ -107,9 +107,15 @@ layout of the GBA Metroids, *Zero Mission* and *Fusion*:
 
 So, as on the GBA Metroids, missiles are a shoulder button away: hold R and
 press B. With R held, Select cycles R's item through missiles, super
-missiles, the grapple beam and the X-ray scope, whichever Samus has found,
-shown on the HUD; the pick is kept for the next time R is held. Select does
-nothing without R. Letting go of R doesn't drop Samus from the grapple beam.
+missiles, power bombs, the grapple beam and the X-ray scope, whichever Samus
+has found, shown on the HUD; the pick is kept for the next time R is held.
+Select does nothing without R, or in morph ball, where R readies power bombs
+whatever was picked. Letting go of R doesn't drop Samus from the grapple beam.
+The charge beam's special attacks work as on the SNES: with power bombs
+readied (R held, power bombs picked), hold B until the beam is fully charged
+(about two seconds) and Samus fires the wave, ice, spazer or plasma attack,
+for a power bomb each. They need the charge beam and exactly one of those four
+beams; with several beams together there is no special attack.
 Because Samus always runs, the speed booster charges whenever she runs long
 enough.
 
