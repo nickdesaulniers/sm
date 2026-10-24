@@ -6,11 +6,17 @@
   <img src="docs/images/ceres-explodes.png" width="240" alt="Ceres station explodes as Samus escapes">
   <br>
   <img src="docs/images/landing.png" width="240" alt="Samus leaves her ship in the rain">
+  <img src="docs/images/bomb-torizo.png" width="240" alt="Bomb Torizo throws bombs at Samus">
   <img src="docs/images/kraid.png" width="240" alt="Kraid">
+  <br>
+  <img src="docs/images/golden-torizo.png" width="240" alt="Samus shoots the Golden Torizo, who throws his orbs and crescents">
+  <img src="docs/images/ridley.png" width="240" alt="Ridley">
   <img src="docs/images/phantoon.png" width="240" alt="Phantoon">
   <br>
   <img src="docs/images/botwoon.png" width="240" alt="Botwoon">
-  <img src="docs/images/ridley.png" width="240" alt="Ridley">
+  <img src="docs/images/draygon.png" width="240" alt="Draygon swoops and grabs Samus">
+  <img src="docs/images/golden-statue.png" width="240" alt="The golden statue at the entrance to Tourian">
+  <br>
   <img src="docs/images/mother-brain.png" width="240" alt="Mother Brain">
 </p>
 
