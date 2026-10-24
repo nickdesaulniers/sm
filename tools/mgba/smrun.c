@@ -282,7 +282,8 @@ static void chunk(FILE* f, const char* type, const unsigned char* data, uint32_t
     memcpy(hdr + 4, type, 4);
     fwrite(hdr, 1, 8, f);
     fwrite(data, 1, len, f);
-    uint32_t crc = crc32(crc32(0, (const unsigned char*) type, 4), data, len);
+    // (zlib's crc32 of a null buffer is 0, not the CRC so far: IEND has no data.)
+    uint32_t crc = crc32(crc32(0, (const unsigned char*) type, 4), data ? data : (const unsigned char*) "", len);
     unsigned char c[4];
     put32(c, crc);
     fwrite(c, 1, 4, f);
