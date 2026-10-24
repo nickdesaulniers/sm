@@ -9,14 +9,15 @@
   <img src="docs/images/bomb-torizo.png" width="240" alt="Bomb Torizo throws bombs at Samus">
   <img src="docs/images/kraid.png" width="240" alt="Kraid">
   <br>
+  <img src="docs/images/crocomire.png" width="240" alt="Crocomire swings at Samus">
   <img src="docs/images/golden-torizo.png" width="240" alt="Samus shoots the Golden Torizo, who throws his orbs and crescents">
   <img src="docs/images/ridley.png" width="240" alt="Ridley">
-  <img src="docs/images/phantoon.png" width="240" alt="Phantoon">
   <br>
+  <img src="docs/images/phantoon.png" width="240" alt="Phantoon">
   <img src="docs/images/botwoon.png" width="240" alt="Botwoon">
   <img src="docs/images/draygon.png" width="240" alt="Draygon swoops and grabs Samus">
-  <img src="docs/images/golden-statue.png" width="240" alt="The golden statue at the entrance to Tourian">
   <br>
+  <img src="docs/images/golden-statue.png" width="240" alt="The golden statue at the entrance to Tourian">
   <img src="docs/images/mother-brain.png" width="240" alt="Mother Brain">
 </p>
 
@@ -170,7 +171,7 @@ hex, for the unnamed), then the loadout and the beams.
 
 <p align="center">
   <img src="docs/images/dev-map.png" width="240" alt="The map with a debug station, the loadout and the beams under it">
-  <img src="docs/images/dev-crocomire.png" width="240" alt="Crocomire's room, spawned into with all items">
+  <img src="docs/images/dev-crocomire.png" width="240" alt="Crocomire, spawned into with all items">
   <img src="docs/images/dev-draygon.png" width="240" alt="Draygon's room, spawned into with all items">
 </p>
 
@@ -206,8 +207,8 @@ doors (the game's own doors, from the side Samus comes in by): Bomb Torizo
 Phantoon (Wrecked Ship), Botwoon and Draygon (Maridia) and Mother Brain
 (Tourian). The spawn loads the area's last station, and when Samus has her
 controls, goes through the door as if she had walked into it. (Crocomire's is
-the hatch in the ceiling of his room, as in the game; he is there, but the
-fight didn't start in testing: he stays in his first pose.)
+the hatch in the ceiling of his room, as in the game. As there, beams don't
+hurt him: missiles in his mouth push him back.)
 
 **Loadouts.** L picks what Samus has; every one but the first makes every boss
 alive again, so that a file that has beaten them can fight them:
