@@ -918,6 +918,22 @@ ROM_CODE __attribute__((noinline)) static int BlastLineEnd(const PpuRegs *r, int
   return end;
 }
 
+// Whether all of the main screen's colors are black: the backdrop, BG1's and
+// BG2's palettes and the sprites' (a door's fade clears them, and leaves
+// BG3's, the HUD's). Subtracting from black is black, but SubtractWeight's
+// color is of the room before, and BG3 would add all of it back: a purple
+// screen.
+ROM_CODE static bool MainScreenBlack(void) {
+  if (g_cgram[0])
+    return false;
+  const uint32_t *c = (const uint32_t *)&g_cgram[32];
+  for (int i = 0; i < 112; i++) {
+    if (c[i])
+      return false;
+  }
+  return true;
+}
+
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
 static bool SameSegment(const DisplaySegment *a, const DisplaySegment *b) {
   const uint16_t *x = &a->dispcnt, *y = &b->dispcnt;
@@ -1538,17 +1554,8 @@ void Render_CaptureFrame(void) {
     subtract_weight = SubtractWeight(LINE_REGS(text_line));
   else
     subtract_color = 0;
-  // A palette that's all black (a door's fade, or the room's start, where the
-  // game clears it) has nothing to subtract from or by: main screen black,
-  // BG3 black too. SubtractWeight's color is of the room before, and its
-  // BG3 would add all of it back, for a purple screen.
-  if (subtract_color & 0x8000) {
-    int i = 0;
-    while (i < 256 && !g_cgram[i])
-      i++;
-    if (i == 256)
-      subtract_color = 0;
-  }
+  if ((subtract_color & 0x8000) && MainScreenBlack())
+    subtract_color = 0;
 
   // Lines with the same registers (and the same offset from the SNES's
   // lines) have the same GBA registers, but for the scrolling, and Mode 7's
