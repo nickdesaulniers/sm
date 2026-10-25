@@ -749,6 +749,10 @@ uint16_t Scn_Keys(uint16_t real) {
         return 0;
       CallSomeSamusCode(1);
       CallSomeSamusCode(0xb);
+      // What Ceres's HDMA writes to BGMODE below the HUD is this, set to 9 by the elevator shaft's
+      // door code: a door entered directly would leave 0, Mode 0, which the game never has.
+      if (area_index == 6 && !reg_BGMODE_fake)
+        reg_BGMODE_fake = 9;
       door_pending = false;
       door_waiting = true;
       held_keys = 0;
