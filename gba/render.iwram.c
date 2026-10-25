@@ -131,6 +131,13 @@ static int text_line;
 static int y_offset = kMaxYOffset / 2;
 // SNES BG3 maps in GBA map slots 0 and 1, by BG3SC.
 static uint8_t bg3_slot_sc[2] = {0xff, 0xff};
+// Whether one BG3 map serves all the lines of the frame, and so the other
+// slot is spare: Mother Brain's rainbow beam borrows it for a map of one solid
+// tile (see ColorMath). And whether a line of the frame did, which slot, and
+// the color (the fixed color's channels).
+static bool bg3_single;
+static bool beam_on;
+static uint8_t beam_slot, beam_color[3];
 // How many of each slot's entries, by chunk of 16, have the priority bit.
 // The GBA has no background to spare for BG3's priority tiles (in front of
 // everything, with BGMODE's bit 3) and the others (at the back): lines
@@ -198,12 +205,13 @@ static struct {
   uint8_t bg2_nba;  // BG12NBA: where BG2's tiles are, from BG1's
   uint8_t bg_row[2];  // of 64x64 maps, which row of screens each tile row comes from (Map64Key)
   uint8_t bg3_slot_sc[2];
+  int8_t beam_slot;  // where the rainbow beam's map is, or -1 (see ShowBeam)
   int blank_tile;
   int brightness;
   uint32_t fixed_math;
   bool mode7, bg3_palettes, split_bg2, squashed;
   uint8_t subtract_palettes;
-} conv = {.blank_tile = -1, .brightness = -1};
+} conv = {.beam_slot = -1, .blank_tile = -1, .brightness = -1};
 
 static inline __attribute__((always_inline)) int SnesLine(int g) {
   if (squash)
@@ -477,7 +485,7 @@ ROM_CODE static int BlastTint(const PpuRegs *r) {
 // kFixedInWindows, the ones that windows hide, for the fixed color there. Or
 // with kBlastTint, BG3 as the blast's tint (see Bg3Kind): it shows where
 // windows hide it on the SNES, and not elsewhere.
-enum { kFixedInWindows = 0x80, kBlastTint = 0x40 };
+enum { kFixedInWindows = 0x80, kBlastTint = 0x40, kBeamAdd = 0x20 };
 ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   c->bld[0] = c->bld[1] = c->bld[2] = 0;
   uint8_t math = r->cgadsub & 0x3f;
@@ -491,12 +499,28 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
   if (!(r->cgwsel & 2) && !subtract && region == 1) {
     // The fixed color added inside the color window only (Mother Brain's
     // rainbow beam: HDMA gives the window its shape, and the color its
-    // cycle). The GBA can't add a color, but it brightens the layers
-    // inside its window, by the mean of the color's channels (the beam
-    // over a dark room: white, as bright as the color).
+    // cycle).
     int fixed = r->coldata[0] + r->coldata[1] + r->coldata[2];
     if (!fixed)
       return 0;
+    if (bg3_single && !(r->tm & 4)) {
+      // The GBA's blending adds, too: a layer of one solid color (BG0,
+      // over everything, from a map of one tile in the slot no BG3 uses:
+      // ShowBeam) added to the layers the math has, where Windows shows it
+      // (the color window).
+      beam_on = true;
+      beam_slot = r->bgsc[2] == bg3_slot_sc[1] ? 0 : 1;  // (the other than Bg3Slot says)
+      for (int i = 0; i < 3; i++)
+        beam_color[i] = r->coldata[i];
+      c->dispcnt |= kDispcntBg0;
+      c->bgcnt[0] = 2 << 2 | ((beam_slot ? kSbBg3Slot1 : kSbBg3Slot0) + 1) << 8;
+      c->bld[0] = 1 | BlendLayers(math & ~4) << 8 | 1 << 6;
+      c->bld[1] = 16 | 16 << 8;
+      return 4 | kBeamAdd;
+    }
+    // Without one, the GBA brightens the layers inside its window, by the
+    // mean of the color's channels (the beam over a dark room: white, as
+    // bright as the color).
     c->bld[0] = BlendLayers(math) | 2 << 6;
     c->bld[2] = fixed * 11 >> 6;  // /93 * 16
     return kFixedInWindows;
@@ -581,7 +605,7 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
 // What the SNES's windows do in each of the GBA's regions (see Windows):
 // WININ, WINOUT, or 0 if nothing.
 ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blending) {
-  bool fixed = sub & kFixedInWindows, tint = sub & kBlastTint;
+  bool fixed = sub & kFixedInWindows, tint = sub & kBlastTint, beam = sub & kBeamAdd;
   sub &= 7;
   int math_region = (r->cgwsel >> 4) & 3, clip_region = (r->cgwsel >> 6) & 3;
   bool used = false;
@@ -605,6 +629,10 @@ ROM_CODE static uint32_t WindowRegions(const PpuRegs *r, uint8_t sub, bool blend
     // The tint, where the SNES hides BG3.
     if (tint)
       masked ^= sub;
+    // The beam's layer isn't the SNES's BG3 (not on its sub screen at all):
+    // only the color window hides it.
+    if (beam)
+      masked &= ~sub;
     if (fixed) {
       // The fixed color where the sub screen's layers are hidden.
       no_math |= (masked & sub) != sub;
@@ -1684,6 +1712,8 @@ void Render_CaptureFrame(void) {
   if (second != bg3_slot_sc[0] && second != bg3_slot_sc[1])
     bg3_slot_sc[first == bg3_slot_sc[0] ? 1 : 0] = second;
 
+  bg3_single = first == second;
+  beam_on = false;
   if (text_line >= 0 && !frame_mode7)
     ChooseSplit(LINE_REGS(text_line));
   else
@@ -2543,6 +2573,33 @@ ROM_CODE static void HideUntilPresented(void) {
   REG_IME = 1;
 }
 
+// Mother Brain's rainbow beam (see ColorMath): the spare slot's map of one
+// tile, the solid one (in the slot's first screen block, the map in its
+// second), and the tile's color in BG3's palette 8, whose colors 4-15 are
+// free: the fixed color, as the other palettes have it.
+ROM_CODE static void ShowBeam(int brightness) {
+  // The slot isn't BG3's any more (UpdateMaps leaves it be), and the map
+  // is as it was unless UpdateMaps converted BG3's over it since: that sets
+  // the slot's conv.bg3_slot_sc.
+  bg3_slot_sc[beam_slot] = 0xff;
+  if (conv.bg3_slot_sc[beam_slot] != 0xff || conv.beam_slot != beam_slot) {
+    conv.bg3_slot_sc[beam_slot] = 0xff;
+    conv.beam_slot = beam_slot;
+    int sb = beam_slot ? kSbBg3Slot1 : kSbBg3Slot0;
+    volatile uint32_t *tile = (volatile uint32_t *)VRAM_SB(sb);
+    volatile uint32_t *map = (volatile uint32_t *)VRAM_SB(sb + 1);
+    uint32_t entry = ((sb - kSbBg3Slot0) * 64 + kBg3Tiles) | 8 << 12;
+    for (int i = 0; i < 8; i++)
+      tile[i] = 0x44444444;
+    for (int i = 0; i < 512; i++)
+      map[i] = entry | entry << 16;
+  }
+  uint16_t color = 0;
+  for (int i = 0; i < 3; i++)
+    color |= Bright(beam_color[i], brightness) << (5 * i);
+  GBA_BG_PALETTE[128 + 4] = color;
+}
+
 void Render_Present(void) {
   bool mode7 = frame_mode7, text = text_line >= 0;
   // The registers of a line with a tiled background mode, if any, for
@@ -2561,6 +2618,7 @@ void Render_Present(void) {
     h->vram_dirty = true;
     conv.bg12_base = conv.bg3_base = 0xffff;
     conv.bgsc[0] = conv.bgsc[1] = conv.bg3_slot_sc[0] = conv.bg3_slot_sc[1] = 0xff;
+    conv.beam_slot = -1;
   }
   // Converting all of VRAM for a change of mode, or a room's worth of it,
   // takes frames: the VBlank interrupt would show the last frame's
@@ -2587,6 +2645,8 @@ void Render_Present(void) {
     h->vram_dirty = true;
   }
   UpdateTiles(r, dirty, text && !mode7, text);
+  if (beam_on)
+    ShowBeam(LINE_REGS(SnesLine(0))->inidisp & 15);
   if (text)
     UpdateMaps(r, dirty, conv.blank_tile != blank_before, !mode7);
   if (h->vram_dirty) {
