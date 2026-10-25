@@ -22,6 +22,16 @@
 //              UP DOWN R L, or '-' for none), for N frames
 //   @          a shot of the frame the next word begins
 //   ( ... )xN  the words between, N times
+//   ( ... )WOFF,N  the words between, again and again until the 16-bit word at
+//              OFF (hex, in the game's RAM: g_ram + OFF) is at least N (decimal),
+//              or ( ... )VOFF,N until it is at most N: for a fight, played until
+//              the boss's health, place or state says it has gone on (the
+//              first enemy's x position is f7a, its health f8c, its variable A
+//              fa8; Samus's x position af6; the boss bits of Norfair d82a). At
+//              most 1500 times round, for a fight that never gets there.
+//   ^N         Samus keeps N pixels to the left of the first enemy (at most 12
+//              off: put there, a player's footwork, for a fight where he must stay
+//              in reach), until ^0
 //   >X,Y       Samus to that place (pixels)
 //   #HHHH      Samus through the door with that definition (hex, in bank $83) as
 //              the room tour does (tour.c): into the room it leads to, at its
@@ -459,6 +469,23 @@ static const Scenario kScenarios[] = {
   ROOM("e0b5", "abac"),
   // The Golden Torizo's room, at its left door (Norfair's debug station 22).
   {"boss-golden-torizo", 2, 22, 0, -1, kBossScript},
+  // The two fights played to their ends (as a player does, from the first blow to the room after),
+  // by the boss's own state (the ( )W and ( )V loops), a shot every few frames to catch a layer or
+  // a sprite that goes missing for a second. A shot holds smrun's frames, so these need more
+  // than its default budget (tools/scenarios.sh's FRAMES: about 4 frames a shot).
+  // Crocomire: Samus walks to him (he wakes at 224 pixels) and jumps at his mouth with super
+  // missiles, kept 100 pixels from him (a player's footwork); pushed back along the floor to the
+  // spikes (x 1480), over them (they crumble) and off the bridge (x 1600: his variable A is
+  // 2 on) into the lava, he melts (A to 58) and his skeleton runs off to the left (x 500), then
+  // Samus walks left after it (the bones fall; the death sets the boss bit) and out of the room
+  // by its door (to the save room).
+  {"boss-crocomire-full", 2, 0, 1, -1, "-*30 @ RIGHT*50 -*60 RIGHT*60 " kSelectSupers "^100 (A+R*20 (A+R+B*2 A+R*4)x5 -*40 @)Wf7a,1480 (@ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 (@ A+R+B*2 A+R*4)x5 (@ -*4)x10)Wfa8,2 ^0 (@ -*3)Wfa8,58 (@ -*3)Vf7a,500 (@ LEFT*3)Wd82a,2 (@ -*3)x40 (@ LEFT*3)x20 -*30 @ #93de -*30 @ (@ -*3)x20 -*60 @"},
+  // Power bombs in the morph ball in front of him.
+  {"boss-crocomire-bombs", 2, 0, 1, -1, "-*30 @ RIGHT*50 -*60 RIGHT*60 -*60 " kSelectPowerBombs kMorph "R*10 @ R+B*2 (@ -*3)x60 -*100 (@ -*3)x20 R+B*2 (@ -*3)x60 (@ -*10)x20"},
+  // The Golden Torizo: she walks to him (he wakes), super missiles (he catches them), then
+  // charged shots, each way, until he dies and goes (his enemy slot's pointer is 0), and the
+  // room's other door.
+  {"boss-golden-torizo-full", 2, 22, 0, -1, "-*30 @ (@ RIGHT*4)Waf6,330 (@ -*4)x25 " kSelectSupers " (LEFT*4 @ R+B*3 (@ -*4)x6 RIGHT*4 @ R+B*3 (@ -*4)x6)x8 (LEFT*4 (@ B*4)x16 (@ -*4)x2 RIGHT*4 (@ B*4)x16 (@ -*4)x2)Vf8c,0 (@ -*4)Vf78,0 (@ -*4)x30 (@ RIGHT*4)x40 -*20 #9882 -*30 @ (@ -*4)x20 -*60 @"},
   {"pause-crateria", 0, 16, 0, -1, kPauseScript},
 };
 enum { kScenarioCount = sizeof(kScenarios) / sizeof(kScenarios[0]) };
@@ -484,6 +511,7 @@ static int shot_count;
 // The script's place.
 static const char *script;
 static struct { const char *start; int left; } loops[4];
+static int follow;
 static int loop_depth;
 static uint16_t held_keys;
 static int held_left;
@@ -691,16 +719,47 @@ static bool NextWord(void) {
       loops[loop_depth].start = script;
       loops[loop_depth++].left = 0;
       continue;
-    case ')':
-      script += 2;  // the x
-      if (!loops[loop_depth - 1].left)
-        loops[loop_depth - 1].left = Number(&script);
-      else
-        Number(&script);
-      if (--loops[loop_depth - 1].left)
-        script = loops[loop_depth - 1].start;
+    case ')': {
+      // )xN: N times; )WOFF,N: until the word at OFF (hex, from the game's RAM) is at least N,
+      // or )VOFF,N: at most N (but not more than 1500 times: a fight that never gets there).
+      int d = loop_depth - 1;
+      char kind = script[1];
+      script += 2;
+      if (kind == 'x') {
+        if (!loops[d].left)
+          loops[d].left = Number(&script);
+        else
+          Number(&script);
+        if (--loops[d].left)
+          script = loops[d].start;
+        else
+          loop_depth--;
+        continue;
+      }
+      int off = 0, n;
+      for (;; script++) {
+        int c = *script;
+        if (c >= '0' && c <= '9')
+          c -= '0';
+        else if (c >= 'a' && c <= 'f')
+          c -= 'a' - 10;
+        else
+          break;
+        off = off << 4 | c;
+      }
+      script++;
+      n = Number(&script);
+      uint16_t v = *(uint16_t *)(g_ram + off);
+      if (++loops[d].left < 1500 && (kind == 'W' ? v < n : v > n))
+        script = loops[d].start;
       else
         loop_depth--;
+      continue;
+    }
+    case '^':
+      // ^N: Samus keeps N pixels from the first enemy (a player's footwork), 0 for not.
+      script++;
+      follow = Number(&script);
       continue;
     }
     held_keys = 0;
@@ -726,6 +785,7 @@ static void Start(void) {
   held_left = 0;
   shot_count = 0;
   shot_pending = false;
+  follow = 0;
   phase = kScript;
   door_pending = door_waiting = mortal = false;
   phase_frames = 0;
@@ -836,6 +896,21 @@ void Scn_BeforeFrame(void) {
     reset_pending = false;
     game_state = 0xffff;
     Input_Reset();
+  }
+  if (phase == kScript && follow) {
+    int want = *(uint16_t *)(g_ram + 0xF7A) - follow;
+    if (samus_x_pos - want > 12 || want - samus_x_pos > 12) {
+      samus_x_pos = samus_prev_x_pos = want;
+      samus_x_subpos = 0;
+    }
+  }
+  if (phase == kScript && phase_frames % 30 == 0) {
+    // (For reading a fight's progress off the log: the first three enemies and Samus.)
+    EnemyBase *e = (EnemyBase *)(g_ram + 0xF78);
+    EnemyBase *e1 = (EnemyBase *)(g_ram + 0xFB8), *e2 = (EnemyBase *)(g_ram + 0xFF8);
+    printf("scenario-state: %d gs %x room %04x e0 %04x %d,%d hp %d v%x ci %x it %d pr %x vB %x vC %x vD %x e1 %04x hp %d e2 %04x hp %d samus %d,%d bb %x\n",
+           phase_frames, game_state, room_ptr, e->enemy_ptr, e->x_pos, e->y_pos, e->health, *(uint16 *)(g_ram + 0xFA8), e->current_instruction, e->instruction_timer, e->properties, *(uint16 *)(g_ram + 0xFAA), *(uint16 *)(g_ram + 0xFAC), *(uint16 *)(g_ram + 0xFAE),
+           e1->enemy_ptr, e1->health, e2->enemy_ptr, e2->health, samus_x_pos, samus_y_pos, *(uint16_t *)(g_ram + 0xD82A));
   }
   if ((phase == kLoading || phase == kScript) && !mortal) {
     samus_health = samus_max_health;

@@ -13,6 +13,9 @@
 # only the I'th of N shares of the chunks (below), to divide a run between
 # machines, or runs: they write to different OUT_DIRs, or the same, apart.
 #
+# FRAMES (default 3000 + 8000 a scenario) is smrun's limit on the frames a boot runs: a scenario
+# with many shots needs more (each shot holds a few).
+#
 # The scenarios are split into chunks of CHUNK (default 6) that run one after
 # another in a boot of the cartridge, JOBS (default 4) of them at once. Then:
 #
