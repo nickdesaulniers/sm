@@ -26,14 +26,26 @@
 //   #HHHH      Samus through the door with that definition (hex, in bank $83) as
 //              the room tour does (tour.c): into the room it leads to, at its
 //              other side, and the script goes on once she has her controls
+//              (on the screen: if the door leaves her off it, she is put
+//              where the camera has the door's far side)
 //   P          no power bombs, for the next room to load without them: Crateria's
 //              landing site has its rain until Samus has them
+//   &N         the area's boss bits to N, for the rooms Samus goes on to: 1 is
+//              the Wrecked Ship's power on (Phantoon dead), and 4 Maridia's
+//              Draygon dead
+//   $N         the timer's status N (1 starts Ceres's escape, 2 Mother
+//              Brain's)
+//   =N         the game state N (32: Ceres's elevator ride, then its explosion
+//              and the blackout: Mode 7 scenes)
+//   %N         the message box N, as an item's pickup shows it (5 is the missile
+//              tanks', 28 the save station's question)
+//   !          Samus dies (no energy, reserve or refills): the game over
 //   ~N         the lava, acid or water's surface to N pixels below Samus's
 //              centre (-N for above), at its base: for a room's lava where she
 //              can't go (the camera follows her only so far)
 // The buttons are the GBA's (input.c makes the game's of them): B shoots, R
-// readies missiles (with Select, the others), L aims. Samus can't die, and
-// never runs out of ammunition.
+// readies missiles (with Select, the others), L aims. Samus can't die (but
+// for the !), and never runs out of ammunition.
 #include "scenarios.h"
 
 #include <stdio.h>
@@ -120,6 +132,53 @@ typedef struct Scenario {
 #define kPowerBombBlast \
   kBeamsAndSupers "@ " kBombs "R*10 @ R+B*2 -*10 @ -*10 @ -*10 @ -*10 @ -*10 @ -*20 @ -*30 @ -*30 @"
 #define CB_FIGHT(room, door) {"cb-fight-" room, 0, 0, 0, -1, "#" door " " kRoomFight}
+
+// A player's minute in a room: walks, jumps and shots each way, a charged
+// shot, missiles and supers, then the morph ball with bombs and a power bomb.
+#define kPlay \
+  "-*30 @ (RIGHT+B*40 -*5 A+RIGHT+B*30 L+B*3 LEFT+B*40 A+LEFT*30 -*5)x2 @ " \
+  "RIGHT*80 B*100 -*2 @ LEFT*80 R+B*3 -*10 @ " kSelectSupers "R+B*3 -*10 @ " \
+  "RIGHT*60 @ " kMorph "LEFT*40 B*2 -*20 B*2 -*20 B*2 -*30 @ " \
+  "R*2 R+SELECT*2 R*2 R+SELECT*2 R*2 R+SELECT*2 R*2 -*10 R+B*2 -*40 @ " \
+  "RIGHT*80 B*2 -*40 @ -*30 @"
+
+// Each room of Norfair, from the first station through a door into it: a
+// player's walk each way, shots, a charged shot and a missile.
+#define NFR(room, door) \
+  {"nfr-" #room, 2, 0, 0, -1, "-*20 #" #door " -*30 @ " kRoomWalk}
+#define kRoomWalk \
+  "(RIGHT+B*50 A+RIGHT+B*30 LEFT+B*50 A+LEFT*30)x2 @ RIGHT*40 B*80 -*2 @ " \
+  "LEFT*40 R+B*3 -*20 @ -*30 @"
+
+// ---- The Wrecked Ship and Maridia: rooms are entered by a door (the # word) from the
+// area's debug station 16 (the ship's power is on with "&1" first). A room entered from the side
+// is walked through, one from above or below climbed.
+#define SHIP_OFF(name, door, script) {name, 3, 16, 0, -1, "-*10 #" door " " script}
+#define SHIP_ON(name, door, script) {name, 3, 16, 0, -1, "-*10 &1 #" door " " script}
+#define MARIDIA(name, door, script) {name, 4, 16, 0, -1, "-*10 #" door " " script}
+// Walks in one direction (F) with a shot every so often, jumps, aimed shots, missiles and a
+// charged shot; then morphs, lays bombs and unmorphs.
+#define kWalkDir(F) \
+  "-*20 @ (" F "+B*3 " F "*37 A+" F "*30 L+B*3 -*5 " F "*20 R+B*3 -*10 B*70 -*3 " F "*30 @)x3 " \
+  "DOWN*10 -*6 DOWN*10 -*10 (B*2 -*20 " F "*20)x4 @ UP*10 -*60 @"
+// Jumps, up and to both sides, shooting up and charging.
+#define kClimb "-*20 @ (A*60 -*20 UP+B*3 -*10 A+RIGHT*40 A+LEFT*40 B*70 -*3 @)x4 -*60 @"
+// Rolled into a ball, a power bomb every 3 seconds (with R, as only they can be readied).
+#define kPowerBombs "DOWN*10 -*6 DOWN*10 -*10 (R+B*2 -*200 @)x8"
+
+// ---- Tourian's rooms and Ceres's, entered by their doors from Tourian's
+// debug station 16 (the doors are the room tour's: "tour: to ROOM by door
+// HHHH"): Samus waits, walks and jumps both ways, shooting.
+#define kRoomKeys \
+  "-*90 @ (RIGHT*50 B*3 A+RIGHT*20 -*20)x3 @ (LEFT*50 B*3 A+LEFT*20 -*20)x3 @ " \
+  "L+B*3 -*30 UP+B*3 -*60 @"
+#define ROOM(name, door) {"room-" name, 5, 16, 0, -1, "#" door " " kRoomKeys}
+
+// Pause, the map's scrolling, the equipment screen (R, which takes a second or two, and L
+// back) and the unpause.
+#define kPauseScript \
+  "-*60 @ START*3 -*100 @ (RIGHT*3 -*10)x3 @ R*10 -*200 @ (DOWN*3 -*10)x6 @ L*10 -*200 @ " \
+  "(LEFT*3 -*10)x3 @ START*3 -*100 @ -*60 @"
 
 static const Scenario kScenarios[] = {
   BEAM(0, "power"),
@@ -209,6 +268,128 @@ static const Scenario kScenarios[] = {
   CB_FIGHT("a253", "907e"),
   CB_FIGHT("9b5b", "8f76"),
   CB_FIGHT("9fba", "8e92"),
+  // ---- Norfair played the way a player would, from each station of its
+  // rooms (the map's numbers: 0 to 7 saves, 8 to 15 elevators, 16 on debug), and then each
+  // room by its door.
+  {"nf-0-aab5", 2, 0, 0, -1, kPlay},
+  {"nf-1-b0dd", 2, 1, 0, -1, kPlay},
+  {"nf-2-b167", 2, 2, 0, -1, kPlay},
+  {"nf-3-b192", 2, 3, 0, -1, kPlay},
+  {"nf-4-b1bb", 2, 4, 0, -1, kPlay},
+  {"nf-5-b741", 2, 5, 0, -1, kPlay},
+  {"nf-8-a7de", 2, 8, 0, -1, kPlay},
+  {"nf-9-af3f", 2, 9, 0, -1, kPlay},
+  {"nf-10-b236", 2, 10, 0, -1, kPlay},
+  {"nf-17-a923", 2, 17, 0, -1, kPlay},
+  {"nf-18-b37a", 2, 18, 0, -1, kPlay},
+  {"nf-19-aa82", 2, 19, 0, -1, kPlay},
+  {"nf-20-b236", 2, 20, 0, -1, kPlay},
+  {"nf-22-b283", 2, 22, 0, -1, kPlay},
+  NFR(a75d, 931e),
+  NFR(a788, 9732),
+  NFR(a7b3, 928e),
+  NFR(a815, 92be),
+  NFR(a865, 9312),
+  NFR(a890, 937e),
+  NFR(a8b9, 9282),
+  NFR(a8f8, 93a2),
+  NFR(a923, 974a),
+  NFR(a98d, 93d2),
+  NFR(a9e5, 9426),
+  NFR(aa0e, 92e2),
+  NFR(aa41, 92d6),
+  NFR(aa82, 93de),
+  NFR(aade, 943e),
+  NFR(ab07, 944a),
+  NFR(ab3b, 9492),
+  NFR(ab64, 9486),
+  NFR(ab8f, 949e),
+  NFR(abd2, 950a),
+  NFR(ac00, 9522),
+  NFR(ac2b, 94da),
+  NFR(ac5a, 9546),
+  NFR(ac83, 9552),
+  NFR(acb3, 95ca),
+  NFR(acf0, 97b6),
+  NFR(ad1b, 95b2),
+  NFR(ad5e, 9a4a),
+  NFR(adad, 95d6),
+  NFR(adde, 961e),
+  NFR(ae07, 95ee),
+  NFR(ae32, 9642),
+  NFR(ae74, 965a),
+  NFR(aeb4, 9666),
+  NFR(aedf, 9576),
+  NFR(af14, 967e),
+  NFR(af3f, 96de),
+  NFR(af72, 97f2),
+  NFR(afa3, 955e),
+  NFR(afce, 9786),
+  NFR(affb, 968a),
+  NFR(b026, 976e),
+  NFR(b051, 96c6),
+  NFR(b07a, 958e),
+  NFR(b106, 970e),
+  NFR(b139, 9762),
+  NFR(b1e5, 9852),
+  NFR(b236, 96f6),
+  NFR(b283, 9a86),
+  NFR(b2da, 9906),
+  NFR(b305, 9a7a),
+  NFR(b32e, 98ca),
+  NFR(b37a, 995a),
+  NFR(b3a5, 985e),
+  NFR(b40a, 98ee),
+  NFR(b457, 9912),
+  NFR(b482, 9a32),
+  NFR(b4ad, 994e),
+  NFR(b4e5, 99f6),
+  NFR(b510, 9a92),
+  NFR(b55a, 9a9e),
+  NFR(b585, 9ab6),
+  NFR(b5d5, 99ea),
+  NFR(b62b, 9a1a),
+  NFR(b656, 99ae),
+  NFR(b698, 98b2),
+  NFR(b6c1, 988e),
+  NFR(b6ee, 9a02),
+  // ---- The Wrecked Ship and Maridia, played as a player would: walking, jumping, shooting, a
+  // charged shot, missiles, then rolling and laying bombs. Each room is entered by the door that
+  // leads to it (#, by the door's address), from the area's debug station 16.
+  {"ship-off-ce8a", 3, 0, 0, -1, kWalkDir("LEFT")},
+  SHIP_OFF("ship-off-caf6", "a1bc", kClimb),
+  SHIP_ON("ship-on-caf6", "a1bc", kClimb),
+  SHIP_ON("ship-on-ca52", "89ee", kWalkDir("RIGHT")),
+  SHIP_ON("ship-on-cb8b", "a2dc", kWalkDir("RIGHT")),
+  SHIP_ON("ship-on-cc27", "a27c", kWalkDir("LEFT")),
+  SHIP_ON("ship-on-cc6f", "a21c", kClimb),
+  {"phantoon-power-bomb", 3, 0, 1, -1, "-*30 @ " kPowerBombs},
+  {"maridia-d1dd", 4, 16, 0, -1, kWalkDir("RIGHT")},
+  MARIDIA("maridia-d017", "a444", kClimb),
+  MARIDIA("maridia-d0b9", "a474", kClimb),
+  MARIDIA("maridia-cefb", "a39c", kClimb),
+  MARIDIA("maridia-cf54", "911a", kWalkDir("RIGHT")),
+  MARIDIA("maridia-cf80", "a348", kWalkDir("RIGHT")),
+  MARIDIA("maridia-d54d", "a714", kClimb),
+  MARIDIA("maridia-d57a", "a720", kClimb),
+  MARIDIA("maridia-d898", "a858", kClimb),
+  MARIDIA("maridia-d433", "a5c4", kWalkDir("RIGHT")),
+  MARIDIA("maridia-d408", "a5ac", kClimb),
+  MARIDIA("maridia-d913", "a870", kWalkDir("RIGHT")),
+  MARIDIA("maridia-d9fe", "a75c", kWalkDir("RIGHT")),
+  MARIDIA("maridia-d5a7", "a4c8", kWalkDir("RIGHT")),
+  MARIDIA("maridia-d7e4", "a918", kWalkDir("RIGHT")),
+  MARIDIA("maridia-da60", "a840", kWalkDir("LEFT")),
+  {"botwoon-power-bomb", 4, 0, 1, -1, "-*30 @ " kPowerBombs},
+  {"draygon-power-bomb", 4, 0, 2, -1, "-*30 @ " kPowerBombs},
+  // ---- The screens that are not a room: the pause screen, the game over, the escape's
+  // timer and the message boxes.
+  {"pause-tourian", 5, 16, 0, -1, kPauseScript},
+  {"game-over", 5, 16, 0, -1, "-*60 ! -*500 @ -*200 @ UP*3 -*60 A*3 -*200 @ A*3 -*300 @"},
+  {"escape-tourian", 5, 16, 0, -1, "-*30 @ $2 -*120 @ #aae0 " kRoomKeys " -*200 @"},
+  {"ceres-boom", 5, 16, 0, -1, "#ab58 -*30 @ =32 -*400 @ -*400 @ -*400 @ -*400 @"},
+  {"message-item", 0, 16, 0, -1, "-*60 @ %5 -*120 @ A*3 -*60 @ %1 -*120 @ A*3 -*60 @"},
+  {"message-save", 1, 0, 0, -1, "-*60 @ %28 -*120 @ A*3 -*120 @ A*3 -*120 @ A*3 -*60 @"},
   BOSS("bomb-torizo", 0, 1),
   BOSS("spore-spawn", 1, 1),
   BOSS("kraid", 1, 2),
@@ -218,13 +399,34 @@ static const Scenario kScenarios[] = {
   BOSS("botwoon", 4, 1),
   BOSS("draygon", 4, 2),
   BOSS("mother-brain", 5, 1),
+  ROOM("daae", "9222"),
+  ROOM("dae1", "a984"),
+  ROOM("db31", "a9b4"),
+  ROOM("db7d", "a9cc"),
+  ROOM("dbcd", "a9e4"),
+  ROOM("dc19", "a9fc"),
+  ROOM("dc65", "aa14"),
+  ROOM("dcb1", "aa50"),
+  ROOM("dcff", "aa98"),
+  ROOM("dd2e", "aa68"),
+  ROOM("dd58", "aae0"),
+  ROOM("ddc4", "aab0"),
+  ROOM("ddf3", "aa80"),
+  ROOM("de23", "aabc"),
+  ROOM("de4d", "aaf8"),
+  ROOM("de7a", "ab10"),
+  ROOM("dea7", "ab28"),
+  ROOM("dede", "8b6e"),
+  ROOM("df1b", "a99c"),
+  ROOM("df45", "ab58"),
+  ROOM("df8d", "ab4c"),
+  ROOM("dfd7", "ab64"),
+  ROOM("e021", "ab7c"),
+  ROOM("e06b", "ab94"),
+  ROOM("e0b5", "abac"),
   // The Golden Torizo's room, at its left door (Norfair's debug station 22).
   {"boss-golden-torizo", 2, 22, 0, -1, kBossScript},
-  // Pause, the map's scrolling, the equipment screen (R, which takes a second or two, and L
-  // back) and the unpause.
-  {"pause-crateria", 0, 16, 0, -1,
-   "-*60 @ START*3 -*100 @ (RIGHT*3 -*10)x3 @ R*10 -*200 @ (DOWN*3 -*10)x6 @ L*10 -*200 @ "
-   "(LEFT*3 -*10)x3 @ START*3 -*100 @ -*60 @"},
+  {"pause-crateria", 0, 16, 0, -1, kPauseScript},
 };
 enum { kScenarioCount = sizeof(kScenarios) / sizeof(kScenarios[0]) };
 
@@ -243,7 +445,7 @@ static enum {
   kFinished,
 } phase;
 static uint32_t phase_frames;
-static bool shot_pending, reset_pending, spawned, door_pending;
+static bool shot_pending, reset_pending, spawned, door_pending, door_waiting, mortal;
 static int shot_count;
 
 // The script's place.
@@ -393,6 +595,27 @@ static bool NextWord(void) {
       script++;
       samus_max_power_bombs = samus_power_bombs = 0;
       continue;
+    case '&':
+      script++;
+      boss_bits_for_area[area_index] = Number(&script);
+      continue;
+    case '$':
+      script++;
+      timer_status = Number(&script);
+      continue;
+    case '=':
+      script++;
+      game_state = Number(&script);
+      continue;
+    case '%':
+      script++;
+      queued_message_box_index = Number(&script);
+      continue;
+    case '!':
+      script++;
+      mortal = true;
+      samus_health = samus_reserve_health = 0;
+      continue;
     case '#': {
       script++;
       int door = 0;
@@ -456,7 +679,7 @@ static void Start(void) {
   shot_count = 0;
   shot_pending = false;
   phase = kScript;
-  door_pending = false;
+  door_pending = door_waiting = mortal = false;
   phase_frames = 0;
   printf("scenario: %s\n", s->name);
   printf("scenario-at: room %04x samus %d,%d\nscenario-fx: %02x\n", room_ptr, samus_x_pos, samus_y_pos, fx_type);
@@ -473,6 +696,23 @@ static void Finish(void) {
     phase = kMenus;
     phase_frames = 0;
   }
+}
+
+// After a door: Samus on the screen, if the door left her off it (an elevator's door leaves
+// her where the door's far side is, by the camera's reckoning of it, and a camera that can't
+// reach the place she was put leaves her outside the room): where she would be at the door's
+// far side, from the camera and the way she came (the transition's own walk is left out).
+static void PlaceSamusOnScreen(void) {
+  int sx = samus_x_pos - layer1_x_pos, sy = samus_y_pos - layer1_y_pos;
+  if (sx >= 16 && sx < 240 && sy >= 16 && sy < 208)
+    return;
+  static const int8_t kInX[4] = {-72, 72, 0, 0}, kInY[4] = {24, 24, -48, 60};
+  int d = door_direction & 3;
+  printf("scenario-fix: samus off the screen at %d,%d (camera %d,%d), put by the door's direction %d\n",
+         samus_x_pos, samus_y_pos, layer1_x_pos, layer1_y_pos, d);
+  samus_x_pos = samus_prev_x_pos = layer1_x_pos + 128 + kInX[d];
+  samus_y_pos = samus_prev_y_pos = layer1_y_pos + 112 + kInY[d];
+  samus_x_subpos = samus_y_subpos = 0;
 }
 
 uint16_t Scn_Keys(uint16_t real) {
@@ -508,11 +748,18 @@ uint16_t Scn_Keys(uint16_t real) {
       if (game_state != kGameState_8_MainGameplay)
         return 0;
       CallSomeSamusCode(1);
+      CallSomeSamusCode(0xb);
       door_pending = false;
-      printf("scenario-at: room %04x samus %d,%d\nscenario-fx: %02x\n", room_ptr, samus_x_pos,
-             samus_y_pos, fx_type);
+      door_waiting = true;
       held_keys = 0;
       held_left = 20;
+    }
+    if (door_waiting && !held_left) {
+      // The room has settled (the camera is where it will be): Samus should be in it.
+      door_waiting = false;
+      PlaceSamusOnScreen();
+      printf("scenario-at: room %04x samus %d,%d camera %d,%d pose %02x\nscenario-fx: %02x\n",
+             room_ptr, samus_x_pos, samus_y_pos, layer1_x_pos, layer1_y_pos, samus_pose, fx_type);
     }
     if (!held_left && !NextWord()) {
       if (shot_pending) {
@@ -538,7 +785,7 @@ void Scn_BeforeFrame(void) {
     game_state = 0xffff;
     Input_Reset();
   }
-  if (phase == kLoading || phase == kScript) {
+  if ((phase == kLoading || phase == kScript) && !mortal) {
     samus_health = samus_max_health;
     samus_missiles = samus_max_missiles;
     samus_super_missiles = samus_max_super_missiles;
