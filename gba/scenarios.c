@@ -179,6 +179,12 @@ typedef struct Scenario {
   D("LEFT", 5) D("R+B", 1) D("-", 2) D("A+LEFT", 6) D("R+B", 1) D("-", 2)
 // Bomb Torizo wakes at about the 5th cycle, and dies in the 15th; then his
 // death, then a jump up to the door he came through and out of the room.
+// Botwoon (enemy 0 is his head, 3000 health, in and out of the wall's holes): Samus stands
+// beside it with missiles, and he dies after about 120 of these (nearly 70 s), exploding
+// in pieces; then the room, and a walk right and left.
+#define kBotwoonFull \
+  "-*30 @ R*2 (@ <40,5 R+B*2 @ -*4 (@ -*4)x6)x130 " D("-", 100) D("RIGHT", 60) D("LEFT", 60) D("-", 20)
+
 #define kBombTorizoFull \
   "-*30 @ R*2 (" kMissileCycle ")x16 " D("-", 100) D("LEFT", 25) D("A+LEFT", 2) D("A+LEFT", 2) \
   D("LEFT", 5) D("R+B", 1) D("LEFT", 8) D("-", 60)
@@ -488,6 +494,7 @@ static const Scenario kScenarios[] = {
   {"ceres-ridley-full", 5, 16, 0, -1, kCeresRidley},
   BOSS("phantoon", 3, 1),
   BOSS("botwoon", 4, 1),
+  {"boss-botwoon-full", 4, 0, 1, -1, kBotwoonFull},
   BOSS("draygon", 4, 2),
   BOSS("mother-brain", 5, 1),
   ROOM("daae", "9222"),
