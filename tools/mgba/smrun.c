@@ -47,6 +47,12 @@
 // goes through them one after another isn't (see tools/room-tour.sh).
 //
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
+// With STATE=FILE (an mGBA save state, .ss1 and so on, of the same
+// cartridge), it starts from that state instead of a reset; with
+// STATE_OUT=FRAME:FILE, it saves one after that frame.
+// With WATCH=LO:HI (hex) and SYMS, it prints the first write into [LO, HI)
+// from each place in the code (the CPU's or a DMA's), with its frame, the
+// function and its caller: to find a stray write.
 //
 // With SAVE=FILE.sav, the cartridge's SRAM starts as that file's (which is
 // left as it was: the game's saves go to a copy in memory).
@@ -97,7 +103,8 @@ static void logger_fn(struct mLogger* logger, int category, enum mLogLevel level
                       const char* format, va_list args) {
     (void) logger;
     const char* name = mLogCategoryName(category);
-    if (level & (mLOG_FATAL | mLOG_ERROR) || (name && !strcmp(name, "GBA Debug"))) {
+    if (level & (mLOG_FATAL | mLOG_ERROR) || (name && !strcmp(name, "GBA Debug")) ||
+        (level & mLOG_WARN && name && strstr(name, "state"))) {
         char line[1024];
         vsnprintf(line, sizeof line, format, args);
         printf("[%d] %s\n", current_frame, line);
@@ -256,6 +263,50 @@ static unsigned long long profile_frame(struct mCore* core) {
     return last - start;
 }
 
+// WATCH's hooks, on the CPU's stores.
+static uint32_t watch_lo, watch_hi;
+static struct ARMMemory watch_orig;
+static uint32_t watch_seen[4096];
+static unsigned watch_nseen;
+
+static void watch_hit(struct ARMCore* cpu, uint32_t address, uint32_t size, uint32_t value) {
+    if (address + size <= watch_lo || address >= watch_hi)
+        return;
+    uint32_t pc = cpu->gprs[15] - (cpu->executionMode == MODE_ARM ? 8 : 4);
+    for (unsigned i = 0; i < watch_nseen; i++) {
+        if (watch_seen[i] == pc)
+            return;
+    }
+    if (watch_nseen < sizeof watch_seen / sizeof *watch_seen)
+        watch_seen[watch_nseen++] = pc;
+    uint32_t lr = cpu->gprs[14];
+    printf("watch: frame %d write%u %08x = %x at %08x %s (lr %08x %s)\n", current_frame, size * 8,
+           address, value, pc, nsyms ? find_sym(pc)->name : "", lr, nsyms ? find_sym(lr)->name : "");
+}
+
+static void watch_store32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycles) {
+    watch_hit(cpu, address, 4, value);
+    watch_orig.store32(cpu, address, value, cycles);
+}
+
+static void watch_store16(struct ARMCore* cpu, uint32_t address, int16_t value, int* cycles) {
+    watch_hit(cpu, address, 2, (uint16_t)value);
+    watch_orig.store16(cpu, address, value, cycles);
+}
+
+static void watch_store8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycles) {
+    watch_hit(cpu, address, 1, (uint8_t)value);
+    watch_orig.store8(cpu, address, value, cycles);
+}
+
+static uint32_t watch_store_multiple(struct ARMCore* cpu, uint32_t base, int mask,
+                                     enum LSMDirection direction, int* cycles) {
+    uint32_t n = __builtin_popcount(mask & 0xffff) * 4;
+    uint32_t lo = direction & LSM_D ? base - n + (direction & LSM_B ? 0 : 4) : base + (direction & LSM_B ? 4 : 0);
+    watch_hit(cpu, lo, n, 0);
+    return watch_orig.storeMultiple(cpu, base, mask, direction, cycles);
+}
+
 static void dump_memory(struct mCore* core, const char* prefix) {
     static const struct { const char* ext; uint32_t base, size; } kRegions[] = {
         {"ewram", 0x02000000, 0x40000},
@@ -384,6 +435,14 @@ int main(int argc, char** argv) {
         }
     }
     core->reset(core);
+    if (getenv("STATE")) {
+        struct VFile* vf = VFileOpen(getenv("STATE"), O_RDONLY);
+        if (!vf || !mCoreLoadStateNamed(core, vf, 0)) {
+            fprintf(stderr, "%s: can't load the state %s\n", argv[0], getenv("STATE"));
+            return 1;
+        }
+        vf->close(vf);
+    }
 
     struct Keys pre = parse_schedule(getenv("PRE_KEYS"));
     struct Keys keys = parse_schedule(getenv("KEYS"));
@@ -397,10 +456,23 @@ int main(int argc, char** argv) {
         blip_set_rates(core->getAudioChannel(core, 0), core->frequency(core), 32768);
         blip_set_rates(core->getAudioChannel(core, 1), core->frequency(core), 32768);
     }
+    if (getenv("WATCH")) {
+        watch_lo = strtoul(getenv("WATCH"), NULL, 16);
+        const char* colon = strchr(getenv("WATCH"), ':');
+        watch_hi = colon ? strtoul(colon + 1, NULL, 16) : watch_lo + 1;
+        if (getenv("SYMS"))
+            load_syms(getenv("SYMS"));
+        struct ARMCore* cpu = core->cpu;
+        watch_orig = cpu->memory;
+        cpu->memory.store32 = watch_store32;
+        cpu->memory.store16 = watch_store16;
+        cpu->memory.store8 = watch_store8;
+        cpu->memory.storeMultiple = watch_store_multiple;
+    }
     int profile_n = getenv("PROFILE") ? atoi(getenv("PROFILE")) : 0;
     int profile_from = getenv("PROFILE_FROM") ? atoi(getenv("PROFILE_FROM")) : 1;
     unsigned long long profile_total = 0;
-    if (profile_n)
+    if (profile_n && !nsyms)
         load_syms(getenv("SYMS"));
     if (getenv("PCS")) {
         pcs_lo = strtoul(getenv("PCS"), NULL, 16) & ~1u;
@@ -436,6 +508,13 @@ int main(int argc, char** argv) {
             profile_total += profile_frame(core);
         else
             core->runFrame(core);
+        if (getenv("STATE_OUT") && atoi(getenv("STATE_OUT")) == i) {
+            struct VFile* vf = VFileOpen(strchr(getenv("STATE_OUT"), ':') + 1, O_CREAT | O_TRUNC | O_RDWR);
+            if (!vf || !mCoreSaveStateNamed(core, vf, SAVESTATE_SAVEDATA | SAVESTATE_RTC))
+                fprintf(stderr, "%s: can't save the state\n", argv[0]);
+            if (vf)
+                vf->close(vf);
+        }
         if (audio_out)
             record_audio(core);
         if (profile_n && t == profile_from + profile_n - 1 && profile_total) {
