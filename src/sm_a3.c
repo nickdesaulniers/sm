@@ -2862,8 +2862,8 @@ static int32 FireZoomer_E8A5(uint16 k) {  // 0xA3E8A5
     E->base.y_pos + E->base.y_height - 1;
   CalculateBlockContainingPixelPos(xpos, ypos);
 
-  if ((level_data[cur_block_index] & 0xF000) == 4096 && (BTS[cur_block_index] & 0x1F) >= 5) {
-    uint16 v1 = g_word_A3E931[(uint16)(4 * (BTS[cur_block_index] & 0x1F)) >> 1];
+  if ((LevelDataAt(cur_block_index) & 0xF000) == 4096 && (BtsAt(cur_block_index) & 0x1F) >= 5) {
+    uint16 v1 = g_word_A3E931[(uint16)(4 * (BtsAt(cur_block_index) & 0x1F)) >> 1];
     if ((int16)E->fzr_var_A >= 0)
       return Multiply16x16(E->fzr_var_A, v1);
     else

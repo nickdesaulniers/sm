@@ -525,16 +525,16 @@ static Point16U GetValuesForScreenShaking(void) {  // 0x868427
 }
 
 static uint8 EprojColl_8506(EprojCollInfo *eci) {  // 0x868506
-  if (BTS[cur_block_index]) {
-    cur_block_index += (int8)BTS[cur_block_index];
+  if (BtsAt(cur_block_index)) {
+    cur_block_index += (int8)BtsAt(cur_block_index);
     return 0xff;
   }
   return 0;
 }
 
 static uint8 EprojColl_Unknown8536(EprojCollInfo *eci) {  // 0x86853C
-  if (BTS[cur_block_index]) {
-    cur_block_index += (int8)BTS[cur_block_index] * room_width_in_blocks;
+  if (BtsAt(cur_block_index)) {
+    cur_block_index += (int8)BtsAt(cur_block_index) * room_width_in_blocks;
     return 0xff;
   }
   return 0;
@@ -549,15 +549,15 @@ static uint8 EprojColl_SetCarry(EprojCollInfo *eci) {  // 0x86858C
 }
 
 static uint8 EprojColl_858E(EprojCollInfo *eci) {  // 0x86858E
-  uint16 v0 = BTS[cur_block_index] & 0x1F;
+  uint16 v0 = BtsAt(cur_block_index) & 0x1F;
   if (v0 < 5)
     return EprojColl_85C2(eci, v0, cur_block_index);
-  current_slope_bts = BTS[cur_block_index];
+  current_slope_bts = BtsAt(cur_block_index);
   return EprojColl_873D();
 }
 
 static uint8 EprojColl_85AD(EprojCollInfo *eci) {  // 0x8685AD
-  uint16 v0 = BTS[cur_block_index] & 0x1F;
+  uint16 v0 = BtsAt(cur_block_index) & 0x1F;
   if (v0 >= 5)
     return EprojColl_874E(eci);
   else
@@ -768,7 +768,7 @@ static uint8 EprojBlockCollisition_CheckHorizontal(EprojCollInfo *eci, uint16 k)
   uint8 rv;
   cur_block_index = k >> 1;
   do {
-    rv = kEprojBlockCollisition_FuncA[(level_data[cur_block_index] & 0xF000) >> 12](eci);
+    rv = kEprojBlockCollisition_FuncA[(LevelDataAt(cur_block_index) & 0xF000) >> 12](eci);
   } while (rv & 0x80);
   return rv;
 }
@@ -777,7 +777,7 @@ static uint8 EprojBlockCollisition_CheckVertical(EprojCollInfo *eci, uint16 k) {
   uint8 rv;
   cur_block_index = k >> 1;
   do {
-    rv = kEprojBlockCollisition_FuncB[(level_data[cur_block_index] & 0xF000) >> 12](eci);
+    rv = kEprojBlockCollisition_FuncB[(LevelDataAt(cur_block_index) & 0xF000) >> 12](eci);
   } while (rv & 0x80);
   return rv;
 }

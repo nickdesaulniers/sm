@@ -3451,7 +3451,7 @@ static uint8 SetCarry_4(EnemyBlockCollInfo *ebci) {  // 0xA0C2BE
 }
 
 static uint8 EnemyBlockCollReact_Spike(EnemyBlockCollInfo *ebci) {  // 0xA0C2C0
-  uint16 v0 = g_off_A0C2DA[BTS[cur_block_index] & 0x7F];
+  uint16 v0 = g_off_A0C2DA[BtsAt(cur_block_index) & 0x7F];
   if (!v0)
     return 1;
   SpawnPLM(v0);
@@ -3459,19 +3459,19 @@ static uint8 EnemyBlockCollReact_Spike(EnemyBlockCollInfo *ebci) {  // 0xA0C2C0
 }
 
 static uint8 EnemyBlockCollHorizReact_Slope(EnemyBlockCollInfo *ebci) {  // 0xA0C2FA
-  if ((BTS[cur_block_index] & 0x1F) >= 5) {
-    current_slope_bts = BTS[cur_block_index];
+  if ((BtsAt(cur_block_index) & 0x1F) >= 5) {
+    current_slope_bts = BtsAt(cur_block_index);
     return EnemyBlockCollHorizReact_Slope_NonSquare(ebci);
   } else {
-    return EnemyBlockCollHorizReact_Slope_Square(ebci, cur_block_index, BTS[cur_block_index] & 0x1F);
+    return EnemyBlockCollHorizReact_Slope_Square(ebci, cur_block_index, BtsAt(cur_block_index) & 0x1F);
   }
 }
 
 static uint8 EnemyBlockCollVertReact_Slope(EnemyBlockCollInfo *ebci) {  // 0xA0C319
-  if ((BTS[cur_block_index] & 0x1F) >= 5)
+  if ((BtsAt(cur_block_index) & 0x1F) >= 5)
     return EnemyBlockCollVertReact_Slope_NonSquare(ebci);
   else
-    return EnemyBlockCollVertReact_Slope_Square(ebci, BTS[cur_block_index] & 0x1F, cur_block_index);
+    return EnemyBlockCollVertReact_Slope_Square(ebci, BtsAt(cur_block_index) & 0x1F, cur_block_index);
 }
 
 static const uint8 byte_A0C435[20] = {  // 0xA0C32E
@@ -3585,7 +3585,7 @@ static uint8 EnemyBlockCollVertReact_Slope_NonSquare(EnemyBlockCollInfo *ebci) {
 }
 
 static uint8 EnemyBlockCollReact_HorizExt(EnemyBlockCollInfo *ebci) {  // 0xA0C619
-  uint8 t = BTS[cur_block_index];
+  uint8 t = BtsAt(cur_block_index);
   if (t) {
     cur_block_index += (int8)t;
     return 0xff;
@@ -3594,8 +3594,8 @@ static uint8 EnemyBlockCollReact_HorizExt(EnemyBlockCollInfo *ebci) {  // 0xA0C6
 }
 
 static uint8 EnemyBlockCollReact_VertExt(EnemyBlockCollInfo *ebci) {  // 0xA0C64F
-  if (BTS[cur_block_index]) {
-    cur_block_index += (int8)BTS[cur_block_index] * room_width_in_blocks;
+  if (BtsAt(cur_block_index)) {
+    cur_block_index += (int8)BtsAt(cur_block_index) * room_width_in_blocks;
     return 0xff;
   }
   return 0;
@@ -3713,7 +3713,7 @@ static uint8 EnemyBlockCollReact_Horiz(EnemyBlockCollInfo *ebci, uint16 k) {
   cur_block_index = k >> 1;
   uint8 rv = 0;
   do {
-    rv = off_A0C859[(level_data[cur_block_index] & 0xf000) >> 12](ebci);
+    rv = off_A0C859[(LevelDataAt(cur_block_index) & 0xf000) >> 12](ebci);
   } while (rv & 0x80);
   return rv;
 }
@@ -3741,7 +3741,7 @@ static uint8 EnemyBlockCollReact_Vert(EnemyBlockCollInfo *ebci, uint16 k) {
   cur_block_index = k >> 1;
   uint8 rv = 0;
   do {
-    rv = off_A0C88D[(level_data[cur_block_index] & 0xf000) >> 12](ebci);
+    rv = off_A0C88D[(LevelDataAt(cur_block_index) & 0xf000) >> 12](ebci);
   } while (rv & 0x80);
   return rv;
 }
@@ -3756,24 +3756,24 @@ uint8 EnemyFunc_C8AD(uint16 k) {  // 0xA0C8AD
 
   EnemyData *E = gEnemyData(k);
   CalculateBlockContainingPixelPos(E->x_pos, E->y_pos + E->y_height - 1);
-  if ((level_data[cur_block_index] & 0xF000) == 4096 && (BTS[cur_block_index] & 0x1F) >= 5) {
+  if ((LevelDataAt(cur_block_index) & 0xF000) == 4096 && (BtsAt(cur_block_index) & 0x1F) >= 5) {
     result = 1;
     uint16 temp_collision_DD4 = (E->y_height + E->y_pos - 1) & 0xF;
-    uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
-    if ((BTS[cur_block_index] & 0x80) == 0) {
-      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
+    uint16 temp_collision_DD6 = 16 * (BtsAt(cur_block_index) & 0x1F);
+    if ((BtsAt(cur_block_index) & 0x80) == 0) {
+      uint16 j = (BtsAt(cur_block_index) & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
       int16 v4 = (kAlignYPos_Tab0[temp_collision_DD6 + (j & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
       if (v4 < 0)
         E->y_pos += v4;
     }
   }
   CalculateBlockContainingPixelPos(E->x_pos, E->y_pos - E->y_height);
-  if ((level_data[cur_block_index] & 0xF000) == 4096 && (BTS[cur_block_index] & 0x1F) >= 5) {
+  if ((LevelDataAt(cur_block_index) & 0xF000) == 4096 && (BtsAt(cur_block_index) & 0x1F) >= 5) {
     result = 1;
     uint16 temp_collision_DD4 = (E->y_pos - E->y_height) & 0xF ^ 0xF;
-    uint16 temp_collision_DD6 = 16 * (BTS[cur_block_index] & 0x1F);
-    if (BTS[cur_block_index] & 0x80) {
-      uint16 j = (BTS[cur_block_index] & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
+    uint16 temp_collision_DD6 = 16 * (BtsAt(cur_block_index) & 0x1F);
+    if (BtsAt(cur_block_index) & 0x80) {
+      uint16 j = (BtsAt(cur_block_index) & 0x40) != 0 ? E->x_pos ^ 0xF : E->x_pos;
       int16 v7 = (kAlignYPos_Tab0[temp_collision_DD6 + (j & 0xF)] & 0x1F) - temp_collision_DD4 - 1;
       if (v7 < 0)
         E->y_pos -= v7;

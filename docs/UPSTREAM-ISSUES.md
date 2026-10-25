@@ -96,7 +96,8 @@ the developers' debug station Norfair 21 starts her out of bounds), her
 block index is far past the room's, and `BTS[cur_block_index]` reads past
 the end of `g_ram`, into whatever follows. The tour reset in Maridia's
 room D2D9 and, once the new statics went last, its pictures didn't move.
-Keeping Samus's block inside the room's would be the root fix.
+Keeping Samus's block inside the room's would be the root fix; issue 7 is
+the one made.
 
 ## 6. The debug soft reset runs a state that isn't
 
@@ -114,3 +115,32 @@ jumped into the weeds. (The SNES's reset vector runs at once.)
 **Fix:** `RunOneFrameOfGameInner` returns after `ReadJoypadInputs` if
 `game_state` is 0xffff, and the frame ends as the other soft resets do
 (commit: the one that adds the developer tools).
+
+## 7. A block index of -1 reads past `level_data` and `BTS`
+
+**Where:** `src/sm_94.c` `CalculateBlockAt`, and every read of
+`level_data[cur_block_index]` and `BTS[cur_block_index]` (94 of them, in
+`src/sm_94.c`, `src/sm_a0.c`, `src/sm_86.c` and `src/sm_a3.c`: Samus's,
+the enemies' and the enemy projectiles' block collisions, slopes).
+
+**What:** `CalculateBlockAt` sets `cur_block_index` to -1 for a point
+outside the room (Samus's, for a moment in a door transition, or spawned
+out of bounds), and the callers go on to read the block there. The SNES
+reads with a 16-bit X (`LDA $7F0002,X`, `LDA $7F6402,X`): `level_data`'s
+read wraps to `$80:0000`, the mirror of `$7E:0000`, and `BTS`'s is
+`$80:6401`, the open bus. In C, `level_data[0xffff]` and `BTS[0xffff]` are
+128 KB and 64 KB past the start of the arrays, past the end of `g_ram`:
+undefined. On the GBA they read whatever follows `g_ram` (the copy of
+VRAM), so the block's type and BTS were garbage: a BTS of 0x80 or more in
+`BlockInsideReact_SpecialAir` spawns a PLM from a table by it, which is how
+the tour reset in room D2D9 (issue 5) and could leave a door transition on
+a black screen.
+
+**Fix:** `LevelDataAt` and `BtsAt` (`src/variables.h`) read as the SNES
+does, `$7E:0000` and the open bus's `$7F` (the instruction's bank byte, the
+last thing on the bus, as emulators have it), and the reads go through
+them; in the room, they are the arrays. Found by smrun's MEMCHECK
+(`tools/memcheck_ranges.py`), which logs every load and store the game's
+code makes outside the game's RAM: with this, none in the room tour or the
+239 scenarios.
+
