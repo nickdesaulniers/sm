@@ -1020,8 +1020,15 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   // fight): its priority tiles are his body, in front of BG1's others (the
   // wall), behind BG1's (the floor); there are more of BG1's, but the
   // floor is out of his way.
+  // Otherwise BG2's count twice over: BG2 not split puts its priority tiles
+  // behind all of BG1, which is mostly solid (Kraid's body, the whole of
+  // him, behind the cave's wall), where BG1 not split only puts its
+  // priority tiles behind the sprites and BG2's. (Kraid's room has as many
+  // of BG1's as of his on show, and the count went one way and the other
+  // as the screen shook: him, then none of him, for a second or so.)
   bool sub_only = (r->cgwsel & 2) && (r->ts & 2) && !(r->tm & 2);
-  SetSplit(!EquipmentScreen() && (sub_only ? shown[1] > 0 : shown[1] > shown[0] && (r->tm & 2)));
+  SetSplit(!EquipmentScreen() &&
+           (sub_only ? shown[1] > 0 : shown[1] && 2 * shown[1] >= shown[0] && (r->tm & 2)));
 }
 
 // The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
