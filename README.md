@@ -267,3 +267,20 @@ This branch keeps the decompilation's PC build too, which runs the C code and
 the original game side by side and compares them frame by frame. See
 [BUILDING.md](BUILDING.md) for its build, and the
 [snesrev Discord](https://discord.gg/AJJbJAzNNJ) for the project.
+
+## Credits
+
+- **The game:** Super Metroid is Nintendo's (1994). This port and its
+  repository include none of the game's code or data: the cartridge is built
+  from your own ROM.
+- **The decompilation:** the [snesrev/sm](https://github.com/snesrev/sm)
+  authors, who rewrote the game as C and check it against the original
+  frame by frame. Its SNES emulation, which those checks and this port's
+  tests run on, is from elzo_d. The decompilation and this port are under
+  its [MIT license](LICENSE.txt).
+- **The toolchain:** [LLVM](https://llvm.org): clang and lld build the
+  cartridge, and compiler-rt's builtins are part of it.
+- **The tests:** [mGBA](https://mgba.io), whose library runs the cartridge
+  headless for the room tour and the scenarios (`tools/mgba/`).
+- **The port:** Nick Desaulniers, with Claude Opus 5.5 as co-author of every
+  commit. [How it was made](docs/HOW-IT-WAS-MADE.md) tells the story.
