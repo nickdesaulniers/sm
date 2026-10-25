@@ -488,6 +488,19 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
       (r->inidisp & 0x80))
     return 0;
   bool subtract = r->cgadsub & 0x80, half = r->cgadsub & 0x40;
+  if (!(r->cgwsel & 2) && !subtract && region == 1) {
+    // The fixed color added inside the color window only (Mother Brain's
+    // rainbow beam: HDMA gives the window its shape, and the color its
+    // cycle). The GBA can't add a color, but it brightens the layers
+    // inside its window, by the mean of the color's channels (the beam
+    // over a dark room: white, as bright as the color).
+    int fixed = r->coldata[0] + r->coldata[1] + r->coldata[2];
+    if (!fixed)
+      return 0;
+    c->bld[0] = BlendLayers(math) | 2 << 6;
+    c->bld[2] = fixed * 11 >> 6;  // /93 * 16
+    return kFixedInWindows;
+  }
   if (r->cgwsel & 2) {
     uint8_t sub = SubLayers(r);
     // A power bomb's blast, with BG3 transparent: the fixed color's added
@@ -1046,6 +1059,54 @@ ROM_CODE static bool Bg2HasLoTiles(const PpuRegs *r) {
   return false;
 }
 
+// The entry of background |bg|'s map at (|bx|, |by|) in its pixels (wrapped to 1024).
+ROM_CODE static inline uint16_t BgEntry(const PpuRegs *r, int bg, int bx, int by) {
+  uint8_t sc = r->bgsc[bg];
+  int screen = (bx >> 8) & (sc & 1);
+  screen += (by >> 8) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
+  return g_vram[((sc & 0xfc) << 8 | screen << 10 | ((by >> 3) & 31) << 5 | ((bx >> 3) & 31)) &
+                0x7fff];
+}
+
+// Whether the 4bpp tile of background 1 or 2 (|bg|, by BG12NBA) |tile| has no pixel.
+ROM_CODE static bool BgTileBlank(const PpuRegs *r, int bg, int tile) {
+  const uint32_t *t = (const uint32_t *)&g_vram[(((r->bgnba[0] >> (bg * 4) & 15) << 12) + tile * 16) & 0x7fff];
+  for (int i = 0; i < 8; i++) {
+    if (t[i])
+      return false;
+  }
+  return true;
+}
+
+// Which of the two ways of splitting BG1 and BG2 into the GBA's layers gets
+// more of the picture wrong, by the tiles on show where a priority tile of
+// BG2 (with a pixel) lies over one of BG1's, in the middle of each
+// tile, in every other row: BG2 split puts its priority tiles in front of
+// all of BG1's (wrong over BG1's priority tiles), BG2 not split puts them
+// behind all of BG1's (wrong over BG1's other tiles). True if the second is
+// worse; or, with none of BG2's over one of BG1's, |by_count|: the count of their
+// priority tiles says (as sprites' order with BG2's priority tiles depends on it too).
+ROM_CODE static bool Bg2HiHiddenByBg1(const PpuRegs *r, bool by_count) {
+  int front = 0, behind = 0;
+  int y0 = SnesLine(hud ? kGbaHudLines : 0), y1 = SnesLine(kGbaLines - 1);
+  for (int y = y0 + 4; y < y1; y += 16) {
+    int by1 = (VOFS(text_line, 0) + y + 1) & 0x3ff, by2 = (VOFS(text_line, 1) + y + 1) & 0x3ff;
+    for (int x = kXOffset + 4; x < kXOffset + 240; x += 8) {
+      uint16_t e2 = BgEntry(r, 1, (HOFS(text_line, 1) + x) & 0x3ff, by2);
+      if (!(e2 & 0x2000) || BgTileBlank(r, 1, e2 & 0x3ff))
+        continue;
+      uint16_t e1 = BgEntry(r, 0, (HOFS(text_line, 0) + x) & 0x3ff, by1);
+      if (BgTileBlank(r, 0, e1 & 0x3ff))
+        continue;
+      if (e1 & 0x2000)
+        front++;
+      else
+        behind++;
+    }
+  }
+  return front | behind ? behind > front : by_count;
+}
+
 // Chooses split_bg2 (or bg2_over_lo) from BG1's and BG2's priority tiles (as the
 // frame before converted their maps) and the line |r|'s scrolling.
 ROM_CODE static void ChooseSplit(const PpuRegs *r) {
@@ -1072,22 +1133,35 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   // fight): its priority tiles are his body, in front of BG1's others (the
   // wall), behind BG1's (the floor); there are more of BG1's, but the
   // floor is out of his way.
-  // Otherwise BG2's count twice over: BG2 not split puts its priority tiles
-  // behind all of BG1, which is mostly solid (Kraid's body, the whole of
-  // him, behind the cave's wall), where BG1 not split only puts its
-  // priority tiles behind the sprites and BG2's. (Kraid's room has as many
-  // of BG1's as of his on show, and the count went one way and the other
-  // as the screen shook: him, then none of him, for a second or so.)
+  // Otherwise by the picture (Bg2HiHiddenByBg1): BG2's priority tiles are
+  // Kraid's body, the whole of him, in front of the cave's wall in BG1 and
+  // behind its few priority tiles, and Mother Brain's, as she stands, in front
+  // of a room that's all but a few of BG1's tiles; a count of each layer's
+  // priority tiles, which went one way and the other as the screen shook
+  // (Kraid, gone for a second or so) or stayed the wrong one (Mother Brain,
+  // gone from the waist up through the fight: 128 of BG2's to 268 of BG1's),
+  // can't tell. Every fourth frame, as the scrolling and the tiles change
+  // slowly.
   // Better yet, if BG2 has no others than priority tiles (and no sub screen
   // adds layers that go in front): BG2 in front of BG1's others only, as the
   // SNES has it (bg2_over_lo: Kraid's room, where his body goes behind the
   // floor, in front of the wall).
+  // And a BG2 that the game turns off and on every other frame (Mother
+  // Brain's body, as she dies) keeps the split it had: each change of it
+  // converts both maps again, twice the frame's other work.
+  static uint8_t age, off;
+  static bool hidden;
   bool sub_only = (r->cgwsel & 2) && (r->ts & 2) && !(r->tm & 2);
-  bool split = !EquipmentScreen() &&
-               (sub_only ? shown[1] > 0 : shown[1] && 2 * shown[1] >= shown[0] && (r->tm & 2));
-  bool over = !EquipmentScreen() && !sub_only && shown[1] && (r->tm & 2) && !(r->ts & 3) &&
-              !Bg2HasLoTiles(r);
-  SetSplit(split && !over);
+  bool both = !sub_only && shown[1] && (r->tm & 2);
+  if (both && !(age++ & 3))
+    hidden = !shown[0] || Bg2HiHiddenByBg1(r, 2 * shown[1] >= shown[0]);
+  bool over = !EquipmentScreen() && both && !(r->ts & 3) && !Bg2HasLoTiles(r);
+  bool split = !EquipmentScreen() && (sub_only ? shown[1] > 0 : both && hidden) && !over;
+  if (!sub_only && shown[1] && !(r->tm & 2) && off < 3)
+    split = split_bg2, off++;
+  else if (r->tm & 2)
+    off = 0;
+  SetSplit(split);
   bg2_over_lo = over;
 }
 
@@ -2298,12 +2372,29 @@ ROM_CODE static void FindStackedSprites(const uint8_t *shapes, uint32_t above[4]
   }
 }
 
+// The sprites FindStackedSprites found. Finding them takes some 150000 cycles from
+// ROM when the sprites are a hundred 8-line ones, as the credits' text is, and
+// those change every frame (it scrolls: that went over the vblank, which made the
+// next frame convert them all again, at half speed). So a scene that changes 48
+// sprites or more two frames running has them found on its first frame only
+// (its text has none stacked, or the same ones as it scrolls).
+static uint32_t stacked_above[4], stacked_below[4];
+
 // UpdateOam's work for the sprites in |blocks| (4 each) when squashed, in
 // ROM: it's menus' and the like.
 ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
   const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
-  uint32_t above[4] = {0, 0, 0, 0}, below[4] = {0, 0, 0, 0};
-  FindStackedSprites(shapes, above, below);
+  static uint8_t busy;
+  int changed = 0;
+  for (uint32_t b = blocks; b; b &= b - 1)
+    changed++;
+  busy = changed < 12 ? 0 : busy + (busy < 2);
+  if (busy < 2) {
+    memset(stacked_above, 0, sizeof(stacked_above));
+    memset(stacked_below, 0, sizeof(stacked_below));
+    FindStackedSprites(shapes, stacked_above, stacked_below);
+  }
+  const uint32_t *above = stacked_above, *below = stacked_below;
   bool equipment = EquipmentScreen();
   for (int i = 0; i < 128; i++) {
     if (!(blocks >> (i >> 2) & 1))
