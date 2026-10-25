@@ -209,9 +209,12 @@ def check_engine(path, engine):
     if len(engine) < 0x1000 or engine[0xB2] != 0x96:
         sys.exit(f"{path}: not a GBA image (the header's fixed byte, 0x96, is not at 0xB2). "
                  "Give sm-engine.gba (the build's, or a release's).")
-    # The data starts at a multiple of 256 (gba.ld); the engine has the magic
-    # elsewhere too, as a string it compares with.
-    if any(engine[o:o + 8] == MAGIC for o in range(0x1000, len(engine), 256)):
+    # The data starts at a multiple of 256 (gba.ld), with the magic, the
+    # version and the ROM's size; the engine has the magic elsewhere too, as
+    # a string it compares with, and that can fall on a multiple of 256.
+    rom_size = struct.pack('<I', SNES_ROM_SIZE)
+    if any(engine[o:o + 8] == MAGIC and engine[o + 12:o + 16] == rom_size
+           for o in range(0x1000, len(engine), 256)):
         sys.exit(f"{path}: already has the game's data in it. Give sm-engine.gba, not sm.gba.")
     if len(engine) % 256:
         sys.exit(f'{path}: not an engine image (its size is not a multiple of 256)')
