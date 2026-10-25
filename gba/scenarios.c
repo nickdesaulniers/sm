@@ -46,7 +46,8 @@
 //              the Wrecked Ship's power on (Phantoon dead), and 4 Maridia's
 //              Draygon dead
 //   $N         the timer's status N (1 starts Ceres's escape, 2 Mother
-//              Brain's)
+//              Brain's, with the timer's tiles, which her death loads), and
+//              the timer's handling
 //   =N         the game state N (32: Ceres's elevator ride, then its explosion
 //              and the blackout: Mode 7 scenes)
 //   ^N         the first enemy's (the boss's) health to N, to reach a late phase of a fight
@@ -55,6 +56,11 @@
 //              is under 30), and + gives her them back
 //   %N         the message box N, as an item's pickup shows it (5 is the missile
 //              tanks', 28 the save station's question)
+//   H, h       Samus's energy is no longer refilled every frame (H), or is (h), the
+//              ammunition still is (unlike _N): for a drain that the game goes on
+//              by (Mother Brain's rainbow beam)
+//   :ADDR=N    the game's 16-bit word at ADDR (hex) to N (decimal)
+//   GN         Mother Brain's tank takes N more hits (see kMbFull)
 //   !          Samus dies (no energy, reserve or refills): the game over
 //   ~N         the lava, acid or water's surface to N pixels below Samus's
 //              centre (-N for above), at its base: for a room's lava where she
@@ -226,6 +232,48 @@ typedef struct Scenario {
 // The lava (or acid) first at Samus's feet and then rising past her, from a
 // station of a room that has it.
 #define kLavaScript "-*30 @ ~40 -*60 @ ~20 -*60 @ ~0 -*60 @ ~-30 -*60 @"
+
+// ---- Mother Brain, from her door to her death (the :, G and ( )W/V words wait for
+// the game's own state, as a player waits for the fight; see the top). Her
+// fields in RAM (hex addresses): the tank's glass takes hits (PLM room
+// argument 39, 1e15) to break at 18; then her brain (enemy 1) has health to lose
+// (fcc), then her body (enemy 0) is in phase 1, 2 (standing, 7800), 3 (the baby
+// Metroid's rescue) and 4 (the hyper beam). Her routine (fa8) goes up the
+// code as the rainbow beam goes: 47477 (b975) starts to fire, 47710 (ba5e)
+// is its end, as Samus's health runs out.
+// Samus's missiles reach the brain from the air at the pillar's height (the places in the script);
+// from the 8th hit on they explode on the glass instead, and the count stays there, so G makes
+// the hits the game's own scene would take longer to get (a player's way round isn't known).
+#define kMbHits "(LEFT*20 R+L+B*2 -*10 RIGHT*20 R+UP+B*2 -*10 R+B*2 -*20 @)x6"
+#define kMbFull \
+  "-*60 RIGHT*30 @ (-*9 @)x6 " \
+  "(>56,92 R+B*2 -*4 G1 @ -*9)W1e15,18 " \
+  "(>94,106 R+B*2 -*6 @ -*5)Vfcc,0 (-*16 @)W7800,2 -*100 " \
+  kMbHits " :fcc=4400 " kMbHits " " \
+  "H :fcc=0 :9c2=600 (-*20 @)Wfa8,47477 (-*6 @)Wfa8,47710 " \
+  "(-*20 @)W7800,3 (-*30 @)W7800,4 h -*60 (@ -*10)x6 " \
+  "(LEFT*10 B*30 UP+B*20 -*4 @)x5 :fcc=3000 (LEFT*10 B*30 UP+B*20 -*4 @)Vfcc,0 " \
+  "(-*15 @)W943,1 -*100 @"
+
+// ---- The escape from Zebes: the timer running (event 14, the time bomb, in word d820 with
+// the events 0 and 2 that Mother Brain's fight sets), from Tourian's station 16 through Mother
+// Brain's room's right door and the escape rooms to Crateria, and the landing site's ship, where
+// Down takes Samus aboard (the ship's code wants her under it, and the event): the ship's
+// lift-off, then the ending and the credits, which go on by themselves.
+#define kEscRoom "-*30 @ (A+RIGHT*30 @ RIGHT*40 @ B*3 -*10 @ A+LEFT*30 @ LEFT*40 @ -*10 @)x2"
+#define kEscape \
+  "-*30 &2 :d820=16389 $2 -*90 @ (-*30 @)x3 " \
+  "#aa8c " kEscRoom " #aaec " kEscRoom " #ab04 " kEscRoom " #ab1c " kEscRoom " " \
+  "#ab34 " kEscRoom " #8b3e " kEscRoom " #896a -*30 @ RIGHT*100 -*40 @ >1152,1088 -*60 @ DOWN*2 " \
+  "(-*40 @)x150"
+
+// ---- Tourian's Metroid rooms (each by its door): Samus walks into the room, shoots the first
+// Metroid on its way to her, as ice freezes it, and walks under it, shooting missiles up (it takes
+// five); then the others latch on, and she rolls into a ball and lays bombs, which shake them off.
+#define kMetroids \
+  "-*30 @ LEFT*60 (B*3 -*4 @)x25 LEFT*70 (R+UP+B*3 -*6 @)x16 (-*10 @)x4 " \
+  "LEFT*200 -*10 @ (-*10 @)x16 DOWN*10 -*6 DOWN*10 -*20 @ (-*6 @)x6 R*10 R+B*2 (-*10 @)x12 " \
+  "(B*2 -*14 @)x30 (-*30 @)x4"
 
 // ---- Crateria and Brinstar: rooms entered by door (the # word: each door's
 // definition is the room tour's, tour.c), a walk or a fight in each.
@@ -518,6 +566,12 @@ static const Scenario kScenarios[] = {
   BOSS("draygon", 4, 2),
   {"boss-draygon-full", 4, 0, 2, -1, kDraygonFull},
   BOSS("mother-brain", 5, 1),
+  {"boss-mother-brain-full", 5, 0, 1, -1, kMbFull},
+  {"escape-zebes", 5, 16, 0, -1, kEscape},
+  {"tourian-metroids-1", 5, 16, 0, -1, "#a984 " kMetroids},
+  {"tourian-metroids-2", 5, 16, 0, -1, "#a9b4 " kMetroids},
+  {"tourian-metroids-3", 5, 16, 0, -1, "#a9cc " kMetroids},
+  {"tourian-metroids-4", 5, 16, 0, -1, "#a9e4 " kMetroids},
   ROOM("daae", "9222"),
   ROOM("dae1", "a984"),
   ROOM("db31", "a9b4"),
@@ -581,7 +635,7 @@ static enum {
   kFinished,
 } phase;
 static uint32_t phase_frames;
-static bool shot_pending, reset_pending, spawned, door_pending, door_waiting, mortal;
+static bool shot_pending, reset_pending, spawned, door_pending, door_waiting, mortal, hurt;
 static int shot_count;
 
 // The script's place.
@@ -758,6 +812,21 @@ static bool NextWord(void) {
     case '$':
       script++;
       timer_status = Number(&script);
+      // (As Mother Brain's death does, before it sets the status to 2: the escape timer's
+      // tiles into VRAM (the table is the game's, in bank $A6), and the handling of the timer.)
+      if (timer_status) {
+        CallSomeSamusCode(0xf);
+        if (timer_status == 2) {
+          // (Byte by byte: the table's entries are at odd addresses.)
+          for (uint16_t t = 0xC4CB; ; t += 7) {
+            const uint8_t *entry = RomPtrWithBank(0xa6, t);
+            if (!(entry[0] | entry[1]))
+              break;
+            memcpy(gVramWriteEntry(vram_write_queue_tail), entry, 7);
+            vram_write_queue_tail += 7;
+          }
+        }
+      }
       continue;
     case '=':
       script++;
@@ -770,6 +839,14 @@ static bool NextWord(void) {
     case '%':
       script++;
       queued_message_box_index = Number(&script);
+      continue;
+    case 'H':
+      script++;
+      hurt = true;
+      continue;
+    case 'h':
+      script++;
+      hurt = false;
       continue;
     case '!':
       script++;
@@ -809,6 +886,30 @@ static bool NextWord(void) {
       held_left = 1;
       return true;
     }
+    case ':': {
+      // :ADDR=N: the game's 16-bit word at ADDR (hex) to N (decimal).
+      script++;
+      int addr = 0;
+      for (;; script++) {
+        int c = *script;
+        if (c >= '0' && c <= '9')
+          c -= '0';
+        else if (c >= 'a' && c <= 'f')
+          c -= 'a' - 10;
+        else
+          break;
+        addr = addr << 4 | c;
+      }
+      script++;
+      uint16_t v = Number(&script);
+      memcpy(g_ram + addr, &v, 2);
+      continue;
+    }
+    case 'G':
+      // (Mother Brain's tank: its glass counts missile hits, to 18; see kMbFull.)
+      script++;
+      plm_room_arguments[39] += Number(&script);
+      continue;
     case '(':
       script++;
       loops[loop_depth].start = script;
@@ -882,7 +983,7 @@ static void Start(void) {
   shot_pending = false;
   follow = 0;
   phase = kScript;
-  door_pending = door_waiting = mortal = false;
+  door_pending = door_waiting = mortal = hurt = false;
   phase_frames = 0;
   printf("scenario: %s\n", s->name);
   printf("scenario-at: room %04x samus %d,%d\nscenario-fx: %02x\n", room_ptr, samus_x_pos, samus_y_pos, fx_type);
@@ -1008,7 +1109,8 @@ void Scn_BeforeFrame(void) {
            e1->enemy_ptr, e1->health, e2->enemy_ptr, e2->health, samus_x_pos, samus_y_pos, *(uint16_t *)(g_ram + 0xD82A));
   }
   if ((phase == kLoading || phase == kScript) && !mortal) {
-    samus_health = samus_max_health;
+    if (!hurt)
+      samus_health = samus_max_health;
     samus_missiles = samus_max_missiles;
     samus_super_missiles = samus_max_super_missiles;
     samus_power_bombs = samus_max_power_bombs;

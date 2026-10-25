@@ -13,7 +13,7 @@
 # only the I'th of N shares of the chunks (below), to divide a run between
 # machines, or runs: they write to different OUT_DIRs, or the same, apart.
 #
-# FRAMES (default 3000 + 8000 a scenario) is smrun's limit on the frames a boot runs: a scenario
+# FRAMES (default 3000 + 12000 a scenario) is smrun's limit on the frames a boot runs: a scenario
 # with many shots needs more (each shot holds a few; the long dense fights, boss-ridley-* and
 # ceres-ridley-full, with CHUNK=1 for a boot each).
 #
@@ -35,8 +35,9 @@
 #                               "scenario: NAME" as each begins and "scenario:
 #                               end NAME", "tour: shot NAME-N" at each shot
 #
-# A scenario spawns, plays and ends in about 5 to 90 s of the game's time
-# (a beam's, 4; a boss's, 70), after 20 s of it for the spawn. smrun runs
+# A scenario spawns, plays and ends in about 5 to 200 s of the game's time
+# (a beam's, 4; a boss's, 70; Mother Brain's whole fight, 200), after 20 s of it for the
+# spawn. smrun runs
 # about 2000 frames a second, so all 44 scenarios (34 of weapons, 10 of
 # bosses, with their 465 shots and comparisons) take about 25 s at JOBS=4, on
 # 12 cores. A scenario that never gets to its script (the spawn failed) is
@@ -96,7 +97,7 @@ echo "$count scenarios"
 # start say which: see gba/scenarios.c).
 run_chunk() {  # run_chunk FIRST COUNT [NAME]
     local first=$1 n=$2 name=${3:-c$1}
-    local frames=${FRAMES:-$((3000 + n * 8000))}
+    local frames=${FRAMES:-$((3000 + n * 12000))}
     if [ -n "$audio" ]; then
         KEYS="1:100:$(keys "$first"),$(keys $((n | 512)))" STOP_ON="scenario: all done" \
             AUDIO="$out/raw/$name.wav" "$smrun" "$build/sm.gba" "$frames" "" "$out/list_" \
