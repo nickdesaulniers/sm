@@ -1073,13 +1073,16 @@ ROM_CODE static int SubtractError(uint16_t m, uint16_t s, uint16_t add, uint16_t
 // the palette, at SubtractWeight's 40 samples: their main screen's values
 // (|m|), the sub screen's (|c|, or 32 where it's transparent, and nothing's
 // added back) and what the SNES makes of them (|want|). (In IWRAM: a
-// search runs it a dozen times a frame.)
+// search runs it a dozen times a frame.) By the squares of the errors: with
+// BG3's shadow a dither of two colors (Maridia's sand), a few big ones are
+// worse than many small. (AddedBackError has the errors themselves, to
+// compare with darkening's and the average's.)
 static int AddBackError(const uint8_t *m, const uint8_t *c, const uint8_t *want, int v) {
   int error = 0;
   for (int k = 0; k < 40; k++) {
     int got = (m[k] > v ? m[k] - v : 0) + (v > c[k] ? v - c[k] : 0);
     got = got > 31 ? 31 : got;
-    error += got > want[k] ? got - want[k] : want[k] - got;
+    error += (got - want[k]) * (got - want[k]);
   }
   return error;
 }
@@ -1228,7 +1231,6 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
   if (p == kErrors) {
     // How far off each would be, at the pixels. (Not halved.)
     darkened = averaged = 0;
-    added_back = add_back ? 0 : 0x7fffffff;
     for (int k = 0; k < kSamples; k++) {
       uint16_t m = main_colors[k], c = sub_colors[k];
       uint16_t dark = pixels[best][k] ? 0 : m;
@@ -1271,7 +1273,6 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
       if (error < best_error)
         best_error = error, best_s = v;
     }
-    added_back += best_error;
     top |= best_s << ch;
     return subtract_weight;
   }
@@ -1281,11 +1282,24 @@ ROM_CODE static int SubtractWeight(const PpuRegs *r) {
     // moves; they can be close, and the colors would flicker between
     // them).
     static int error[3];
+    // (What adding back, with the colors the search found, would be off by.)
+    added_back = 0;
+    for (int k = 0; add_back && k < kSamples; k++) {
+      uint16_t back = 0;
+      for (int i = 0; i < 15 && opaque_at[k]; i += 5) {
+        int d = (top >> i & 31) - (sub_colors[k] >> i & 31);
+        back |= (d > 0 ? d : 0) << i;
+      }
+      added_back += SubtractError(main_colors[k], top, back, sub_colors[k]);
+    }
     int now_error[3] = {darkened, averaged, add_back ? added_back : 0x1000000};
     for (int i = 0; i < 3; i++)
       error[i] = fresh ? now_error[i] : error[i] + (now_error[i] - error[i]) / 4;
     fresh = false;
-    int way = error[1] <= error[0] && error[1] <= error[2] ? 1 : error[2] < error[0] ? 2 : 0;
+    // (Adding back is favored by a quarter: it keeps BG3's pattern and
+    // color, which darkening can't, and the errors can be close.)
+    int back_error = error[2] - (error[2] >> 2);
+    int way = error[1] <= error[0] && error[1] <= back_error ? 1 : back_error < error[0] ? 2 : 0;
     subtract_layer = 1 << best;
     subtract_color = 0;
     if (way == 1) {
