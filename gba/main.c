@@ -215,6 +215,14 @@ void gba_main(void) {
     presented_audio = a4;
     game_cycles += game;
     render_cycles += render;
+#ifdef SM_FRAME_LOG
+    // For finding stalls (-DCMAKE_C_FLAGS=-DSM_FRAME_LOG): every frame that took more than one of
+    // the GBA's, with where its time went; the line below only keeps the slowest of a second.
+    if (presented_at - last_presented > 1)
+      printf("frame: %u vblanks game %u audio %u render %u state %u room %04x\n",
+             (unsigned)(presented_at - last_presented), (unsigned)game, (unsigned)audio_now,
+             (unsigned)render, (unsigned)game_state, room_ptr);
+#endif
     if (presented_at - last_presented > 1) {
       slow++;
       if (game + render + audio_now > worst[0] + worst[1] + worst[2]) {

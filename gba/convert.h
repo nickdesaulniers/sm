@@ -15,6 +15,7 @@ void Convert_Tiles2bppSquashed(volatile uint32_t *dst, const uint16_t *src, int 
 // For those, BG palette 0's colors by brightness: |rank|[color], higher's
 // brighter.
 void Convert_SetSquashRanks(const uint8_t rank[16]);
-int Convert_Map(volatile uint16_t *dst, const uint16_t *src, int count, uint32_t pal_add);
-int Convert_MapSplit(volatile uint16_t *hi, volatile uint16_t *lo, const uint16_t *src,
-                     int count, uint32_t blank);
+// The maps of BG1, BG2 and BG3, 32 chunks of 16 entries at a time: see convert_map.S.
+void Convert_MapChunks(uint32_t todo, volatile uint16_t *lo, volatile uint16_t *hi,
+                       const uint16_t *src, uint8_t *counts, uint16_t *cols, uint32_t blank,
+                       uint32_t add);

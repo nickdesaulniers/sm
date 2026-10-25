@@ -100,6 +100,7 @@ add_executable(sm_gba
     audio.c
     audio_mix.iwram.c
     audio_mix.S
+    convert_map.S
     decompress.S
     irq_entry.S
     thumb_entries.S

@@ -919,12 +919,16 @@ ROM_CODE static void UpdateYOffset(void) {
   y_offset += d > 4 ? 4 : d < -4 ? -4 : d;
 }
 
-// Runs the statement after it for each chunk k (declared here) of the 64
-// in the map screen at addr (1024 words, aligned) that changed, or all.
-#define FOR_EACH_DIRTY_CHUNK(dirty, addr, all, k)                                          \
-  for (int w_ = 0; w_ < 2; w_++)                                                           \
-    for (uint32_t bits_ = (all) ? ~0u : (dirty)[((addr) >> 9) + w_], k;                    \
-         bits_ && ((k = w_ * 32 + __builtin_ctz(bits_)), 1); bits_ &= bits_ - 1)
+// The 16 low bits of |x| as 32, each twice (a mask of tile rows as one of
+// chunks, two to a row).
+static inline uint32_t SpreadBits(uint32_t x) {
+  x &= 0xffff;
+  x = (x | x << 8) & 0x00ff00ff;
+  x = (x | x << 4) & 0x0f0f0f0f;
+  x = (x | x << 2) & 0x33333333;
+  x = (x | x << 1) & 0x55555555;
+  return x | x << 1;
+}
 
 ROM_CODE static void SetSplit(bool split) {
   split_bg2 = split;
@@ -1853,6 +1857,15 @@ static void UpdateTiles(const PpuRegs *r, uint32_t *dirty, bool bg12, bool bg3) 
     WarnBg2Tiles(bg2_base, bg12_base);
   if (bg12_base != conv.bg12_base || bg3_base != conv.bg3_base || obj0 != conv.obj_base[0] ||
       obj1 != conv.obj_base[1] || squash != conv.squashed) {
+    // Nothing shows (black, or forced blank): convert all the tiles when it does, not now and
+    // again then. A menu loads its graphics after SetSquash flips, in the dark (the pause
+    // screen: 14 vblanks of converting the gameplay's tiles first), and they are all marked
+    // when it does show (a base that can't be anything makes this branch run again).
+    const PpuRegs *dark = LINE_REGS(kSnesLines / 2);
+    if ((dark->inidisp & 0x80) || !(dark->inidisp & 15)) {
+      conv.bg12_base = 0xffff;
+      return;
+    }
     conv.squashed = squash;
     conv.bg12_base = bg12_base;
     conv.bg3_base = bg3_base;
@@ -1906,6 +1919,14 @@ ROM_CODE static uint32_t Map64Key(int bg) {
   return (m >> 3 & 31) << 1 | m >> 8;
 }
 
+// The chunks of 32 of |counts| that aren't 0, as bits.
+ROM_CODE static uint32_t ChunksWithCounts(const uint8_t *counts) {
+  uint32_t bits = 0;
+  for (int c = 0; c < 32; c++)
+    bits |= (counts[c] != 0) << c;
+  return bits;
+}
+
 // (In ROM: what it calls does the work.)
 ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool force_split) {
   bool split_changed = split_bg2 != conv.split_bg2;
@@ -1921,14 +1942,26 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
     bool moved = sc != conv.bgsc[bg] || (bg && r->bgnba[0] != conv.bg2_nba);
     // BG2's tiles at another base than BG1's (the area map coming in over
     // the planet's, on the file select's way to the game): the same tiles
-    // converted, BG2's entries that many later. (Not if the base is before
-    // BG1's, whose tiles go on from BG1's.)
+    // converted, BG2's entries that many later (Convert_MapChunks wraps them at
+    // 1024: a base 4, 8 or 12 on is none). (Not if the base is before BG1's, whose
+    // tiles go on from BG1's.)
     uint32_t tile_add = 0;
     if (bg && (r->bgnba[0] >> 4) > (r->bgnba[0] & 15))
-      tile_add = ((r->bgnba[0] >> 4) - (r->bgnba[0] & 15)) << 8;
+      tile_add = (((r->bgnba[0] >> 4) - (r->bgnba[0] & 15)) << 8) & 0x3ff;
     if (bg)
       conv.bg2_nba = r->bgnba[0];
-    bool changed = moved || (split && force_split) || split_changed;
+    bool changed = moved || (split && force_split) || (split_changed && (sc & 3) == 3);
+    // The map goes into or out of a split, but is as converted otherwise: only
+    // the chunks with priority tiles differ. (Its own GBA layer has all of a chunk's
+    // entries unsplit, and those without the priority bit split; and the layer
+    // in front, that a split map has the others in, is blank but for them: so
+    // that, if it's this map's now, starts out blank.)
+    bool flipped = split_changed && !changed;
+    if (flipped && split) {
+      uint32_t blank = (uint16_t)conv.blank_tile;
+      for (int k = 0; k < ((sc & 3) ? 2 : 1); k++)
+        DmaFill32(VRAM_SB(kSbBg1Hi + k), blank | blank << 16, 0x800);
+    }
     if (moved) {
       memset(bg12_hi[bg], 0, sizeof(bg12_hi[bg]));
       memset(bg12_hi_cols[bg], 0, sizeof(bg12_hi_cols[bg]));
@@ -1949,28 +1982,20 @@ ROM_CODE static void UpdateMaps12(const PpuRegs *r, const uint32_t *dirty, bool 
         uint16_t addr = (((sc & 0xfc) << 8) + (row * 2 + k) * 0x400) & 0x7fff;
         uint8_t *counts = &bg12_hi[bg][k * 64];
         uint16_t *cols = &bg12_hi_cols[bg][k * 2];
-        FOR_EACH_DIRTY_CHUNK(dirty, addr, changed || redo, c) {
-          uint32_t tile_row = 1u << (c >> 1);
-          if (!(from[row] & tile_row) ||
-              !(changed || (redo & tile_row) || (dirty[(addr >> 9) + (c >> 5)] >> (c & 31) & 1)))
-            continue;
-          uint32_t o = c * 16;
-          int hi;
-          const uint16_t *src = &g_vram[addr + o];
-          uint16_t later[16] __attribute__((aligned(4)));
-          if (tile_add) {
-            for (int i = 0; i < 16; i++)
-              later[i] = (src[i] & 0xfc00) | ((src[i] + tile_add) & 0x3ff);
-            src = later;
+        // The chunks to convert, 32 to a word of the dirty bitmap: those of
+        // the tile rows from this row of screens that changed, or are from
+        // another row than when last converted, or (flipped) have priority tiles.
+        for (int w = 0; w < 2; w++) {
+          uint32_t todo = SpreadBits(from[row] >> (w * 16));
+          if (!changed)
+            todo &= SpreadBits(redo >> (w * 16)) | dirty[(addr >> 9) + w] |
+                    (flipped ? ChunksWithCounts(counts + w * 32) : 0);
+          if (todo) {
+            uint32_t o = w * 512;
+            Convert_MapChunks(todo, VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o,
+                              split ? VRAM_SB(kSbBg1Hi + k) + o : NULL, &g_vram[addr + o],
+                              counts + w * 32, cols, conv.blank_tile, tile_add);
           }
-          if (split)
-            hi = Convert_MapSplit(VRAM_SB(kSbBg1Hi + k) + o,
-                                  VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16,
-                                  conv.blank_tile);
-          else
-            hi = Convert_Map(VRAM_SB((bg ? kSbBg2 : kSbBg1Lo) + k) + o, src, 16, 0);
-          cols[c & 1] += hi - counts[c];
-          counts[c] = hi;
         }
       }
     }
@@ -2010,12 +2035,15 @@ static void UpdateMaps(const PpuRegs *r, const uint32_t *dirty, bool force_split
     for (int k = 0; k < screens; k++) {
       uint16_t addr = (((sc & 0xfc) << 8) + k * 0x400) & 0x7fff;
       uint8_t *counts = &bg3_hi[slot].chunks[k * 64];
-      FOR_EACH_DIRTY_CHUNK(dirty, addr, changed, c) {
-        uint32_t o = c * 16;
-        int hi = Convert_Map(VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + o, &g_vram[addr + o],
-                             16, 8 << 12);
-        total += hi - counts[c];
-        counts[c] = hi;
+      for (int w = 0; w < 2; w++) {
+        uint32_t todo = changed ? ~0u : dirty[(addr >> 9) + w];
+        // (The change of the total, as Convert_MapChunks sums it for two halves of rows.)
+        uint16_t change[2] = {0, 0};
+        if (todo) {
+          Convert_MapChunks(todo, VRAM_SB((slot ? kSbBg3Slot1 : kSbBg3Slot0) + k) + w * 512, NULL,
+                            &g_vram[addr + w * 512], counts + w * 32, change, 0, 8 << 12);
+          total += (int16_t)(change[0] + change[1]);
+        }
       }
     }
     bg3_hi_total[slot] = total;

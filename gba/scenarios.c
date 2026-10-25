@@ -23,6 +23,11 @@
 //   @          a shot of the frame the next word begins
 //   ( ... )xN  the words between, N times
 //   >X,Y       Samus to that place (pixels)
+//   #HHHH      Samus through the door with that definition (hex, in bank $83) as
+//              the room tour does (tour.c): into the room it leads to, at its
+//              other side, and the script goes on once she has her controls
+//   P          no power bombs, for the next room to load without them: Crateria's
+//              landing site has its rain until Samus has them
 //   ~N         the lava, acid or water's surface to N pixels below Samus's
 //              centre (-N for above), at its base: for a room's lava where she
 //              can't go (the camera follows her only so far)
@@ -101,6 +106,21 @@ typedef struct Scenario {
 // station of a room that has it.
 #define kLavaScript "-*30 @ ~40 -*60 @ ~20 -*60 @ ~0 -*60 @ ~-30 -*60 @"
 
+// ---- Crateria and Brinstar: rooms entered by door (the # word: each door's
+// definition is the room tour's, tour.c), a walk or a fight in each.
+#define kWalk "-*30 @ RIGHT*100 @ LEFT*200 @ RIGHT*100 A+RIGHT*40 @ -*10 @"
+// A fight: beams, jumps, charged shots and missiles, then supers, then (in the morph ball)
+// bombs and a power bomb.
+#define kBeamsAndSupers \
+  "-*30 @ (RIGHT*40 B*3 -*4 A+RIGHT*20 L+B*3 -*8 LEFT*40 B*60 -*2 R+B*3 -*8 A+LEFT*20 " \
+  "UP+B*3 -*8)x3 @ " kSelectSupers "(RIGHT*40 R+B*3 -*8 LEFT*40 R+B*3 -*8)x3 @ " kMorph
+#define kBombs "(RIGHT*10 B*2 -*12 LEFT*10 B*2 -*12)x4 @ "
+#define kRoomFight kBeamsAndSupers kBombs "R*10 R+B*2 -*60 @"
+// The same, with a shot as each stage of the power bomb's blast goes by.
+#define kPowerBombBlast \
+  kBeamsAndSupers "@ " kBombs "R*10 @ R+B*2 -*10 @ -*10 @ -*10 @ -*10 @ -*10 @ -*20 @ -*30 @ -*30 @"
+#define CB_FIGHT(room, door) {"cb-fight-" room, 0, 0, 0, -1, "#" door " " kRoomFight}
+
 static const Scenario kScenarios[] = {
   BEAM(0, "power"),
   BEAM(1, "wave"),
@@ -157,6 +177,38 @@ static const Scenario kScenarios[] = {
   {"lava-b37a", 2, 18, 0, -1, kLavaScript},
   {"lava-b283", 2, 21, 0, -1, kLavaScript},
   {"lava-b283-2", 2, 22, 0, -1, kLavaScript},
+  // The landing site in rain (it rains until Samus has power bombs: the P), from its door at
+  // the west, running east out of the room, and back.
+  {"cb-rain", 0, 0, 0, -1,
+   "P #896a -*30 @ RIGHT*150 @ RIGHT*150 @ RIGHT*150 @ RIGHT*150 @ RIGHT*150 @ RIGHT*150 @ "
+   "LEFT*400 @ -*50 @"},
+  // At the ship, as the debug station leaves her: along the landing site's floor.
+  {"cb-landing", 0, 16, 0, -1,
+   "-*30 @ RIGHT*100 @ RIGHT*100 @ RIGHT*100 @ LEFT*300 @ LEFT*100 @ -*10 @"},
+  // Bomb Torizo's room (his, as a door from the room west of it leaves it).
+  {"cb-torizo-room", 0, 0, 0, -1, "#8bc2 " kWalk},
+  // An item's message box (Brinstar's super missile): the game waits, the picture is the
+  // cartridge's alone.
+  {"cb-item-box", 0, 0, 0, -1, "#8f3a " kWalk},
+  // A power bomb's blast in a room of water (Brinstar's a0d2) and of fog (Crateria's 96ba).
+  {"cb-pb-water", 0, 0, 0, -1, "#8e0e " kPowerBombBlast},
+  {"cb-pb-fog", 0, 0, 0, -1, "#898e " kPowerBombBlast},
+  CB_FIGHT("9ad9", "8c0a"),
+  CB_FIGHT("9d19", "8e7a"),
+  CB_FIGHT("9cb3", "8ce2"),
+  CB_FIGHT("99f9", "8b4a"),
+  CB_FIGHT("96ba", "898e"),
+  CB_FIGHT("93fe", "8aea"),
+  CB_FIGHT("92fd", "8916"),
+  CB_FIGHT("99bd", "8be6"),
+  CB_FIGHT("a0d2", "8e0e"),
+  CB_FIGHT("9e52", "8e9e"),
+  CB_FIGHT("9e9f", "8b9e"),
+  CB_FIGHT("a322", "8b02"),
+  CB_FIGHT("a408", "9102"),
+  CB_FIGHT("a253", "907e"),
+  CB_FIGHT("9b5b", "8f76"),
+  CB_FIGHT("9fba", "8e92"),
   BOSS("bomb-torizo", 0, 1),
   BOSS("spore-spawn", 1, 1),
   BOSS("kraid", 1, 2),
@@ -168,6 +220,11 @@ static const Scenario kScenarios[] = {
   BOSS("mother-brain", 5, 1),
   // The Golden Torizo's room, at its left door (Norfair's debug station 22).
   {"boss-golden-torizo", 2, 22, 0, -1, kBossScript},
+  // Pause, the map's scrolling, the equipment screen (R, which takes a second or two, and L
+  // back) and the unpause.
+  {"pause-crateria", 0, 16, 0, -1,
+   "-*60 @ START*3 -*100 @ (RIGHT*3 -*10)x3 @ R*10 -*200 @ (DOWN*3 -*10)x6 @ L*10 -*200 @ "
+   "(LEFT*3 -*10)x3 @ START*3 -*100 @ -*60 @"},
 };
 enum { kScenarioCount = sizeof(kScenarios) / sizeof(kScenarios[0]) };
 
@@ -186,7 +243,7 @@ static enum {
   kFinished,
 } phase;
 static uint32_t phase_frames;
-static bool shot_pending, reset_pending, spawned;
+static bool shot_pending, reset_pending, spawned, door_pending;
 static int shot_count;
 
 // The script's place.
@@ -332,6 +389,32 @@ static bool NextWord(void) {
       fx_base_y_pos = samus_y_pos + (above ? -n : n);
       continue;
     }
+    case 'P':
+      script++;
+      samus_max_power_bombs = samus_power_bombs = 0;
+      continue;
+    case '#': {
+      script++;
+      int door = 0;
+      for (;; script++) {
+        int c = *script;
+        if (c >= '0' && c <= '9')
+          c -= '0';
+        else if (c >= 'a' && c <= 'f')
+          c -= 'a' - 10;
+        else
+          break;
+        door = door << 4 | c;
+      }
+      door_def_ptr = door;
+      door_transition_function = (uint16_t)fnDoorTransitionFunction_HandleElevator;
+      game_state = kGameState_9_HitDoorBlock;
+      door_pending = true;
+      // (No buttons while the door runs: see Scn_Keys.)
+      held_keys = 0;
+      held_left = 1;
+      return true;
+    }
     case '(':
       script++;
       loops[loop_depth].start = script;
@@ -373,9 +456,10 @@ static void Start(void) {
   shot_count = 0;
   shot_pending = false;
   phase = kScript;
+  door_pending = false;
   phase_frames = 0;
   printf("scenario: %s\n", s->name);
-  printf("scenario-at: room %04x samus %d,%d\n", room_ptr, samus_x_pos, samus_y_pos);
+  printf("scenario-at: room %04x samus %d,%d\nscenario-fx: %02x\n", room_ptr, samus_x_pos, samus_y_pos, fx_type);
 }
 
 static void Finish(void) {
@@ -418,6 +502,18 @@ uint16_t Scn_Keys(uint16_t real) {
     }
     return 0;
   case kScript:
+    if (door_pending) {
+      // The room's loading; an elevator's door leaves her controls off, as
+      // tour.c's.
+      if (game_state != kGameState_8_MainGameplay)
+        return 0;
+      CallSomeSamusCode(1);
+      door_pending = false;
+      printf("scenario-at: room %04x samus %d,%d\nscenario-fx: %02x\n", room_ptr, samus_x_pos,
+             samus_y_pos, fx_type);
+      held_keys = 0;
+      held_left = 20;
+    }
     if (!held_left && !NextWord()) {
       if (shot_pending) {
         // (The shot is of the frame after it.)
