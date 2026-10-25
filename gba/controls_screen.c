@@ -104,22 +104,22 @@ static const Icon kIconArt[kIcons] = {
     "BgggggggggggggggggggggB.",
     ".BBBBBBBBBBBBBBBBBBBBB..",
   }},
-  [kIconR] = {3, 0x0d, 0x3a, 8, {
+  [kIconR] = {3, 0, 0, 0, {
     "..BBBBBBBBBBBBBBBB......",
-    ".BGGGGGGGGGGGGGGGGBB....",
-    ".BGGGGGGGGGGGGGGGGGGB...",
-    ".BGGGGGGGGGGGGGGGGGGGB..",
-    ".BGGGGGGGGGGGGGGGGGGGgB.",
-    ".BGGGGGGGGGGGGGGGGGGGgB.",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGGgB",
-    ".BGGGGGGGGGGGGGGGGGGGggB",
-    ".BgGGGGGGGGGGGGGGGGGgggB",
-    ".BgggggggggggggggggggggB",
+    ".BGGGGGGWWWWWWGGGGBB....",
+    ".BGGGGGGWWWWWWWGGGGGB...",
+    ".BGGGGGGWWBBBWWBGGGGGB..",
+    ".BGGGGGGWWBGGWWBGGGGGgB.",
+    ".BGGGGGGWWBGGWWBGGGGGgB.",
+    ".BGGGGGGWWWWWWWBGGGGGGgB",
+    ".BGGGGGGWWWWWWBBGGGGGGgB",
+    ".BGGGGGGWWBWWBBGGGGGGGgB",
+    ".BGGGGGGWWBWWBGGGGGGGGgB",
+    ".BGGGGGGWWBGWWGGGGGGGGgB",
+    ".BGGGGGGWWBGWWBGGGGGGGgB",
+    ".BGGGGGGWWBGGWWGGGGGGggB",
+    ".BgGGGGGWWBGGWWBGGGGgggB",
+    ".BggggggWWBgggWWgggggggB",
     "..BBBBBBBBBBBBBBBBBBBBB.",
   }},
   // The small oval buttons (labeled after, in the menu's font).
@@ -300,8 +300,8 @@ void GbaControllerSettingsScreen(void) {
   Button(rows[0], kButtonColumn, entries[kIconB], 3);
   Button(rows[1], kButtonColumn, entries[kIconA], 3);
   Text(rows[2], kButtonColumn, "AUTO", 4);
-  Button(rows[3], kButtonColumn, entries[kIconSelect], 2);
-  Text(rows[3], kButtonColumn + 2, "SELECT", 6);
+  Button(rows[3], kButtonColumn - 2, entries[kIconSelect], 2);
+  Text(rows[3], kButtonColumn, "SELECT", 6);
   Button(rows[4], kButtonColumn, entries[kIconR], 3);
   Button(rows[5], kButtonColumn, entries[kIconL], 3);
   Button(rows[6], kButtonColumn, entries[kIconL], 3);
