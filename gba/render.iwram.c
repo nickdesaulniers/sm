@@ -1538,6 +1538,17 @@ void Render_CaptureFrame(void) {
     subtract_weight = SubtractWeight(LINE_REGS(text_line));
   else
     subtract_color = 0;
+  // A palette that's all black (a door's fade, or the room's start, where the
+  // game clears it) has nothing to subtract from or by: main screen black,
+  // BG3 black too. SubtractWeight's color is of the room before, and its
+  // BG3 would add all of it back, for a purple screen.
+  if (subtract_color & 0x8000) {
+    int i = 0;
+    while (i < 256 && !g_cgram[i])
+      i++;
+    if (i == 256)
+      subtract_color = 0;
+  }
 
   // Lines with the same registers (and the same offset from the SNES's
   // lines) have the same GBA registers, but for the scrolling, and Mode 7's
