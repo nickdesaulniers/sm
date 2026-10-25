@@ -328,11 +328,13 @@ ROM_CODE static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
     l->ctl.ofs[i] = 0;
   // The SNES's screen pixel (sx, sy) shows the map's pixel
   //   ((a b) (c d)) (sx + hofs - x0, sy + vofs - y0) + (x0, y0),
-  // and GBA pixel (gx, line) is SNES pixel (gx + kXOffset, s).
+  // and GBA pixel (gx, line) is SNES pixel (gx + kXOffset, s): of the
+  // SNES's scanline s + 1, as the first scanline drawn is 1 (as for the
+  // tiled layers' rows, ScrollStream).
   int a = r->m7[0], b = r->m7[1], c = r->m7[2], d = r->m7[3];
   int x0 = r->m7[4], y0 = r->m7[5];
   int dx = kXOffset + Sext13(r->m7hofs) - x0;
-  int dy = s + Sext13(r->m7vofs) - y0;
+  int dy = s + 1 + Sext13(r->m7vofs) - y0;
   l->stream[0] = (uint16_t)a | (uint32_t)(uint16_t)b << 16;
   l->stream[1] = (uint16_t)c | (uint32_t)(uint16_t)d << 16;
   l->stream[2] = a * dx + b * dy + (x0 << 8);
