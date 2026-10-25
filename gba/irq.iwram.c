@@ -70,12 +70,15 @@ ROM_CODE void Display_Start(void) {
 // on would show its neighbor's row of tiles (the rows the squashed menus
 // leave out, as black dashes; the planet map's, with the sprites of every
 // area's label to convert). So it waits out an HBlank, and starts again if
-// the line changed under it.
+// the line changed under it: a few times at most, as this runs with the
+// interrupts off (it fits in a line; the second time, it starts at one's
+// beginning).
 ROM_CODE void Display_Resume(void) {
   const DisplayFrame *d = g_display;
   if (!d)
     return;
   unsigned line;
+  int tries = 3;
   do {
     while (REG_DISPSTAT & 2) {}  // HBlank
     line = REG_VCOUNT;
@@ -97,7 +100,7 @@ ROM_CODE void Display_Resume(void) {
     REG_DMADAD(0) = d->stream_dest;
     REG_DMACNT(0) = words | kDma32 | kDmaDestReload | kDmaRepeat | kDmaAtHBlank | kDmaEnable;
     next_segment = i + 1;
-  } while (REG_VCOUNT != line || (REG_DISPSTAT & 2));
+  } while (--tries && (REG_VCOUNT != line || (REG_DISPSTAT & 2)));
   ScheduleSegment(d);
 }
 
