@@ -47,6 +47,13 @@
 // goes through them one after another isn't (see tools/room-tour.sh).
 //
 // With AUDIO=OUT.wav, it records the sound, at 32768 Hz.
+// With MEMCHECK=FILE and SYMS, it prints each place in the game's code that
+// loads or stores outside the memory it may use, once, with the address:
+// FILE has lines "code LO HI" (the game's code: the PCs checked), "data LO
+// HI" (what they may touch) and "helper LO HI" (memcpy and so on: checked
+// when called from the game's code, by LR), in hex, [LO, HI).
+// With STACKCHECK=1, it prints each new low of the stack pointer in IRQ mode
+// and in System mode (the game's), seen at stores, with where (SYMS names it).
 // With STATE=FILE (an mGBA save state, .ss1 and so on, of the same
 // cartridge), it starts from that state instead of a reset; with
 // STATE_OUT=FRAME:FILE, it saves one after that frame.
@@ -66,6 +73,7 @@
 #include <mgba/core/serialize.h>
 #include <mgba/core/timing.h>
 #include <mgba/internal/arm/arm.h>
+#include <mgba/internal/gba/gba.h>
 #include <mgba-util/vfs.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -307,6 +315,185 @@ static uint32_t watch_store_multiple(struct ARMCore* cpu, uint32_t base, int mas
     return watch_orig.storeMultiple(cpu, base, mask, direction, cycles);
 }
 
+// MEMCHECK's ranges and hooks (which go on top of WATCH's, if both).
+struct Range {
+    uint32_t lo, hi;
+};
+static struct Range mc_code[8192], mc_data[1024], mc_helper[64];
+static unsigned mc_ncode, mc_ndata, mc_nhelper;
+static struct ARMMemory mc_orig;
+// The places already printed, a hash table of them (0 is empty).
+static uint32_t mc_seen[1 << 16];
+
+static int by_lo(const void* a, const void* b) {
+    const struct Range *x = a, *y = b;
+    return x->lo < y->lo ? -1 : x->lo > y->lo;
+}
+
+static bool in_ranges(const struct Range* r, unsigned n, uint32_t a) {
+    unsigned lo = 0, hi = n;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2;
+        if (r[mid].hi <= a)
+            lo = mid + 1;
+        else if (r[mid].lo > a)
+            hi = mid;
+        else
+            return true;
+    }
+    return false;
+}
+
+static void load_memcheck(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "smrun: can't read %s\n", path);
+        exit(1);
+    }
+    char kind[16];
+    unsigned lo, hi;
+    while (fscanf(f, "%15s %x %x", kind, &lo, &hi) == 3) {
+        if (!strcmp(kind, "code") && mc_ncode < 8192)
+            mc_code[mc_ncode++] = (struct Range){lo, hi};
+        else if (!strcmp(kind, "data") && mc_ndata < 1024)
+            mc_data[mc_ndata++] = (struct Range){lo, hi};
+        else if (!strcmp(kind, "helper") && mc_nhelper < 64)
+            mc_helper[mc_nhelper++] = (struct Range){lo, hi};
+    }
+    fclose(f);
+    qsort(mc_code, mc_ncode, sizeof *mc_code, by_lo);
+    qsort(mc_data, mc_ndata, sizeof *mc_data, by_lo);
+    qsort(mc_helper, mc_nhelper, sizeof *mc_helper, by_lo);
+    // (Overlapping ones merged, for in_ranges: the cartridge's has the game's tables in it.)
+    unsigned n = 0;
+    for (unsigned i = 0; i < mc_ndata; i++) {
+        if (n && mc_data[i].lo <= mc_data[n - 1].hi) {
+            if (mc_data[i].hi > mc_data[n - 1].hi)
+                mc_data[n - 1].hi = mc_data[i].hi;
+        } else {
+            mc_data[n++] = mc_data[i];
+        }
+    }
+    mc_ndata = n;
+}
+
+static void mc_check(struct ARMCore* cpu, uint32_t address, uint32_t size, const char* what) {
+    uint32_t pc = cpu->gprs[15] - (cpu->executionMode == MODE_ARM ? 8 : 4);
+    uint32_t lr = cpu->gprs[14];
+    // (Not the hardware's registers and memory: the game's code goes through the port's
+    // functions for those, and the DMAs, which these hooks see too, write there.)
+    if (address - 0x04000000u < 0x04000000u)
+        return;
+    // (Nor a DMA's reads and writes, made in the game's code's time.)
+    if (((struct GBA*)cpu->master)->cpuBlocked)
+        return;
+    bool game = in_ranges(mc_code, mc_ncode, pc);
+    if (!game && in_ranges(mc_helper, mc_nhelper, pc) && in_ranges(mc_code, mc_ncode, lr & ~1u))
+        game = true;
+    if (!game || in_ranges(mc_data, mc_ndata, address) ||
+        (size > 1 && in_ranges(mc_data, mc_ndata, address + size - 1)))
+        return;
+    // (Seen by place and kind: a place's first of each.)
+    uint32_t key = pc ^ (what[0] == 's') << 31, h = (key * 2654435761u) >> 16;
+    while (mc_seen[h] && mc_seen[h] != key)
+        h = (h + 1) & 0xffff;
+    if (mc_seen[h])
+        return;
+    mc_seen[h] = key;
+    printf("memcheck: frame %d %s%u %08x (%s) at %08x %s (lr %08x %s)\n", current_frame, what,
+           size * 8, address, nsyms ? find_sym(address)->name : "", pc,
+           nsyms ? find_sym(pc)->name : "", lr, nsyms ? find_sym(lr)->name : "");
+}
+
+static uint32_t mc_load32(struct ARMCore* cpu, uint32_t address, int* cycles) {
+    mc_check(cpu, address, 4, "load");
+    return mc_orig.load32(cpu, address, cycles);
+}
+
+static uint32_t mc_load16(struct ARMCore* cpu, uint32_t address, int* cycles) {
+    mc_check(cpu, address, 2, "load");
+    return mc_orig.load16(cpu, address, cycles);
+}
+
+static uint32_t mc_load8(struct ARMCore* cpu, uint32_t address, int* cycles) {
+    mc_check(cpu, address, 1, "load");
+    return mc_orig.load8(cpu, address, cycles);
+}
+
+static void mc_store32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycles) {
+    mc_check(cpu, address, 4, "store");
+    mc_orig.store32(cpu, address, value, cycles);
+}
+
+static void mc_store16(struct ARMCore* cpu, uint32_t address, int16_t value, int* cycles) {
+    mc_check(cpu, address, 2, "store");
+    mc_orig.store16(cpu, address, value, cycles);
+}
+
+static void mc_store8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycles) {
+    mc_check(cpu, address, 1, "store");
+    mc_orig.store8(cpu, address, value, cycles);
+}
+
+// The lowest address of a load or store multiple.
+static uint32_t lsm_lo(uint32_t base, int mask, enum LSMDirection direction, uint32_t* n) {
+    *n = __builtin_popcount(mask & 0xffff) * 4;
+    return direction & LSM_D ? base - *n + (direction & LSM_B ? 0 : 4) : base + (direction & LSM_B ? 4 : 0);
+}
+
+static uint32_t mc_load_multiple(struct ARMCore* cpu, uint32_t base, int mask,
+                                 enum LSMDirection direction, int* cycles) {
+    uint32_t n, lo = lsm_lo(base, mask, direction, &n);
+    mc_check(cpu, lo, n, "load");
+    return mc_orig.loadMultiple(cpu, base, mask, direction, cycles);
+}
+
+static uint32_t mc_store_multiple(struct ARMCore* cpu, uint32_t base, int mask,
+                                  enum LSMDirection direction, int* cycles) {
+    uint32_t n, lo = lsm_lo(base, mask, direction, &n);
+    mc_check(cpu, lo, n, "store");
+    return mc_orig.storeMultiple(cpu, base, mask, direction, cycles);
+}
+
+// STACKCHECK's hooks (on top of the others').
+static struct ARMMemory sc_orig;
+static uint32_t sc_low_irq = 0xffffffff, sc_low_sys = 0xffffffff;
+
+static void sc_check(struct ARMCore* cpu) {
+    uint32_t sp = cpu->gprs[13];
+    uint32_t* low = cpu->privilegeMode == MODE_IRQ ? &sc_low_irq
+                    : cpu->privilegeMode == MODE_SYSTEM ? &sc_low_sys : NULL;
+    if (!low || sp >= *low)
+        return;
+    *low = sp;
+    uint32_t pc = cpu->gprs[15] - (cpu->executionMode == MODE_ARM ? 8 : 4);
+    printf("stackcheck: frame %d %s sp %08x at %08x %s (lr %08x %s)\n", current_frame,
+           cpu->privilegeMode == MODE_IRQ ? "irq" : "sys", sp, pc, nsyms ? find_sym(pc)->name : "",
+           cpu->gprs[14], nsyms ? find_sym(cpu->gprs[14])->name : "");
+}
+
+static void sc_store32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycles) {
+    sc_check(cpu);
+    sc_orig.store32(cpu, address, value, cycles);
+}
+
+static void sc_store16(struct ARMCore* cpu, uint32_t address, int16_t value, int* cycles) {
+    sc_check(cpu);
+    sc_orig.store16(cpu, address, value, cycles);
+}
+
+static void sc_store8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycles) {
+    sc_check(cpu);
+    sc_orig.store8(cpu, address, value, cycles);
+}
+
+static uint32_t sc_store_multiple(struct ARMCore* cpu, uint32_t base, int mask,
+                                  enum LSMDirection direction, int* cycles) {
+    uint32_t r = sc_orig.storeMultiple(cpu, base, mask, direction, cycles);
+    sc_check(cpu);  // (after: a push moves sp first)
+    return r;
+}
+
 static void dump_memory(struct mCore* core, const char* prefix) {
     static const struct { const char* ext; uint32_t base, size; } kRegions[] = {
         {"ewram", 0x02000000, 0x40000},
@@ -468,6 +655,31 @@ int main(int argc, char** argv) {
         cpu->memory.store16 = watch_store16;
         cpu->memory.store8 = watch_store8;
         cpu->memory.storeMultiple = watch_store_multiple;
+    }
+    if (getenv("MEMCHECK")) {
+        load_memcheck(getenv("MEMCHECK"));
+        if (getenv("SYMS") && !nsyms)
+            load_syms(getenv("SYMS"));
+        struct ARMCore* cpu = core->cpu;
+        mc_orig = cpu->memory;
+        cpu->memory.load32 = mc_load32;
+        cpu->memory.load16 = mc_load16;
+        cpu->memory.load8 = mc_load8;
+        cpu->memory.store32 = mc_store32;
+        cpu->memory.store16 = mc_store16;
+        cpu->memory.store8 = mc_store8;
+        cpu->memory.loadMultiple = mc_load_multiple;
+        cpu->memory.storeMultiple = mc_store_multiple;
+    }
+    if (getenv("STACKCHECK")) {
+        if (getenv("SYMS") && !nsyms)
+            load_syms(getenv("SYMS"));
+        struct ARMCore* cpu = core->cpu;
+        sc_orig = cpu->memory;
+        cpu->memory.store32 = sc_store32;
+        cpu->memory.store16 = sc_store16;
+        cpu->memory.store8 = sc_store8;
+        cpu->memory.storeMultiple = sc_store_multiple;
     }
     int profile_n = getenv("PROFILE") ? atoi(getenv("PROFILE")) : 0;
     int profile_from = getenv("PROFILE_FROM") ? atoi(getenv("PROFILE_FROM")) : 1;
