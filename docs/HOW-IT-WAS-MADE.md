@@ -486,7 +486,8 @@ And some things aren't the SNES's yet:
 - The SNES does color math only on sprites with palettes 4-7. The GBA
   blends all of them, so bosses come out pale under the fog layer.
 - Power bombs' explosions brighten the screen rather than turning it
-  yellow.
+  yellow, in rooms with water or fog (the lines of the blast lose the
+  effect's tint, too).
 - In Ridley's Ceres lair the background gets lighter toward the bottom on
   the SNES, and is one flat color on the GBA.
 - The GBA's 8-bit sound has a hiss the SNES never had.

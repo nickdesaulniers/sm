@@ -153,6 +153,12 @@ static bool bg3_mid;
 // How a power bomb's blast, the fixed color in the window that hides BG3, is
 // tinted: 0 for not (see Bg3Kind).
 static uint8_t blast_bg3;
+// Whether the lines being built are a power bomb's with no window of the
+// blast's on them: BG3 added to the room as it is, all along them (see
+// ColorMath).
+static bool blast_nowin;
+// Whether the frame is a power bomb's (FindBlast).
+static bool blast_on;
 enum { kBg3Mixed, kBg3Black, kBg3Clear };
 // With the sub screen subtracted, how much the main screen keeps where the
 // sub screen's layers are, in 16ths (see SubtractWeight).
@@ -487,11 +493,13 @@ ROM_CODE static uint8_t ColorMath(DisplaySegment *c, const PpuRegs *r) {
     // windows hide its layers (a power bomb's, all but its explosion), it's
     // that: the main screen brightens, by the brightest of the color's
     // channels (the GBA can't make it a color), where Windows has the
-    // GBA's windows do it. Its layers don't show, here, elsewhere.
+    // GBA's windows do it. Its layers don't show, here, elsewhere. (But on
+    // the lines a blast's window isn't on, BG3 shows all along them, the
+    // water's or the fog's tint, below.)
     uint8_t windowed = WindowedSub(r, sub);
     int fixed = r->coldata[0] > r->coldata[1] ? r->coldata[0] : r->coldata[1];
     fixed = fixed > r->coldata[2] ? fixed : r->coldata[2];
-    if (windowed && fixed && !subtract && !tint && FixedShows(r, windowed)) {
+    if (windowed && fixed && !subtract && !tint && !blast_nowin && FixedShows(r, windowed)) {
       c->bld[0] = BlendLayers(math & ~sub) | 2 << 6;
       c->bld[2] = fixed * 33 >> 6;  // /31 * 16
       return windowed | kFixedInWindows;
@@ -630,6 +638,13 @@ ROM_CODE static void LineWindows(int g, int end, int s) {
     }
     line_windows[g] = out[0] | out[1] << 16;
   }
+}
+
+// Whether the SNES line |s| has a window (either) on the GBA's screen.
+ROM_CODE static bool LineHasWindow(int s) {
+  uint32_t wh = line_wh[s];
+  return WindowH(wh & 0xff, wh >> 8 & 0xff) != (240 << 8 | 240) ||
+         WindowH(wh >> 16 & 0xff, wh >> 24) != (240 << 8 | 240);
 }
 
 // The streams of |n| (at least 1) lines (not in frames with Mode 7), from GBA
@@ -879,6 +894,26 @@ __attribute__((noinline)) static void BuildLine(LineRegs *l, const PpuRegs *r, i
 scrolling:;
   if (frame_mode7)
     BuildLineBesideMode7(l, s, g);
+}
+
+// A power bomb's blast in a room whose BG3 has something in it: its window's
+// lines go on as the fixed color; the others', BG3 as it is (blast_nowin).
+// The end of the lines from |g| (SNES line |s|) that are alike, no later
+// than |end|.
+ROM_CODE __attribute__((noinline)) static int BlastLineEnd(const PpuRegs *r, int s, int g, int end) {
+  bool nowin = false;
+  if (blast_on && blast_bg3 == kBg3Mixed && PowerBombRegs(r)) {
+    bool has = LineHasWindow(s);
+    int t = g + 1;
+    while (t < end && LineHasWindow(s + t - g) == has)
+      t++;
+    end = t;
+    nowin = !has;
+  }
+  if (nowin != blast_nowin)
+    built_regs = NULL;
+  blast_nowin = nowin;
+  return end;
 }
 
 // But for first_line. (Not with memcmp: it's in Thumb code, and slow.)
@@ -1414,7 +1449,9 @@ ROM_CODE static void FindBlast(void) {
       kind_age = 7;
     }
     blast_bg3 = kind;
+    blast_on = true;
   } else {
+    blast_on = false;
     blast_bg3 = kBg3Mixed;
     kind_age = 0;
   }
@@ -1508,6 +1545,7 @@ void Render_CaptureFrame(void) {
         end = kGbaHudLines;  // below the HUD, the gameplay area is y_offset lines on
       if (squash || (frame_mode7 && !mode7))
         end = OffsetEnd(g, end, mode7);
+      end = BlastLineEnd(r, s, g, end);
       BuildLine(&l, r, s, g, state_end);
       if (!num_segs || (num_segs < kMaxSegments && !SameSegment(&segs[num_segs - 1], &l.ctl))) {
         segs[num_segs] = l.ctl;

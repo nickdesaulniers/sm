@@ -191,6 +191,9 @@ work:
   the SNES, and not elsewhere. (If BG3 is clear, the fixed color is all over
   the screen, and the palette has it.) Look at what the layer is before
   trusting that: a BG3 with anything in it keeps the brightening.
+  (Water's and fog's rooms are that: on the lines the blast's window is on,
+  the brightening and no BG3; on the others, BG3 added whole, so the
+  tint stays there.)
 - **Windows:** SNES window 1 → WIN0, window 2 → WIN1, with their edges
   in the HBlank stream.
 
