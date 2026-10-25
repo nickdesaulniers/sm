@@ -31,6 +31,9 @@
 #                               "scenario: NAME" as each begins and "scenario:
 #                               end NAME", "tour: shot NAME-N" at each shot
 #
+# FRAMES (default 3000 + 8000 a scenario of a chunk) is the frames a boot runs: more for the
+# long dense fights (boss-ridley-*, ceres-ridley-full), which CHUNK=1 gives a boot each.
+#
 # A scenario spawns, plays and ends in about 5 to 90 s of the game's time
 # (a beam's, 4; a boss's, 70), after 20 s of it for the spawn. smrun runs
 # about 2000 frames a second, so all 44 scenarios (34 of weapons, 10 of
