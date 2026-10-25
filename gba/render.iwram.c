@@ -315,7 +315,7 @@ static int Sext13(int v) {
 // A Mode 7 scroll relative to its center, as the SNES's hardware takes it: 10 bits, keeping the
 // sign (the map wraps at 1024 pixels, which only a matrix with a 256 (one pixel a pixel) has
 // the same after: Ceres's rotating rooms don't).
-static int Clip10(int v) {
+ROM_CODE static inline __attribute__((always_inline)) int Clip10(int v) {
   return v & 0x2000 ? v | ~1023 : v & 1023;
 }
 
