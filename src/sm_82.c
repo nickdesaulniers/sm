@@ -159,6 +159,9 @@ static uint8 AdvancePaletteFadeForAllPalettes_0xc(void);
 static uint8 AdvancePaletteFadeForAllPalettes(void);
 #if SM_GBA
 static const uint8 *FadeStep(uint16 a);
+// The GBA's buttons in place of the SNES's: see gba/controls_screen.c.
+void GbaControllerSettingsScreen(void);
+void GbaOptionsMenuScreen(void);
 #endif
 static uint16 CalculateNthTransitionColorFromXtoY(uint16 a, uint16 k, uint16 j);
 static uint16 CalculateNthTransitionColorComponentFromXtoY(uint16 a, uint16 k, uint16 j);
@@ -1272,6 +1275,12 @@ static void DrawOptionsMenuSpritemaps(void) {  // 0x828CA1
     int v1 = i >> 1;
     if (optionsmenu_cur_data[v1]) {
       uint16 v2 = optionsmenu_cur_data[v1];
+#if SM_GBA
+      // The controller setting screen's title box, for its title, CONTROLS,
+      // the option menu's (see gba/controls_screen.c).
+      if (v2 == 0xd2f7 && !japanese_text_flag)
+        v2 = 0xd24b;
+#endif
       DrawSpritemap(0x82, v2, optionsmenu_arr8[v1], optionsmenu_arr9[v1], optionsmenu_arr10[v1]);
     }
   }
@@ -4805,6 +4814,9 @@ static void GameOptionsMenu_1_LoadingOptionsScreen(void) {  // 0x82EC11
   DecompressToMem(0x97953A, g_ram + 0x1e000);
   for (j = 1023; (j & 0x8000) == 0; --j)
     ram3000.pause_menu_map_tilemap[j] = custom_background[j + 5375];
+#if SM_GBA
+  GbaOptionsMenuScreen();
+#endif
   menu_option_index = 0;
   DeleteAllOptionsMenuObjects_();
   CreateOptionsMenuObject_(0, addr_stru_82F4B8);
@@ -4997,6 +5009,9 @@ static void GameOptionsMenu_5_DissolveOutScreen(void) {  // 0x82EF18
     } else {
       for (n = 1023; (n & 0x8000) == 0; --n)
         ram3000.pause_menu_map_tilemap[n] = custom_background[n + 5375];
+#if SM_GBA
+      GbaOptionsMenuScreen();
+#endif
       OptionsMenuFunc4();
       uint16 v6 = 0; // bug
       CreateOptionsMenuObject_(v6, addr_stru_82F4C4);
@@ -5105,7 +5120,12 @@ static void GameOptionsMenu_7_ControllerSettings(void) {
       game_options_screen_index = 10;
       return;
     }
+#if SM_GBA
+    // (No RESET TO DEFAULT: the GBA's buttons are fixed.)
+    menu_option_index = 7;
+#else
     menu_option_index = 8;
+#endif
     game_options_screen_index = 9;
     return;
   }
@@ -5117,15 +5137,19 @@ static void GameOptionsMenu_7_ControllerSettings(void) {
       game_options_screen_index = 9;
       return;
     }
+#if SM_GBA
+    if (v1 == 8) {  // (past END: no RESET TO DEFAULT)
+#else
     if (v1 == 9) {
+#endif
       menu_option_index = 0;
       game_options_screen_index = 10;
       return;
     }
   } else if (joypad1_newkeys) {
 #if SM_GBA
-    // The GBA's buttons are fixed: only END and RESET do anything.
-    if (menu_option_index < 7)
+    // The GBA's buttons are fixed: only END does anything.
+    if (menu_option_index != 7)
       return;
 #endif
     QueueSfx1_Max6(0x38);
@@ -5350,9 +5374,6 @@ static const uint16 g_word_82F6AD[6] = {  // 0x82F587
 };
 
 #if SM_GBA
-// The GBA's buttons in place of the SNES's: see gba/controls_screen.c.
-void GbaControllerSettingsScreen(void);
-
 static void OptionsMenuFunc6(void) {
   GbaControllerSettingsScreen();
 }

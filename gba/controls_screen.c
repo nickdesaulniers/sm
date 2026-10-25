@@ -1,7 +1,8 @@
 // The options menu's controller setting screen, for the GBA's buttons
 // (input.c): the game's screen, its rows of actions, with the GBA's buttons
-// drawn in place of the SNES's. They're fixed, so only END and RESET do
-// anything there (see sm_82.c).
+// drawn in place of the SNES's. They're fixed, so it's CONTROLS, on the
+// option menu and as its title (in OPTION MODE's box), and only END does
+// anything there: RESET TO DEFAULT is left out (see sm_82.c).
 //   SHOT          B
 //   JUMP          A
 //   DASH          AUTO: Samus always runs
@@ -196,7 +197,9 @@ static uint32_t Letter(char c) {
   case 'I': return 0x22 | 0x11 << 16;
   case 'L': return 0x25 | 0x35 << 16;
   case 'M': return 0x26 | 0x36 << 16;
+  case 'N': return 0x27 | 0x37 << 16;
   case 'O': return 0x00 | 0x10 << 16;
+  case 'R': return 0x0d | 0x3a << 16;  // (D's top)
   case 'S': return 0x2b | 0x3b << 16;
   case 'T': return 0x2c | 0x11 << 16;
   case 'U': return 0x2d | 0x10 << 16;
@@ -206,8 +209,12 @@ static uint32_t Letter(char c) {
 
 enum { kBlankTile = 0x0f, kRowWords = 32 };
 
-// The first map row of each action's, and the column of its button.
+// The first map row of each action's, and the column of its button; the
+// title's row and columns (centered in them), and RESET TO DEFAULT's row.
 static const uint8_t kActionRows[7] = {5, 8, 11, 14, 17, 20, 23};
+enum { kTitleRow = 1, kTitleColumn = 5, kTitleColumns = 23, kResetRow = 29 };
+// The option menu's row of CONTROLLER SETTING MODE, and its columns.
+enum { kOptionRow = 17, kOptionColumn = 4, kOptionColumns = 23 };
 enum { kButtonColumn = 23, kButtonColumns = 8, kLabelColumn = 6, kLabelColumns = 11 };
 
 static uint16_t *Tilemap(int row, int column) {
@@ -300,7 +307,15 @@ void GbaControllerSettingsScreen(void) {
   Button(rows[6], kButtonColumn, entries[kIconL], 3);
   Button(rows[6], kButtonColumn + 3, entries[kIconPlus], 1);
   Button(rows[6], kButtonColumn + 4, entries[kIconDown], 2);
+  Text(kResetRow, 0, "", kRowWords);
   // ITEM CANCEL is R's, holding it: the Japanese text's left as it is.
-  if (!japanese_text_flag)
+  if (!japanese_text_flag) {
     Text(rows[4], kLabelColumn, "USE ITEM", kLabelColumns);
+    Text(kTitleRow, kTitleColumn, "", kTitleColumns);
+    Text(kTitleRow, kTitleColumn + (kTitleColumns - 8 + 1) / 2, "CONTROLS", 8);
+  }
+}
+
+void GbaOptionsMenuScreen(void) {
+  Text(kOptionRow, kOptionColumn, "CONTROLS", kOptionColumns);
 }
