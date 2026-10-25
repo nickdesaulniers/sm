@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Makes the playable GBA cartridge from the engine and your Super Metroid ROM.
 
-    make_cartridge.py sm-engine.gba sm.smc sm.gba
-    make_cartridge.py --check sm.smc
+    make_cartridge.py sm-engine.gba ROM sm.gba
+    make_cartridge.py --check ROM
+    make_cartridge.py --find ROM
 
-The second form only checks the ROM, and says what is wrong with it.
+ROM is your Super Metroid ROM, by any name, or a zip with it in, or a
+directory: then it and the directories in it (two levels down) are searched
+for the ROM, by its checksum. The second form only checks the ROM, and says
+what is wrong with it; the third prints the file it is in.
 
 The engine (the build's sm-engine.gba, or a release's) has none of the
 game's data: this appends it, from your ROM, as gba/cart_data.h describes.
@@ -20,6 +24,7 @@ import hashlib
 import os
 import struct
 import sys
+import zipfile
 
 sys.dont_write_bytecode = True  # (no tools/__pycache__ for squash_font)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +40,7 @@ MAGIC = b'SMGBA\0\0\0'
 VERSION = 3
 HEADER_SIZE = 256
 COPIER_HEADER_SIZE = 512
+ROM_SIZES = (SNES_ROM_SIZE, SNES_ROM_SIZE + COPIER_HEADER_SIZE)
 GBA_MAX_SIZE = 32 << 20
 
 # The SNES addresses of the game's uploads to the APU: the first is the
@@ -176,32 +182,97 @@ def squash_section(rom):
             entries)
 
 
-def load_rom(path):
-    """The ROM at path without a copier's header, or exits saying what is wrong."""
+def rom_entries(path):
+    """The ROMs a file may hold: (what to call it, its bytes), the file's own, or a zip's
+    members of a ROM's size."""
+    with open(path, 'rb') as f:
+        head = f.read(4)
+        if head != b'PK\x03\x04':
+            return [(path, head + f.read())]
     try:
-        with open(path, 'rb') as f:
-            rom = f.read()
-    except FileNotFoundError:
-        sys.exit(f'{path}: no such file. Put your Super Metroid ROM there, or give its path.')
+        with zipfile.ZipFile(path) as z:
+            return [(f'{path} ({i.filename})', z.read(i)) for i in z.infolist()
+                    if i.file_size in ROM_SIZES]
+    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError):
+        return []
+
+
+def why_not(rom):
+    """What is wrong with ROM bytes, or None: the right ROM."""
+    if len(rom) == SNES_ROM_SIZE + COPIER_HEADER_SIZE:
+        rom = rom[COPIER_HEADER_SIZE:]
+    if len(rom) != SNES_ROM_SIZE:
+        return (f'its size is {len(rom)} bytes, not {SNES_ROM_SIZE} (3 MB): another game, '
+                'a hack or a bad dump')
+    have = hashlib.sha1(rom).hexdigest()
+    if have != SNES_ROM_SHA1:
+        return f'its sha1 is {have}: a hack, another release or a bad dump'
+    return None
+
+
+def find_rom(path):
+    """The ROM at path (a file, a zip or a directory to search), as (where it is: a file,
+    what to call it, its bytes without a copier's header); or exits saying what's wrong."""
+    if not os.path.exists(path):
+        sys.exit(f'{path}: no such file or directory. Give the path of your Super Metroid ROM '
+                 '(any name), or of a directory with it in.')
+    if os.path.isdir(path):
+        return search_dir(path)
+    try:
+        entries = rom_entries(path)
     except OSError as e:
         sys.exit(f"{path}: can't be read ({e.strerror})")
-    if len(rom) == SNES_ROM_SIZE + COPIER_HEADER_SIZE:
-        print(f'{path}: dropping its {COPIER_HEADER_SIZE}-byte copier header', file=sys.stderr)
-        rom = rom[COPIER_HEADER_SIZE:]
-    have = hashlib.sha1(rom).hexdigest()
-    if have == SNES_ROM_SHA1:
-        return rom
-    why = []
-    if rom[:2] == b'PK':
-        why.append('this is a zip archive: extract the ROM from it')
-    elif len(rom) != SNES_ROM_SIZE:
-        why.append(f'its size is {len(rom)} bytes, not {SNES_ROM_SIZE} (3 MB): another game, '
-                   'a hack or a bad dump')
-    else:
-        why.append(f'its sha1 is {have}: a hack, another release or a bad dump')
+    for name, rom in entries:
+        if why_not(rom) is None:
+            return path, name, strip_header(name, rom)
+    if not entries:
+        sys.exit(f'{path}: a zip archive with no ROM of the right size in it '
+                 f'({SNES_ROM_SIZE} bytes, or {SNES_ROM_SIZE + COPIER_HEADER_SIZE} with a '
+                 'copier header)')
+    why = [f'{name}: {why_not(rom)}' if len(entries) > 1 else why_not(rom)
+           for name, rom in entries]
     why.append('this port is made for the Japan/USA release (En,Ja)')
     sys.exit(f'{path}: not the Super Metroid ROM this needs (sha1 {SNES_ROM_SHA1}):\n  ' +
              '\n  '.join(why))
+
+
+def search_dir(top):
+    """The ROM in directory top, or in the directories in it, two levels down (but hidden
+    ones): the files of a ROM's size, and zips, by their checksum."""
+    near = []
+    for root, dirs, files in os.walk(top):
+        depth = os.path.relpath(root, top).count(os.sep) + (root != top)
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.')) if depth < 2 else []
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            try:
+                size = os.path.getsize(path)
+                if size not in ROM_SIZES and not (name.lower().endswith('.zip') and
+                                                  size < 64 << 20):
+                    continue
+                entries = rom_entries(path)
+            except OSError:
+                continue
+            for what, rom in entries:
+                why = why_not(rom)
+                if why is None:
+                    print(f'{top}: the ROM is {what}', file=sys.stderr)
+                    return path, what, strip_header(what, rom)
+                near.append(f'{what}: {why}')
+    msg = f'{top}: no Super Metroid ROM (sha1 {SNES_ROM_SHA1}) in it or the directories in it'
+    if near:
+        msg += ' (these are a ROM\'s size, but not it):\n  ' + '\n  '.join(near[:8])
+        if len(near) > 8:
+            msg += f'\n  and {len(near) - 8} more'
+    sys.exit(msg)
+
+
+def strip_header(name, rom):
+    """The ROM without a copier's 512-byte header, if it has one."""
+    if len(rom) == SNES_ROM_SIZE + COPIER_HEADER_SIZE:
+        print(f'{name}: dropping its {COPIER_HEADER_SIZE}-byte copier header', file=sys.stderr)
+        rom = rom[COPIER_HEADER_SIZE:]
+    return rom
 
 
 def check_engine(path, engine):
@@ -223,8 +294,11 @@ def check_engine(path, engine):
 def main():
     args = sys.argv[1:]
     if len(args) == 2 and args[0] == '--check':
-        load_rom(args[1])
-        print(f'{args[1]}: the right ROM')
+        _, name, _ = find_rom(args[1])
+        print(f'{name}: the right ROM')
+        return
+    if len(args) == 2 and args[0] == '--find':
+        print(find_rom(args[1])[0])
         return
     if len(args) != 3 or args[0].startswith('-'):
         sys.exit(__doc__.strip())
@@ -236,8 +310,8 @@ def main():
         sys.exit(f"{engine_path}: can't be read ({e.strerror}). Build the engine first "
                  '(build-gba.sh does) or take sm-engine.gba from a release.')
     check_engine(engine_path, engine)
-    rom = load_rom(rom_path)
-    if os.path.abspath(out_path) in (os.path.abspath(engine_path), os.path.abspath(rom_path)):
+    rom_file, _, rom = find_rom(rom_path)
+    if os.path.abspath(out_path) in (os.path.abspath(engine_path), os.path.abspath(rom_file)):
         sys.exit(f'{out_path}: the output would overwrite an input; name another file')
     audio = audio_section(rom)
     audio_offset = HEADER_SIZE + len(rom)

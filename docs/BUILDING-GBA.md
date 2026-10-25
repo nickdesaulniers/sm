@@ -18,15 +18,18 @@ accepted; the cartridge reads the ROM's own tables and code.
 To check yours:
 
 ```
-python3 tools/make_cartridge.py --check sm.smc     # says what is wrong, if anything
-sha1sum sm.smc                                     # Linux
-shasum -a 1 sm.smc                                 # macOS
-certutil -hashfile sm.smc SHA1                     # Windows
+python3 tools/make_cartridge.py --check your-rom.sfc   # says what is wrong, if anything
+sha1sum your-rom.sfc                                    # Linux
+shasum -a 1 your-rom.sfc                                # macOS
+certutil -hashfile your-rom.sfc SHA1                    # Windows
 ```
 
-A zip must be extracted first. The file can be named anything when you pass its
-path (`./build-gba.sh path/to/rom.smc`); `sm.smc` in the repository's
-directory is what the scripts look for.
+The file can be named anything, and can be in a zip. Wherever the scripts
+take the ROM, they also take a directory: they look in it, and in the
+directories in it two levels down, for the file with the right checksum, and
+say which it was (or, if none, which files were the right size but not it,
+and why). `./build-gba.sh` with no argument looks in the repository's
+directory.
 
 ## Building everything
 
@@ -45,7 +48,7 @@ the ARM target: Apple's clang from Xcode won't do. No devkitARM or GCC.
 (Fedora was tried here with clang 22.1.8. CI builds with the packages of
 Ubuntu 24.04. macOS and WSL are not tested.)
 
-Then, in a clone of the `gba-port` branch with the ROM in it as `sm.smc`:
+Then, in a clone of the `gba-port` branch with the ROM in it (any name):
 
 ```
 ./build-gba.sh
@@ -67,16 +70,16 @@ To build by hand:
 
 ```
 cmake -B build-gba -DCMAKE_TOOLCHAIN_FILE=cmake/gba-toolchain.cmake \
-    -DCMAKE_BUILD_TYPE=Release -DSM_ROM=path/to/sm.smc
+    -DCMAKE_BUILD_TYPE=Release -DSM_ROM=path/to/your/rom
 cmake --build build-gba -j
 ```
 
-Without `SM_ROM` (and no `sm.smc` in the directory), only `sm-engine.gba` is
-made. CMake options that matter:
+Without `SM_ROM` and no ROM in the repository's directory, only
+`sm-engine.gba` is made. CMake options that matter:
 
 | Option               | Meaning                                                       |
 |----------------------|---------------------------------------------------------------|
-| `SM_ROM`             | The ROM to make `sm.gba` from (default: `sm.smc` here).        |
+| `SM_ROM`             | The ROM to make `sm.gba` from, or a directory to find it in (default: this one). |
 | `SM_LLVM_SOURCE`     | An existing llvm-project checkout to take compiler-rt from, for building offline. |
 | `SM_LLVM_TAG`        | The llvm-project tag to fetch (default: your clang's version). |
 
@@ -89,7 +92,7 @@ Download `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` from one
 release into one folder, put the ROM there, and run:
 
 ```
-python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
+python3 make_cartridge.py sm-engine.gba . sm.gba
 ```
 
 Python 3 (any recent version) is all it needs; it takes a second or so. Use all

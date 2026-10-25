@@ -36,8 +36,8 @@ own copy of the SNES ROM.
 
 You need your own copy of the Super Metroid ROM: the Japan/USA release,
 "Super Metroid (Japan, USA) (En,Ja)", sha1
-`da957f0d63d14cb441d215462904c4fa8519c613`, named `sm.smc`. (A 512-byte copier
-header at its start is fine: it is dropped.) The cartridge contains the ROM, so
+`da957f0d63d14cb441d215462904c4fa8519c613`, by any name. (A 512-byte copier
+header at its start is fine: it is dropped; so is a zip with the ROM in it.) The cartridge contains the ROM, so
 it can't be shared.
 
 You also need clang and lld (it's built with LLVM 22), CMake, Python 3 and
@@ -56,7 +56,8 @@ sudo apt install clang lld llvm cmake python3 git
    cd sm
    ```
 
-2. Copy your ROM into that directory as `sm.smc`.
+2. Copy your ROM into that directory (any name: it's found by its checksum),
+   or give its path, or a directory it's in, to `./build-gba.sh`.
 
 3. Build:
 

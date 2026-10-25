@@ -18,24 +18,32 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 
 # Without the ROM (as in CI), the build makes only the engine; see
-# tools/make_cartridge.py.
-set(SM_ROM "${CMAKE_SOURCE_DIR}/sm.smc" CACHE FILEPATH
-    "The Super Metroid ROM to make sm.gba with (sha1 da957f0d63d14cb441d215462904c4fa8519c613)")
+# tools/make_cartridge.py. SM_ROM is the ROM, by any name (or a zip with it in),
+# or a directory it is in, found by its checksum: by default, this one.
+set(SM_ROM "${CMAKE_SOURCE_DIR}" CACHE PATH
+    "Your Super Metroid ROM, or a directory with it (sha1 da957f0d63d14cb441d215462904c4fa8519c613)")
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(SM_ROM_FILE "")
 if(EXISTS "${SM_ROM}")
-    # Say now what is wrong with the ROM, not after the whole build.
+    # Which file it is, and what is wrong with it, now, not after the whole build.
     execute_process(
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py --check ${SM_ROM}
-        RESULT_VARIABLE rom_check_result
-        ERROR_VARIABLE rom_check_error)
-    if(NOT rom_check_result EQUAL 0)
-        message(FATAL_ERROR "${rom_check_error}")
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py --find ${SM_ROM}
+        RESULT_VARIABLE rom_find_result
+        OUTPUT_VARIABLE SM_ROM_FILE
+        ERROR_VARIABLE rom_find_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(rom_find_result EQUAL 0)
+        message(STATUS "SM_ROM: ${SM_ROM_FILE}")
+    elseif(SM_ROM STREQUAL "${CMAKE_SOURCE_DIR}")
+        set(SM_ROM_FILE "")
+        message(STATUS "SM_ROM: no Super Metroid ROM here: building only sm-engine.gba. For the "
+                       "cartridge, put your ROM here (any name), or pass -DSM_ROM=<its path, or a "
+                       "directory with it>, and configure again.")
+    else()
+        message(FATAL_ERROR "${rom_find_error}")
     endif()
-elseif(NOT SM_ROM STREQUAL "${CMAKE_SOURCE_DIR}/sm.smc")
-    message(FATAL_ERROR "SM_ROM: there is no file ${SM_ROM}")
 else()
-    message(STATUS "SM_ROM: no ${SM_ROM}: building only sm-engine.gba. For the cartridge, "
-                   "put your ROM there (or pass -DSM_ROM=<its path>) and configure again.")
+    message(FATAL_ERROR "SM_ROM: there is no file or directory ${SM_ROM}")
 endif()
 
 # The code is not compiled -ffreestanding: that implies -fno-builtin, which

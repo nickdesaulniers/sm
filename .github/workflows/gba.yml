@@ -67,9 +67,13 @@ jobs:
             make the cartridge from your own Super Metroid ROM (the Japan/USA
             release, "Super Metroid (Japan, USA) (En,Ja)", sha1
             da957f0d63d14cb441d215462904c4fa8519c613), with Python 3. Download
-            all three files into one folder, put your ROM there as sm.smc, then:
+            all three files into one folder, put your ROM there (any name; a zip
+            with it is fine too), then:
 
-                python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
+                python3 make_cartridge.py sm-engine.gba . sm.gba
+
+            (The ROM can also be given by its path, or a directory it's in: the
+            script finds it by its checksum.)
 
             and run sm.gba in a GBA emulator, such as mGBA, or on a flash
             cartridge. Use the script from the same release as the engine.

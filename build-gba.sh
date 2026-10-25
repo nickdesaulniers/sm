@@ -4,15 +4,16 @@
 #
 #     ./build-gba.sh [ROM]
 #
-# ROM defaults to sm.smc here: the Japan/USA release (sha1
-# da957f0d63d14cb441d215462904c4fa8519c613), with or without a 512-byte
-# copier header. Needs clang, lld, llvm-objcopy, CMake, Python 3 and git (the
+# ROM is your Super Metroid ROM, by any name (or a zip with it in), or a
+# directory it's in, found by its checksum; by default, this directory. It's
+# the Japan/USA release (sha1 da957f0d63d14cb441d215462904c4fa8519c613), with
+# or without a 512-byte copier header. Needs clang, lld, llvm-objcopy, CMake, Python 3 and git (the
 # first build also fetches LLVM's compiler-rt sources, about 30 MB, so it
 # needs the network once). The cartridge comes out as sm.gba, here, and the
 # build's files are in build-gba/. See docs/BUILDING-GBA.md.
 set -euo pipefail
 cd "$(dirname "$0")"
-rom=${1:-sm.smc}
+rom=${1:-.}
 
 die() {
     echo "error: $*" >&2
@@ -49,8 +50,11 @@ if ! clang --print-targets 2>/dev/null | grep -q '^ *arm '; then
     die "this clang ($(command -v clang)) can't compile for ARM. Use LLVM's own clang (22 was used), not Apple's or a build with ARM left out."
 fi
 
-[ -f "$rom" ] || die "no ROM at $rom: put your Super Metroid ROM here as sm.smc, or run ./build-gba.sh path/to/rom.smc"
-python3 tools/make_cartridge.py --check "$rom" || exit 1
+# (It says what's wrong: no ROM in the directory, or the file isn't the one.)
+if ! rom=$(python3 tools/make_cartridge.py --find "$rom"); then
+    [ "${1:-}" ] || echo "Put your Super Metroid ROM in $PWD (any name), or run ./build-gba.sh path/to/your/rom (or a directory with it)." >&2
+    exit 1
+fi
 
 if [ ! -d build-gba/_deps/llvm-project ]; then
     echo "The first build fetches LLVM's compiler-rt sources (about 30 MB) from github.com."

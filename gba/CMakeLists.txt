@@ -179,17 +179,17 @@ add_custom_command(TARGET sm_gba POST_BUILD
     BYPRODUCTS ${CMAKE_BINARY_DIR}/sm-engine.gba
     COMMENT "Creating sm-engine.gba"
 )
-if(EXISTS "${SM_ROM}")
+if(SM_ROM_FILE)
     # A target of its own, so that a new ROM or make_cartridge.py makes
     # sm.gba again without relinking the engine.
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/sm.gba
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py
-                ${CMAKE_BINARY_DIR}/sm-engine.gba ${SM_ROM} ${CMAKE_BINARY_DIR}/sm.gba
-        DEPENDS sm_gba ${CMAKE_BINARY_DIR}/sm-engine.gba ${SM_ROM}
+                ${CMAKE_BINARY_DIR}/sm-engine.gba ${SM_ROM_FILE} ${CMAKE_BINARY_DIR}/sm.gba
+        DEPENDS sm_gba ${CMAKE_BINARY_DIR}/sm-engine.gba ${SM_ROM_FILE}
                 ${CMAKE_SOURCE_DIR}/tools/make_cartridge.py
                 ${CMAKE_SOURCE_DIR}/tools/squash_font.py
-        COMMENT "Creating sm.gba from ${SM_ROM}"
+        COMMENT "Creating sm.gba from ${SM_ROM_FILE}"
     )
     add_custom_target(cartridge ALL DEPENDS ${CMAKE_BINARY_DIR}/sm.gba)
 endif()
