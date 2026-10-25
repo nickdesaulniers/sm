@@ -14,7 +14,8 @@
 # machines, or runs: they write to different OUT_DIRs, or the same, apart.
 #
 # FRAMES (default 3000 + 8000 a scenario) is smrun's limit on the frames a boot runs: a scenario
-# with many shots needs more (each shot holds a few).
+# with many shots needs more (each shot holds a few; the long dense fights, boss-ridley-* and
+# ceres-ridley-full, with CHUNK=1 for a boot each).
 #
 # The scenarios are split into chunks of CHUNK (default 6) that run one after
 # another in a boot of the cartridge, JOBS (default 4) of them at once. Then:
@@ -33,9 +34,6 @@
 #                               "sm: 60 frames in N vblanks" lines, a line
 #                               "scenario: NAME" as each begins and "scenario:
 #                               end NAME", "tour: shot NAME-N" at each shot
-#
-# FRAMES (default 3000 + 8000 a scenario of a chunk) is the frames a boot runs: more for the
-# long dense fights (boss-ridley-*, ceres-ridley-full), which CHUNK=1 gives a boot each.
 #
 # A scenario spawns, plays and ends in about 5 to 90 s of the game's time
 # (a beam's, 4; a boss's, 70), after 20 s of it for the spawn. smrun runs

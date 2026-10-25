@@ -29,9 +29,9 @@
 //              first enemy's x position is f7a, its health f8c, its variable A
 //              fa8; Samus's x position af6; the boss bits of Norfair d82a). At
 //              most 1500 times round, for a fight that never gets there.
-//   ^N         Samus keeps N pixels to the left of the first enemy (at most 12
+//   `N         Samus keeps N pixels to the left of the first enemy (at most 12
 //              off: put there, a player's footwork, for a fight where he must stay
-//              in reach), until ^0
+//              in reach), until `0
 //   >X,Y       Samus to that place (pixels)
 //   #HHHH      Samus through the door with that definition (hex, in bank $83) as
 //              the room tour does (tour.c): into the room it leads to, at its
@@ -479,7 +479,7 @@ static const Scenario kScenarios[] = {
   // 2 on) into the lava, he melts (A to 58) and his skeleton runs off to the left (x 500), then
   // Samus walks left after it (the bones fall; the death sets the boss bit) and out of the room
   // by its door (to the save room).
-  {"boss-crocomire-full", 2, 0, 1, -1, "-*30 @ RIGHT*50 -*60 RIGHT*60 " kSelectSupers "^100 (A+R*20 (A+R+B*2 A+R*4)x5 -*40 @)Wf7a,1480 (@ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 (@ A+R+B*2 A+R*4)x5 (@ -*4)x10)Wfa8,2 ^0 (@ -*3)Wfa8,58 (@ -*3)Vf7a,500 (@ LEFT*3)Wd82a,2 (@ -*3)x40 (@ LEFT*3)x20 -*30 @ #93de -*30 @ (@ -*3)x20 -*60 @"},
+  {"boss-crocomire-full", 2, 0, 1, -1, "-*30 @ RIGHT*50 -*60 RIGHT*60 " kSelectSupers "`100 (A+R*20 (A+R+B*2 A+R*4)x5 -*40 @)Wf7a,1480 (@ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 @ A+R*4 (@ A+R+B*2 A+R*4)x5 (@ -*4)x10)Wfa8,2 `0 (@ -*3)Wfa8,58 (@ -*3)Vf7a,500 (@ LEFT*3)Wd82a,2 (@ -*3)x40 (@ LEFT*3)x20 -*30 @ #93de -*30 @ (@ -*3)x20 -*60 @"},
   // Power bombs in the morph ball in front of him.
   {"boss-crocomire-bombs", 2, 0, 1, -1, "-*30 @ RIGHT*50 -*60 RIGHT*60 -*60 " kSelectPowerBombs kMorph "R*10 @ R+B*2 (@ -*3)x60 -*100 (@ -*3)x20 R+B*2 (@ -*3)x60 (@ -*10)x20"},
   // The Golden Torizo: she walks to him (he wakes), super missiles (he catches them), then
@@ -756,7 +756,7 @@ static bool NextWord(void) {
         loop_depth--;
       continue;
     }
-    case '^':
+    case '`':
       // ^N: Samus keeps N pixels from the first enemy (a player's footwork), 0 for not.
       script++;
       follow = Number(&script);
