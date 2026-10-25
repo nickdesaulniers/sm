@@ -177,14 +177,15 @@ typedef struct Scenario {
 #define kMissileCycle \
   D("RIGHT", 5) D("R+B", 1) D("-", 2) D("A+RIGHT", 6) D("R+B", 1) D("-", 2) \
   D("LEFT", 5) D("R+B", 1) D("-", 2) D("A+LEFT", 6) D("R+B", 1) D("-", 2)
-// Bomb Torizo wakes at about the 5th cycle, and dies in the 15th; then his
-// death, then a jump up to the door he came through and out of the room.
+
 // Botwoon (enemy 0 is his head, 3000 health, in and out of the wall's holes): Samus stands
 // beside it with missiles, and he dies after about 120 of these (nearly 70 s), exploding
 // in pieces; then the room, and a walk right and left.
 #define kBotwoonFull \
   "-*30 @ R*2 (@ <40,5 R+B*2 @ -*4 (@ -*4)x6)x130 " D("-", 100) D("RIGHT", 60) D("LEFT", 60) D("-", 20)
 
+// Bomb Torizo wakes at about the 5th cycle, and dies in the 15th; then his
+// death, then a jump up to the door he came through and out of the room.
 #define kBombTorizoFull \
   "-*30 @ R*2 (" kMissileCycle ")x16 " D("-", 100) D("LEFT", 25) D("A+LEFT", 2) D("A+LEFT", 2) \
   D("LEFT", 5) D("R+B", 1) D("LEFT", 8) D("-", 60)
@@ -195,13 +196,6 @@ typedef struct Scenario {
 #define kSporeSpawnFull \
   "-*30 @ >128,715 -*10 " kSelectSupers "(@ <40,5 R+B*2 @ -*4 @ -*2)x250 " D("-", 120)
 
-#define kQuietCycle \
-  "RIGHT*20 R+B*4 -*8 A+RIGHT*24 R+B*4 -*8 LEFT*20 R+B*4 -*8 A+LEFT*24 R+B*4 -*8 "
-// Exploring a fight: missiles readied, then walks, jumps and missiles, a shot of every
-// ~30 frames.
-#define kExplore \
-  "-*30 @ " "R*2 (RIGHT*20 R+B*3 -*6 @ A+RIGHT*20 R+B*3 -*6 @ LEFT*20 R+B*3 -*6 @ " \
-  "A+LEFT*20 R+B*3 -*6 @)x30"
 
 // The lava (or acid) first at Samus's feet and then rising past her, from a
 // station of a room that has it.
@@ -479,7 +473,6 @@ static const Scenario kScenarios[] = {
   {"ceres-boom", 5, 16, 0, -1, "#ab58 -*30 @ =32 -*400 @ -*400 @ -*400 @ -*400 @"},
   {"message-item", 0, 16, 0, -1, "-*60 @ %5 -*120 @ A*3 -*60 @ %1 -*120 @ A*3 -*60 @"},
   {"message-save", 1, 0, 0, -1, "-*60 @ %28 -*120 @ A*3 -*120 @ A*3 -*120 @ A*3 -*60 @"},
-  {"boss-bomb-torizo-x", 0, 0, 1, -1, "-*30 @ R*2 (" kQuietCycle ")x16 -*400 RIGHT*200 @ A+RIGHT*30 @ -*60 @ A*3 -*60 @ LEFT*100 @ A+LEFT*8 @ A+LEFT*6 @ LEFT*20 @ LEFT*20 @ R+B*3 -*10 @ LEFT*30 @ LEFT*30 @ -*50 @ -*50 @"},
   {"boss-bomb-torizo-full", 0, 0, 1, -1, kBombTorizoFull},
   {"boss-spore-spawn-x", 1, 0, 1, -1, "-*30 @ >128,715 -*10 " kSelectSupers "(<40,5 R+B*2 -*6 @)x300"},
   {"boss-spore-spawn-full", 1, 0, 1, -1, kSporeSpawnFull},
