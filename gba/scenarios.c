@@ -128,6 +128,32 @@ typedef struct Scenario {
 #define kBossScript \
   "-*30 @ (" kFight " -*70 @)x3 " kSelectSupers "(" kFight " -*70 @)x3"
 
+// Phantoon: his eye opens to be hit, in the pattern's turn and while his fireballs rain: a
+// missile does 100 (three in an eye's time are a swoop), a super missile 300 (one is his rage,
+// and then he comes back to be hit again). So: missiles and then supers, from the floor at
+// five places along it, each aimed up the diagonal and straight up, a shot of the frame in ten.
+// (^300: his last hit, once the rage is over.) Then out of the room by its door, to the next.
+#define PH_FIRE(aim) "@ " aim "*3 -*7 "
+#define PH_BLOCK(x) \
+  ">" #x ",187 (" PH_FIRE("L+R+B") PH_FIRE("UP+R+B") PH_FIRE("L+R+B") PH_FIRE("UP+R+B") ")x3 "
+#define PH_ROUND \
+  PH_BLOCK(38) PH_BLOCK(78) PH_BLOCK(118) PH_BLOCK(158) PH_BLOCK(198)
+// A shot every 20 frames, as the room fades in and Phantoon appears, and in the next room.
+#define PH_IDLE "(@ -*19)x30 "
+#define kPhantoonFull \
+  PH_IDLE "(" PH_ROUND ")x4 " kSelectSupers "(" PH_ROUND ")x2 ^300 (" PH_ROUND ")x7 #a2c4 " PH_IDLE
+
+// Draygon: his goop (from the wall turrets) slows Samus, and then he grabs her and swirls her
+// round the room. The grapple beam fired as he carries her, held while it connects with a turret's
+// block on the wall, shocks him: 256 a 8 frames. So: the fight's usual shots and jumps while he
+// comes (his first goop and grab), then (^256, so one connection of eight frames does it, for
+// how long the swirl takes to bring her to the wall) the beam, again and again for 14 frames in
+// 16, in her facing direction, until he is dead (his death, the boss bit) and then out of the
+// room by its door to the next, and a walk there.
+#define kDraygonFull \
+  "(@ RIGHT*30 @ B*3 -*5 @ A+RIGHT*25 L+B*3 -*10 @ LEFT*30 @ B*30 -*2 @ A+LEFT*25 B*3 -*5 " \
+  "UP+B*3 -*10)x6 " kSelectGrapple "^256 (@ R+B*14 -*2)x300 #a978 " PH_IDLE "RIGHT*100 LEFT*100 "
+
 #define BOSS(name, area, n) {"boss-" name, area, 0, n, -1, kBossScript}
 
 // Kraid, from his rise to the item room after (the whole fight, 130 seconds):
@@ -486,9 +512,11 @@ static const Scenario kScenarios[] = {
   {"boss-ridley-death", 2, 0, 2, -1, kRidleyDeath},
   {"ceres-ridley-full", 5, 16, 0, -1, kCeresRidley},
   BOSS("phantoon", 3, 1),
+  {"boss-phantoon-full", 3, 0, 1, -1, kPhantoonFull},
   BOSS("botwoon", 4, 1),
   {"boss-botwoon-full", 4, 0, 1, -1, kBotwoonFull},
   BOSS("draygon", 4, 2),
+  {"boss-draygon-full", 4, 0, 2, -1, kDraygonFull},
   BOSS("mother-brain", 5, 1),
   ROOM("daae", "9222"),
   ROOM("dae1", "a984"),
