@@ -62,7 +62,7 @@ DMA and HDMA. Make it fast later; don't rewrite the game to avoid it.
 
 | Region | Size   | Speed            | Use here |
 |--------|--------|------------------|----------|
-| IWRAM  | 32 KB  | 32-bit, 0 wait   | Hot ARM code, the SNES's registers, DMA state, a 2 KB stack |
+| IWRAM  | 32 KB  | 32-bit, 0 wait   | Hot ARM code, the SNES's registers, DMA state, a 2.5 KB stack |
 | EWRAM  | 256 KB | 16-bit, 2 wait   | The game's 128 KB of RAM, SNES VRAM (64 KB), CGRAM, OAM |
 | VRAM   | 96 KB  | 16-bit           | GBA tiles and maps, converted |
 | ROM    | 32 MB  | 16-bit, 3/1 wait | Code (Thumb), the game's data, preprocessed assets |

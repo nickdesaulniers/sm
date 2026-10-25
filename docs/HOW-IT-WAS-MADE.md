@@ -471,29 +471,30 @@ VBlanks for 60 frames went from 24 to 6, and the slowest room went from
 
 ## What's left
 
-Timed over the whole tour, settled in each room: 6 rooms take more than 60
-VBlanks for 60 frames, none more than 61, so none runs below 59 fps. That's
-with Samus standing still, though, and some things are still slow:
+This report covers the port's first two days. As of October 25, timed over
+the whole tour and settled in each room, every room runs at 60 fps: all 255
+take 60 VBlanks for 60 frames. Every boss's fight, played to the end, averages
+59.7 fps, and doors take a median of 107 GBA frames where the SNES takes
+105. Power bombs' blasts are yellow, and the X-ray scope runs at full speed.
+Some things are still slow, for a second or so at a time:
 
-- Ridley's fight in Ceres runs at 58 fps on average, but its worst seconds
-  drop to 49. It needs real savings, not just better timing: sound takes
-  about 62,000 cycles a frame there, and the picture 115,000.
-- A door still takes 145 GBA frames where the SNES takes 105.
-- The X-ray scope and big power bomb explosions slow the game down.
+- Kraid's worst second is 53 fps, Crocomire's 56, and one of the 22 seconds
+  of Ridley's fight in Ceres runs at 55.
+- Pausing, a game over and the escapes' first seconds drop to between 38
+  and 45 fps, as their scenes load.
 
 And some things aren't the SNES's yet:
 
 - The SNES does color math only on sprites with palettes 4-7. The GBA
-  blends all of them, so bosses come out pale under the fog layer.
-- Power bombs' explosions brighten the screen rather than turning it
-  yellow, in rooms with water or fog (the lines of the blast lose the
-  effect's tint, too).
+  blends all of them, so bosses come out pale under the fog layer, and
+  Mother Brain's rainbow beam tints every sprite.
 - In Ridley's Ceres lair the background gets lighter toward the bottom on
   the SNES, and is one flat color on the GBA.
+- The GBA can't subtract colors, so dark rooms are approximated: the edges
+  of Botwoon's and Draygon's darkened rooms are a little off.
 - The GBA's 8-bit sound has a hiss the SNES never had.
 
-But all of Zebes is there, and almost all of it at full speed, in your
-hands.
+But all of Zebes is there, at full speed, in your hands.
 
 ## This Report's Contributors
 

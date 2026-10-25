@@ -27,7 +27,7 @@ the [snesrev/sm](https://github.com/snesrev/sm) decompilation, the SNES game's
 code rewritten as C. This port compiles that C for the GBA's ARM7TDMI and
 replaces the SNES's graphics, sound and input with the GBA's own. Nothing is
 emulated: the GBA's 16.8 MHz CPU has no time to spare for an emulator.
-Almost every room runs at or near 60 frames per second.
+Every room runs at 60 frames per second.
 
 The port includes none of the game's data. You build the cartridge from your
 own copy of the SNES ROM.
@@ -153,12 +153,12 @@ GBA's buttons. They can't be changed there: only END and RESET do anything.
 - **Effects.** The SNES's color math and windows are mapped onto the GBA's
   blending and windows: rain, fog, water, heat shimmer, shadows, the X-ray
   scope's cone and power bombs. The GBA can't subtract colors, so darkened
-  rooms are approximated, and power bombs' explosions brighten the screen
-  rather than turning it yellow.
-- **Speed.** Timed in every room, none runs below 59 fps. Ridley's fight
-  on Ceres station averages 58 fps but dips to about 50, doors take longer
-  than on the SNES, and the X-ray scope and big power bomb explosions slow
-  the game down.
+  rooms are approximated.
+- **Speed.** Timed in every room, all run at 60 fps. Every boss's fight
+  averages 59.7 fps, though Kraid's slowest second is 53. Doors take about
+  as long as on the SNES (a median of 107 frames, against 105). Pausing, a
+  game over and the escapes drop to about 40 fps for a second as their
+  scenes load.
 
 ## Developer tools
 
