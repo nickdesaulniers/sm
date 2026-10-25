@@ -1749,7 +1749,8 @@ void HdmaobjPreInstr_SkyLandBG2XscrollInner(uint16 k) {  // 0x88ADC2
     }
     ++v5;
     top_cur = top_next;
-    top_next = kHdmaScrollEntrys[v5 + 1].top_pos;
+    if (sign16(v5 * 8 - 184))
+      top_next = kHdmaScrollEntrys[v5 + 1].top_pos;
   } while (sign16(v5 * 8 - 184));
   for (i = 1535 - r18; ; i = r24 - 127) {
     r24 = i;

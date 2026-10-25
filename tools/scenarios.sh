@@ -79,7 +79,7 @@ keys() {
 }
 
 # The scenarios' names, as the cartridge lists them as it starts.
-env -u SHOT_ON -u STOP_ON KEYS="1:100:-,-" "$smrun" "$build/sm.gba" 300 "" "$out/list_" \
+env -u SHOT_ON -u STOP_ON -u AUDIO KEYS="1:100:-,-" "$smrun" "$build/sm.gba" 300 "" "$out/list_" \
     | grep -o 'scenario-list: .*' | cut -d' ' -f2- > "$out/list.txt" || true
 count=$(wc -l < "$out/list.txt")
 if [ "$count" -eq 0 ]; then
