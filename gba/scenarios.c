@@ -128,6 +128,20 @@ typedef struct Scenario {
 
 #define BOSS(name, area, n) {"boss-" name, area, 0, n, -1, kBossScript}
 
+// Kraid, from his rise to the item room after (the whole fight, 130 seconds):
+// super missiles, one every 4 frames, at a jump's height. His mouth is the
+// only place that hurts him, and only open: 300 a hit (1000 health). The
+// first phase from the ledge by the door (a hit, and he grows and walks), the
+// second from the platform (put there each time, as he knocks Samus off it):
+// two hits and a last, then his death, sinking, the right door (shot open),
+// the item room beyond (Samus put by the orb) and its door back.
+#define kKraidJump "(@ A+R+B*2 A+R*2)x12 -*16"
+#define kKraidFull \
+  "-*30 @ " kSelectSupers "RIGHT*20 (@ -*15)x70 (" kKraidJump ")x10 " \
+  "(>248,250 -*8 " kKraidJump ")x24 (@ -*15)x80 (@ RIGHT*15)x60 (@ A+RIGHT*15)x40 " \
+  "(@ RIGHT*15)x20 B*3 R+B*3 (@ RIGHT*15)x8 (@ -*15)x16 >120,158 (@ -*15)x40 A*3 " \
+  "(@ -*15)x30 (@ LEFT*15)x20 B*3 (@ LEFT*15)x40 (@ -*15)x30"
+
 // ---- Ridley's fight, with a shot every 4 frames: supers (she has plenty) up, ahead, and
 // jumping each way. A script can't see Ridley, so ^ sets his health to reach each phase
 // (his flight changes at 14400 and 9000, his colour at 9000, 5400 and 1800) after the
@@ -433,7 +447,7 @@ static const Scenario kScenarios[] = {
   BOSS("bomb-torizo", 0, 1),
   BOSS("spore-spawn", 1, 1),
   BOSS("kraid", 1, 2),
-  {"boss-kraid-xa", 1, 0, 2, -1, "-*30 @ " kSelectSupers "RIGHT*20 (@ -*15)x70 ((@ A+R+B*2 A+R*2)x12 -*16)x10 (>248,250 -*8 (@ A+R+B*2 A+R*2)x12 -*16)x24 (@ -*15)x80 (@ RIGHT*15)x60 (@ A+RIGHT*15)x40 (@ RIGHT*15)x20 B*3 R+B*3 (@ -*15)x20 >118,150 (@ -*15)x40 A*3 (@ -*15)x30 (@ LEFT*15)x20 B*3 (@ LEFT*15)x40 (@ -*15)x30"},
+  {"boss-kraid-full", 1, 0, 2, -1, kKraidFull},
   BOSS("crocomire", 2, 1),
   BOSS("ridley", 2, 2),
   {"boss-ridley-full", 2, 0, 2, -1, kRidleyFull},
