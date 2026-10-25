@@ -92,7 +92,7 @@ echo "$count scenarios"
 # start say which: see gba/scenarios.c).
 run_chunk() {  # run_chunk FIRST COUNT [NAME]
     local first=$1 n=$2 name=${3:-c$1}
-    local frames=$((3000 + n * 8000))
+    local frames=${FRAMES:-$((3000 + n * 8000))}
     if [ -n "$audio" ]; then
         KEYS="1:100:$(keys "$first"),$(keys $((n | 512)))" STOP_ON="scenario: all done" \
             AUDIO="$out/raw/$name.wav" "$smrun" "$build/sm.gba" "$frames" "" "$out/list_" \

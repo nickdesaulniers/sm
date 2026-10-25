@@ -312,6 +312,13 @@ static int Sext13(int v) {
   return (int16_t)(v << 3) >> 3;
 }
 
+// A Mode 7 scroll relative to its center, as the SNES's hardware takes it: 10 bits, keeping the
+// sign (the map wraps at 1024 pixels, which only a matrix with a 256 (one pixel a pixel) has
+// the same after: Ceres's rotating rooms don't).
+static int Clip10(int v) {
+  return v & 0x2000 ? v | ~1023 : v & 1023;
+}
+
 ROM_CODE static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   uint16_t dispcnt = kDispcntMode1;
   if (!(r->inidisp & 0x80)) {
@@ -333,12 +340,12 @@ ROM_CODE static void BuildLineMode7(LineRegs *l, const PpuRegs *r, int s) {
   // tiled layers' rows, ScrollStream).
   int a = r->m7[0], b = r->m7[1], c = r->m7[2], d = r->m7[3];
   int x0 = r->m7[4], y0 = r->m7[5];
-  int dx = kXOffset + Sext13(r->m7hofs) - x0;
-  int dy = s + 1 + Sext13(r->m7vofs) - y0;
+  // (The hardware drops the low 6 bits of the products with the scroll, a quarter of a pixel.)
+  int h = Clip10(Sext13(r->m7hofs) - x0), v = Clip10(Sext13(r->m7vofs) - y0);
   l->stream[0] = (uint16_t)a | (uint32_t)(uint16_t)b << 16;
   l->stream[1] = (uint16_t)c | (uint32_t)(uint16_t)d << 16;
-  l->stream[2] = a * dx + b * dy + (x0 << 8);
-  l->stream[3] = c * dx + d * dy + (y0 << 8);
+  l->stream[2] = (a * h & ~63) + (b * v & ~63) + a * kXOffset + b * (s + 1) + (x0 << 8);
+  l->stream[3] = (c * h & ~63) + (d * v & ~63) + c * kXOffset + d * (s + 1) + (y0 << 8);
 }
 
 // |n| (at least 1) lines of a Mode 7 stream with the same registers, from

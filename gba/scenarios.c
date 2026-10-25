@@ -37,6 +37,10 @@
 //              Brain's)
 //   =N         the game state N (32: Ceres's elevator ride, then its explosion
 //              and the blackout: Mode 7 scenes)
+//   ^N         the first enemy's (the boss's) health to N, to reach a late phase of a fight
+//              that a script can't aim its way to (it can't see the boss)
+//   _N         Samus's energy to N, with no reserve and no refills (Ceres's Ridley leaves when it
+//              is under 30), and + gives her them back
 //   %N         the message box N, as an item's pickup shows it (5 is the missile
 //              tanks', 28 the save station's question)
 //   !          Samus dies (no energy, reserve or refills): the game over
@@ -113,6 +117,32 @@ typedef struct Scenario {
   "-*30 @ (" kFight " -*70 @)x3 " kSelectSupers "(" kFight " -*70 @)x3"
 
 #define BOSS(name, area, n) {"boss-" name, area, 0, n, -1, kBossScript}
+
+// ---- Ridley's fight, with a shot every 4 frames: supers (she has plenty) up, ahead, and
+// jumping each way. A script can't see Ridley, so ^ sets his health to reach each phase
+// (his flight changes at 14400 and 9000, his colour at 9000, 5400 and 1800) after the
+// first one's honest hits.
+#define kSuperShots(keys) "(@ " keys "+R+B*3 -*1 @ -*4)x2 "
+#define kRidleyCycle \
+  "(" kSuperShots("-") kSuperShots("UP") kSuperShots("A+RIGHT") kSuperShots("A+LEFT") ")"
+#define kRidleyFull \
+  "-*30 @ " kSelectSupers kRidleyCycle "x20 ^14000 " kRidleyCycle "x15 ^8900 " kRidleyCycle \
+  "x15 ^5300 " kRidleyCycle "x15 ^1700 " kRidleyCycle "x15"
+// The kill: shots at 1 health until one hits, the death with a shot every 14 frames, and then
+// the door out (to the room with the energy tank).
+#define kRidleyDeath \
+  "-*30 @ " kSelectSupers kRidleyCycle "x4 ^1500 " kRidleyCycle "x6 ^1 " kRidleyCycle "x30 " \
+  "(@ -*14)x200 #98b2 -*60 @ (RIGHT*40 @ -*10 @ LEFT*40 @ -*10)x3 -*60 @"
+
+// ---- Ceres's Ridley: the room's wait for him, the fight (his hits and flights: Samus shoots
+// him, but he can't be hurt), his leaving with the baby once Samus is under 30 energy (_29), the
+// escape's start (the timer, the shaking), the run back through the rooms (a door each, and a
+// walk) and the arrival at the elevator, which the explosion follows (=32).
+#define kCeresRun(door) "#" door " (@ -*8)x20 LEFT*60 (@ -*8)x20 "
+#define kCeresRidley \
+  "#abac -*30 @ (-*20 @)x30 (@ B*3 -*1 @ -*4)x200 _29 (@ -*4)x200 + " \
+  kCeresRun("abb8") kCeresRun("aba0") kCeresRun("ab88") kCeresRun("ab70") kCeresRun("ab58") "(@ -*20)x45 " \
+  "=32 (@ -*10)x200"
 
 // The lava (or acid) first at Samus's feet and then rising past her, from a
 // station of a room that has it.
@@ -395,6 +425,9 @@ static const Scenario kScenarios[] = {
   BOSS("kraid", 1, 2),
   BOSS("crocomire", 2, 1),
   BOSS("ridley", 2, 2),
+  {"boss-ridley-full", 2, 0, 2, -1, kRidleyFull},
+  {"boss-ridley-death", 2, 0, 2, -1, kRidleyDeath},
+  {"ceres-ridley-full", 5, 16, 0, -1, kCeresRidley},
   BOSS("phantoon", 3, 1),
   BOSS("botwoon", 4, 1),
   BOSS("draygon", 4, 2),
@@ -607,6 +640,10 @@ static bool NextWord(void) {
       script++;
       game_state = Number(&script);
       continue;
+    case '^':
+      script++;
+      *(uint16_t *)(g_ram + 0xF8C) = Number(&script);
+      continue;
     case '%':
       script++;
       queued_message_box_index = Number(&script);
@@ -615,6 +652,17 @@ static bool NextWord(void) {
       script++;
       mortal = true;
       samus_health = samus_reserve_health = 0;
+      continue;
+    case '_':
+      // Samus's energy to N, no reserve and no refills (+ gives them back).
+      script++;
+      mortal = true;
+      samus_health = Number(&script);
+      samus_reserve_health = 0;
+      continue;
+    case '+':
+      script++;
+      mortal = false;
       continue;
     case '#': {
       script++;
