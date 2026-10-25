@@ -433,6 +433,7 @@ static const Scenario kScenarios[] = {
   BOSS("bomb-torizo", 0, 1),
   BOSS("spore-spawn", 1, 1),
   BOSS("kraid", 1, 2),
+  {"boss-kraid-xa", 1, 0, 2, -1, "-*30 @ " kSelectSupers "RIGHT*20 (@ -*15)x70 ((@ A+R+B*2 A+R*2)x12 -*16)x10 (>248,250 -*8 (@ A+R+B*2 A+R*2)x12 -*16)x24 (@ -*15)x80 (@ RIGHT*15)x60 (@ A+RIGHT*15)x40 (@ RIGHT*15)x20 B*3 R+B*3 (@ -*15)x20 >118,150 (@ -*15)x40 A*3 (@ -*15)x30 (@ LEFT*15)x20 B*3 (@ LEFT*15)x40 (@ -*15)x30"},
   BOSS("crocomire", 2, 1),
   BOSS("ridley", 2, 2),
   {"boss-ridley-full", 2, 0, 2, -1, kRidleyFull},

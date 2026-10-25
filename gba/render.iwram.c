@@ -16,6 +16,13 @@
 //   GBA BG1: SNES BG2's priority tiles, priority 1
 //   GBA BG2: SNES BG1, priority 2
 //   GBA BG3: SNES BG2's other tiles, priority 2
+// In a frame where BG2 shows priority tiles but no others (bg2_over_lo:
+// Kraid's body), the SNES's order is BG1's priority tiles, BG2, sprites of
+// priority 2, BG1's others: BG2 is at priority 1 behind GBA BG1, which comes
+// first at that priority,
+//   GBA BG1: SNES BG1's priority tiles, priority 1
+//   GBA BG2: SNES BG1's other tiles, priority 2
+//   GBA BG3: SNES BG2, priority 1
 // In a frame that adds BG3 to BG2 but not BG1 (bg3_mid), BG1's layers and
 // sprites go a priority higher (0 and 1; sprites 0-3), for BG3 to go
 // between BG1 and BG2.
@@ -144,6 +151,12 @@ static uint8_t bg12_hi[2][128];
 // Their sums by column of chunks: by screen, the left and right halves.
 static uint16_t bg12_hi_cols[2][4];
 static bool split_bg2;
+// Whether the frame puts BG2 in front of the sprites of priority 2 and BG1's
+// other tiles, BG1's priority tiles in front of it (see the top): BG2 has
+// priority tiles on show and no others, which behind BG1's others would be
+// hidden by what is all wall, and in front of BG1's priority tiles would hide
+// what's on the floor.
+static bool bg2_over_lo;
 // The GBA layers of BG1 and BG2, as split_bg2 has them.
 static uint8_t bg12_layers[2] = {6, 8};
 // Whether the frame adds BG3 (on the sub screen) to BG2 but not BG1, as in
@@ -894,7 +907,7 @@ __attribute__((noinline)) static void BuildLine(LineRegs *l, const PpuRegs *r, i
   // The SNES background split into GBA BG1 and BG2 or BG3.
   l->ctl.bgcnt[1] = (1 - bg3_mid) | kSbBg1Hi << 8 | BgSize(r->bgsc[split]) << 14;
   l->ctl.bgcnt[2] = (2 - bg3_mid) | kSbBg1Lo << 8 | BgSize(r->bgsc[0]) << 14;
-  l->ctl.bgcnt[3] = 2 | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
+  l->ctl.bgcnt[3] = (2 - bg2_over_lo) | kSbBg2 << 8 | BgSize(r->bgsc[1]) << 14;
   uint8_t sub = ColorMath(&l->ctl, r);
   l->ctl.win[0] = l->ctl.win[1] = 0;
   // (As a rule, no window is on for anything.)
@@ -992,6 +1005,7 @@ static inline uint32_t SpreadBits(uint32_t x) {
 
 ROM_CODE static void SetSplit(bool split) {
   split_bg2 = split;
+  bg2_over_lo = false;
   bg12_layers[0] = split ? 4 : 6;
   bg12_layers[1] = split ? 10 : 8;
 }
@@ -1001,8 +1015,39 @@ static inline bool EquipmentScreen(void) {
   return game_state >= 13 && game_state <= 16 && pause_screen_mode == 1;
 }
 
-// Chooses split_bg2 from BG1's and BG2's priority tiles (as the frame
-// before converted their maps) and the line |r|'s scrolling.
+ROM_CODE static bool TileIsBlank(const uint16_t *t);
+
+// Whether BG2 shows tiles without the priority bit, but the transparent
+// ones, as of the line |r| (the gameplay area's: its scrolling and the maps as
+// converted). It stops at the first.
+ROM_CODE static bool Bg2HasLoTiles(const PpuRegs *r) {
+  uint8_t sc = r->bgsc[1];
+  uint16_t base = (r->bgnba[0] >> 4) << 12;
+  int top = SnesLine(hud ? kGbaHudLines : 0);
+  int x = HOFS(text_line, 1) + kXOffset, y = VOFS(text_line, 1) + top + 1;
+  int rows = (((y & 7) + SnesLine(kGbaLines - 1) - top) >> 3) + 1;
+  int cols = (((x & 7) + 239) >> 3) + 1;
+  int last = -1;
+  for (int i = 0; i < rows; i++) {
+    int ty = ((y >> 3) + i) & 63;
+    for (int j = 0; j < cols; j++) {
+      int tx = ((x >> 3) + j) & 63;
+      int screen = (tx >> 5) & (sc & 1);
+      screen += (ty >> 5) & (sc >> 1 & 1) ? (sc & 1) + 1 : 0;
+      uint16_t entry = g_vram[(((sc & 0xfc) << 8) + screen * 0x400 + (ty & 31) * 32 + (tx & 31)) & 0x7fff];
+      int tile = entry & 0x3ff;
+      if ((entry & 0x2000) || tile == last)
+        continue;
+      if (!TileIsBlank(&g_vram[(base + tile * 16) & 0x7fff]))
+        return true;
+      last = tile;
+    }
+  }
+  return false;
+}
+
+// Chooses split_bg2 (or bg2_over_lo) from BG1's and BG2's priority tiles (as the
+// frame before converted their maps) and the line |r|'s scrolling.
 ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   int shown[2];
   for (int bg = 0; bg < 2; bg++) {
@@ -1033,9 +1078,17 @@ ROM_CODE static void ChooseSplit(const PpuRegs *r) {
   // priority tiles behind the sprites and BG2's. (Kraid's room has as many
   // of BG1's as of his on show, and the count went one way and the other
   // as the screen shook: him, then none of him, for a second or so.)
+  // Better yet, if BG2 has no others than priority tiles (and no sub screen
+  // adds layers that go in front): BG2 in front of BG1's others only, as the
+  // SNES has it (bg2_over_lo: Kraid's room, where his body goes behind the
+  // floor, in front of the wall).
   bool sub_only = (r->cgwsel & 2) && (r->ts & 2) && !(r->tm & 2);
-  SetSplit(!EquipmentScreen() &&
-           (sub_only ? shown[1] > 0 : shown[1] && 2 * shown[1] >= shown[0] && (r->tm & 2)));
+  bool split = !EquipmentScreen() &&
+               (sub_only ? shown[1] > 0 : shown[1] && 2 * shown[1] >= shown[0] && (r->tm & 2));
+  bool over = !EquipmentScreen() && !sub_only && shown[1] && (r->tm & 2) && !(r->ts & 3) &&
+              !Bg2HasLoTiles(r);
+  SetSplit(split && !over);
+  bg2_over_lo = over;
 }
 
 // The CGRAM index of background |bg|'s pixel at SNES (x, line), with the
@@ -1561,7 +1614,8 @@ void Render_CaptureFrame(void) {
     ChooseSplit(LINE_REGS(text_line));
   else
     SetSplit(false);
-  bg3_mid = text_line >= 0 && !frame_mode7 && !split_bg2 && Bg3Between(LINE_REGS(text_line));
+  bg3_mid = text_line >= 0 && !frame_mode7 && !split_bg2 && !bg2_over_lo &&
+            Bg3Between(LINE_REGS(text_line));
   FindBlast();
   if (text_line >= 0 && !frame_mode7 && (LINE_REGS(text_line)->cgadsub & 0x80) &&
       (LINE_REGS(text_line)->cgwsel & 2))
