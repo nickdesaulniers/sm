@@ -56,7 +56,10 @@ static inline const uint8 *RomFixedPtr(uint32_t addr) { return &g_rom[(((addr >>
 #define GET_BYTE(p) (*(uint8*)(p))
 
 #if SM_GBA
-static inline const uint8 *RomPtr(uint32_t addr) { return RomFixedPtr(addr); }
+// The ROM is flat, so a pointer into it is arithmetic. These are macros rather than inline
+// functions because ARM code (GBA_IWRAM_CODE) can't inline Thumb functions, and would call a thunk.
+#define RomPtr(addr) ({ uint32_t addr_ = (addr); RomFixedPtr(addr_); })
+#define RomPtrWithBank(bank, addr) RomPtr((uint32_t)(uint8)(bank) << 16 | (uint16_t)(addr))
 #else
 const uint8 *RomPtr(uint32_t addr);
 #endif
@@ -97,15 +100,10 @@ static inline const uint8 *RomPtr_AD(uint16_t addr) { return RomPtr(0xad0000 | a
 static inline const uint8 *RomPtr_B3(uint16_t addr) { return RomPtr(0xb30000 | addr); }
 static inline const uint8 *RomPtr_B4(uint16_t addr) { return RomPtr(0xb40000 | addr); }
 static inline const uint8 *RomPtr_B7(uint16_t addr) { return RomPtr(0xb70000 | addr); }
+#if !SM_GBA
 static inline const uint8 *RomPtrWithBank(uint8 bank, uint16_t addr) { return RomPtr((bank << 16) | addr); }
-static inline const uint8 *RomBankBase(uint8 bank) { return RomPtr((bank << 16) + 0x8000) - 0x8000; }
-
-#if SM_GBA
-// ARM code (GBA_IWRAM_CODE) can't inline Thumb functions, so helpers that
-// it uses are macros on the GBA.
-#define RomPtr(addr) ({ uint32_t addr_ = (addr); RomFixedPtr(addr_); })
-#define RomPtrWithBank(bank, addr) RomPtr((uint32_t)(uint8)(bank) << 16 | (uint16_t)(addr))
 #endif
+static inline const uint8 *RomBankBase(uint8 bank) { return RomPtr((bank << 16) + 0x8000) - 0x8000; }
 
 #if SM_GBA
 // For the room loads, faster than the game's own code (gba/decompress.S, rtl.c):

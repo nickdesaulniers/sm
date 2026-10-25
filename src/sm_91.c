@@ -1167,9 +1167,9 @@ static uint16 Xray_FindXrayedBlock(uint16 r40, uint16 bts) {
 static const uint8 *Xray_GetXrayedBlock(uint16 k) {  // 0x91CDD6
   uint16 bts = BTS[k];  // (a byte)
   uint16 r40 = level_data[k] & 0xF000;
-#if SM_GBA
   // The entry's a function of those two and of the ROM's table, so some are kept: the setup
-  // looks up 272 blocks of a few kinds, and the search was most of a frame on the GBA.
+  // looks up 272 blocks of a few kinds, and the search was most of a frame on the GBA. The ROM's
+  // table never changes, so this gives the same results everywhere.
   static struct { uint16 key, addr; } cache[32];
   uint16 key = (r40 | bts) + 1;
   int i = (bts + (r40 >> 12)) & 31;
@@ -1178,9 +1178,6 @@ static const uint8 *Xray_GetXrayedBlock(uint16 k) {  // 0x91CDD6
     cache[i].key = key;
   }
   uint16 addr = cache[i].addr;
-#else
-  uint16 addr = Xray_FindXrayedBlock(r40, bts);
-#endif
   return addr ? RomPtr_91(addr) : NULL;
 }
 
