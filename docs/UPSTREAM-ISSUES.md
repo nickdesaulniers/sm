@@ -220,10 +220,11 @@ it as 16 bits, signed and unsigned.
 
 `main` crashes the same way.
 
-**Fix:** not made here. Checked in a copy: `uint16` for `p`, `t`, `v0`
+**Fix:** made here (`src/sm_91.c`): `uint16` for `p`, `t`, `v0`
 (and `(uint16)(p - 2) >> 1` where it's an index) and for the fills' `pos`,
 with `(int16)(pos -= 2) >= 0` in the up fills, keep every write in `g_ram`,
-and the run goes on. What the ROM writes there, from `$7F:9798` on, still
+and the run goes on (an AddressSanitizer test of every angle, with the
+beam's row above, on and below the screen, crashes before and passes after). What the ROM writes there, from `$7F:9798` on, still
 differs from the C's: the note in `VerifySnapshotsEq` (src/sm_cpu_infra.c)
 that "XrayHdmaFunc has some bug that i couldn't fix in asm" is about the
 same functions.

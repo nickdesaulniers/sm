@@ -824,7 +824,11 @@ static void XrayFillDown(uint16 *dest, uint16 fill_with, uint16 v1) {
   } while ((v1 += 2) < 460);
 }
 
-static void XrayFillUpRamped(uint16 *dest, int pos, uint32 left, uint32 left_step, uint32 right, uint32 right_step, int adjust) {
+// The tables' indices are the ROM's X, 16 bits: a beam starting above the screen
+// (r24 0xff00 and up) wraps them, as on the SNES, and they stay in the game's RAM,
+// not 128 KB past the table. The up fills stop when X goes negative (BPL), the
+// down fills at 460 unsigned (CPX #$01CC). See docs/UPSTREAM-ISSUES.md.
+static void XrayFillUpRamped(uint16 *dest, uint16 pos, uint32 left, uint32 left_step, uint32 right, uint32 right_step, int adjust) {
   do {
     left += left_step;
     right += right_step;
@@ -835,14 +839,14 @@ static void XrayFillUpRamped(uint16 *dest, int pos, uint32 left, uint32 left_ste
     dest[pos >> 1] = ((int32)right < 0 || (int32)left >= 0x10000) ? 0xff : (left_val >> 8 | right_val & ~0xff);
     if (finished) {
       pos += adjust;
-      while ((pos -= 2) >= 0)
+      while (!sign16(pos -= 2))
         dest[pos >> 1] = 0xff;
       return;
     }
-  } while ((pos -= 2) >= 0);
+  } while (!sign16(pos -= 2));
 }
 
-static void XrayFillDownRamped(uint16 *dest, int pos, uint32 left, uint32 left_step, uint32 right, uint32 right_step, int adjust) {
+static void XrayFillDownRamped(uint16 *dest, uint16 pos, uint32 left, uint32 left_step, uint32 right, uint32 right_step, int adjust) {
   do {
     left += left_step;
     right += right_step;
@@ -873,19 +877,19 @@ static void XrayHdmaOnScreen_BeamAimedU(XrayHdmaCtx *ctx);
 static void XrayHdmaOnScreen_BeamHoriz(XrayHdmaCtx *ctx);
 
 static void XrayHdmaFunc_BeamAimedR(XrayHdmaCtx *ctx) {  // 0x91BEC2
-  int p = 2 * ctx->r24;
+  uint16 p = 2 * ctx->r24;
   XrayFillUpRamped(ctx->dest, p - 2, ctx->r22 - 0x10000, ctx->r30, 65535, 1, 2);
   XrayFillDownRamped(ctx->dest, p, ctx->r22 - 0x10000, ctx->r32, 65535, 1, -2);
 }
 
 static void XrayHdmaFunc_BeamAimedL(XrayHdmaCtx *ctx) {  // 0x91BF72
-  int t = 2 * ctx->r24;
+  uint16 t = 2 * ctx->r24;
   XrayFillUpRamped(ctx->dest, t - 2, 0, -1, ctx->r22 + 0x10000, -ctx->r32, 2);
   XrayFillDownRamped(ctx->dest, t, 0, -1, ctx->r22 + 0x10000, -ctx->r30, -2);
 }
 
 static void XrayHdmaFunc_BeamAimedU(XrayHdmaCtx *ctx) {
-  int p = 2 * ctx->r24;
+  uint16 p = 2 * ctx->r24;
   if (sign16(ctx->r26 - 192)) {
     XrayFillUpRamped(ctx->dest, p - 2, ctx->r22 - 0x10000, ctx->r30, ctx->r22 - 0x10000, ctx->r32, 0);
   } else if (sign16(ctx->r28 - 192)) {
@@ -897,7 +901,7 @@ static void XrayHdmaFunc_BeamAimedU(XrayHdmaCtx *ctx) {
 }
 
 static void XrayHdmaFunc_BeamAimedD(XrayHdmaCtx *ctx) {
-  int p = 2 * ctx->r24;
+  uint16 p = 2 * ctx->r24;
   if (sign16(ctx->r28 - 128)) {
     XrayFillDownRamped(ctx->dest, p, ctx->r22 - 0x10000, ctx->r32, ctx->r22 - 0x10000, ctx->r30, 0);
   } else if (sign16(ctx->r26 - 128)) {
@@ -916,22 +920,22 @@ static void XrayHdmaFunc_BeamHoriz(XrayHdmaCtx *ctx) {  // 0x91C505
 }
 
 static void XrayHdmaOnScreen_BeamAimedR(XrayHdmaCtx *ctx) {  // 0x91C5FF
-  int p = 2 * ctx->r24;
-  ctx->dest[(p - 2) >> 1] = ctx->r22 >> 8 | 0xff00;
+  uint16 p = 2 * ctx->r24;
+  ctx->dest[(uint16)(p - 2) >> 1] = ctx->r22 >> 8 | 0xff00;
   XrayFillUpRamped(ctx->dest, p - 4, ctx->r22, ctx->r30, 65535, 1, 2);
   XrayFillDownRamped(ctx->dest, p, ctx->r22, ctx->r32, 65535, 1, -2);
 }
 
 static void XrayHdmaOnScreen_BeamAimedL(XrayHdmaCtx *ctx) {  // 0x91C660
-  int v0 = 2 * ctx->r24;
-  ctx->dest[(v0 - 2) >> 1] = (ctx->r22 >> 8) << 8;
+  uint16 v0 = 2 * ctx->r24;
+  ctx->dest[(uint16)(v0 - 2) >> 1] = (ctx->r22 >> 8) << 8;
   XrayFillUpRamped(ctx->dest, v0 - 4, 0, -1, ctx->r22, -ctx->r32, 2);
   XrayFillDownRamped(ctx->dest, v0, 0, -1, ctx->r22, -ctx->r30, -2);
 }
 
 static void XrayHdmaOnScreen_BeamAimedU(XrayHdmaCtx *ctx) {  // 0x91C6C1
-  int v0 = 2 * ctx->r24;
-  ctx->dest[(v0 - 2) >> 1] = (ctx->r22 >> 8) * 0x101;
+  uint16 v0 = 2 * ctx->r24;
+  ctx->dest[(uint16)(v0 - 2) >> 1] = (ctx->r22 >> 8) * 0x101;
   if (sign16(ctx->r26 - 192)) {
     XrayFillUpRamped(ctx->dest, v0 - 4, ctx->r22, ctx->r30, ctx->r22, ctx->r32, 0);
   } else if (sign16(ctx->r28 - 192)) {
@@ -943,8 +947,8 @@ static void XrayHdmaOnScreen_BeamAimedU(XrayHdmaCtx *ctx) {  // 0x91C6C1
 }
 
 static void XrayHdmaOnScreen_BeamAimedD(XrayHdmaCtx *ctx) {  // 0x91C822
-  int v0 = 2 * ctx->r24;
-  ctx->dest[(v0 - 2) >> 1] = (ctx->r22 >> 8) * 0x101;
+  uint16 v0 = 2 * ctx->r24;
+  ctx->dest[(uint16)(v0 - 2) >> 1] = (ctx->r22 >> 8) * 0x101;
   if (sign16(ctx->r28 - 128)) {
     XrayFillDownRamped(ctx->dest, v0, ctx->r22, ctx->r32, ctx->r22, ctx->r30, 0);
   } else if (sign16(ctx->r26 - 128)) {
