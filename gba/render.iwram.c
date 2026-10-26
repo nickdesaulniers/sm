@@ -1860,6 +1860,12 @@ ROM_CODE static void RecolorBlocks(uint32_t blocks, const uint8_t (*bd)[32],
   }
 }
 
+// A color as Recolor makes it by |t|'s channels (not when they're as they were: see its |same|,
+// and the tables in UpdatePalette).
+ROM_CODE static uint16_t BgColor(const uint8_t (*t)[32], uint16_t c) {
+  return t[0][c & 31] | t[1][(c >> 5) & 31] << 5 | t[2][(c >> 10) & 31] << 10;
+}
+
 // The palette, at the brightness of line |r|, with line |m|'s color math
 // with the fixed color.
 ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_palettes) {
@@ -1968,7 +1974,8 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
       for (int i = 1; i < 4; i++) {
         patch_index[num_patches] = p * 16 + i;
         patch_color[num_patches] = color;
-        restore_color[num_patches++] = GBA_BG_PALETTE[128 + p * 16 + i];
+        restore_color[num_patches++] =
+          full && b3 == same ? g_cgram[p * 4 + i] : BgColor(b3, g_cgram[p * 4 + i]);
       }
     }
     return;
@@ -1985,7 +1992,8 @@ ROM_CODE static void UpdatePalette(const PpuRegs *r, const PpuRegs *m, bool bg3_
       }
       patch_index[num_patches] = p * 16 + i;
       patch_color[num_patches] = color;
-      restore_color[num_patches++] = GBA_BG_PALETTE[128 + p * 16 + i];
+      restore_color[num_patches++] =
+          full && b3 == same ? g_cgram[p * 4 + i] : BgColor(b3, g_cgram[p * 4 + i]);
     }
   }
 }
@@ -2454,9 +2462,9 @@ ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
 // The SNES draws sprites over each other by their places in OAM alone, and the GBA by priority
 // first (see kObjPriorities): so Ridley's body (priority 3, in later places than Samus's, of 2)
 // came out over her. The sprites after Samus's (|first| to |end|, from rtl.c) of a higher
-// priority than hers, that overlap their box, are put to hers. Returns whether any was.
-ROM_CODE static bool PutSamusInFront(uint32_t first, uint32_t end, uint32_t drawn,
-                                     uint32_t priorities, const uint8_t *shapes) {
+// priority than hers, that overlap their box, are put to hers, and noted in |kept| (a bit each).
+ROM_CODE static void PutSamusInFront(uint32_t first, uint32_t end, uint32_t drawn,
+                                     uint32_t priorities, const uint8_t *shapes, uint32_t *kept) {
   const uint32_t *sprites = (const uint32_t *)g_oam;
   int x0 = 512, x1 = -512, y0 = 256, y1 = -1;
   uint32_t samus = 0;
@@ -2474,7 +2482,6 @@ ROM_CODE static bool PutSamusInFront(uint32_t first, uint32_t end, uint32_t draw
     y1 = y + kObjHeight[shape] > y1 ? y + kObjHeight[shape] : y1;
     samus = priorities >> (e >> 27 & 6) & 3;
   }
-  bool kept = false;
   for (uint32_t i = end; i < drawn && x1 > x0; i++) {
     uint32_t e = sprites[i], high = g_oam[512 + (i >> 2)] >> ((i & 3) * 2);
     uint32_t priority = priorities >> (e >> 27 & 6) & 3;
@@ -2484,10 +2491,9 @@ ROM_CODE static bool PutSamusInFront(uint32_t first, uint32_t end, uint32_t draw
     x -= x >= 256 ? 512 : 0;
     if (x < x1 && x + kObjWidth[shape] > x0 && y < y1 && y + kObjHeight[shape] > y0) {
       GBA_OAM[i * 4 + 2] = (GBA_OAM[i * 4 + 2] & ~0xc00) | samus << 10;
-      kept = true;
+      kept[i >> 5] |= 1u << (i & 31);
     }
   }
-  return kept;
 }
 
 // Whether any of the sprites from |end| to |drawn| has the priority 3 (mostly, none has): then
@@ -2501,8 +2507,8 @@ ROM_CODE static bool InFrontOfSamus(uint32_t end, uint32_t drawn) {
   return false;
 }
 
-// Whether the last call of KeepSamusInFront put any sprite to Samus's priority.
-static bool samus_kept EWRAM_BSS;
+// The sprites the last call of KeepSamusInFront put to Samus's priority (a bit each).
+static uint32_t samus_kept[4] EWRAM_BSS;
 
 // Called by UpdateOam after it converted the sprites, to put the ones that came out over Samus's
 // behind her (from rtl.c's note of her sprites). It is the one call in IWRAM's UpdateOam, to
@@ -2512,17 +2518,18 @@ ROM_CODE static void KeepSamusInFront(void) {
   const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
   uint32_t priorities = bg3_mid ? kObjPrioritiesMid : kObjPriorities;
   const uint32_t *sprites = (const uint32_t *)g_oam;
-  uint32_t drawn = oam_prev_blocks ? (oam_prev_blocks - 1) * 4 : 128;
-  if (samus_kept) {
-    for (uint32_t i = 0; i < drawn; i++) {
+  for (int w = 0; w < 4; w++) {
+    for (uint32_t bits = samus_kept[w]; bits; bits &= bits - 1) {
+      uint32_t i = w * 32 + __builtin_ctz(bits);
       GBA_OAM[i * 4 + 2] = (GBA_OAM[i * 4 + 2] & ~0xc00) |
                            (priorities >> (sprites[i] >> 27 & 6) & 3) << 10;
     }
-    samus_kept = false;
+    samus_kept[w] = 0;
   }
   uint32_t first = g_samus_sprites[0], end = g_samus_sprites[1];
+  uint32_t drawn = oam_prev_blocks ? (oam_prev_blocks - 1) * 4 : 128;
   if (end > first && InFrontOfSamus(end, drawn))
-    samus_kept = PutSamusInFront(first, end, drawn, priorities, shapes);
+    PutSamusInFront(first, end, drawn, priorities, shapes, samus_kept);
 }
 
 static void UpdateOam(void) {
