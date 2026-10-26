@@ -91,7 +91,7 @@ The others (`SM_SCENARIOS`, `SM_ROOM_TOUR`, ...) are for testing; see the
 ## Using a release's engine
 
 Download `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` from one
-release into one folder, put the ROM there, and run:
+[release](https://github.com/nickdesaulniers/sm/releases) into one folder, put the ROM there, and run:
 
 ```
 python3 make_cartridge.py sm-engine.gba . sm.gba

@@ -23,7 +23,10 @@ die() {
 # What to install, by what's on this machine (the packages' names differ).
 install_hint() {
     if command -v apt-get >/dev/null; then
-        echo "  sudo apt install clang lld llvm cmake python3 git"
+        echo "  wget https://apt.llvm.org/llvm.sh && sudo bash llvm.sh 22"
+        echo "  sudo apt install cmake python3 git"
+        echo "  export PATH=/usr/lib/llvm-22/bin:\$PATH"
+        echo "  (LLVM 22: the distribution's own clang may be too old to fit the code in IWRAM)"
     elif command -v dnf >/dev/null; then
         echo "  sudo dnf install clang lld llvm cmake python3 git"
     elif command -v pacman >/dev/null; then

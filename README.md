@@ -32,33 +32,58 @@ Every room runs at 60 frames per second.
 The port includes none of the game's data. You build the cartridge from your
 own copy of the SNES ROM.
 
-## Building the cartridge
+## Making the cartridge
 
 You need your own copy of the Super Metroid ROM: the Japan/USA release,
 "Super Metroid (Japan, USA) (En,Ja)", sha1
-`da957f0d63d14cb441d215462904c4fa8519c613`, by any name. (A 512-byte copier
-header at its start is fine: it is dropped; so is a zip with the ROM in it.) The cartridge contains the ROM, so
-it can't be shared.
+`da957f0d63d14cb441d215462904c4fa8519c613`. Any file name works, and so does
+a zip with the ROM in it or a ROM with a copier header. The cartridge
+contains the ROM's data, so it can't be shared.
 
-You also need clang and lld (it's built with LLVM 22), CMake, Python 3 and
-git. There's no devkitARM or GCC. On Debian or Ubuntu:
+### From a release
 
-```
-sudo apt install clang lld llvm cmake python3 git
-```
+No compiler needed, only Python 3.
 
-(Other systems, and Windows: [docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).)
-
-1. Clone this repository's `gba-port` branch:
+1. From the [latest release](https://github.com/nickdesaulniers/sm/releases/latest), download
+   `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` into one folder.
+2. Put your ROM in that folder.
+3. Run:
 
    ```
-   git clone -b gba-port <this repository's URL> sm
+   python3 make_cartridge.py sm-engine.gba . sm.gba
+   ```
+
+   It finds the ROM by its checksum, says what's wrong if it isn't the right
+   one, and writes the cartridge, `sm.gba`, in a second or so.
+
+Use all three files from the same release.
+
+### From source
+
+You need LLVM 22 (clang, lld and llvm-objcopy), CMake, Python 3 and git.
+There's no devkitARM or GCC. Older clangs may not fit the code in the GBA's
+fast RAM: Ubuntu 24.04's own clang 18 doesn't. On Debian or Ubuntu, get LLVM
+22 from [apt.llvm.org](https://apt.llvm.org):
+
+```
+wget https://apt.llvm.org/llvm.sh && sudo bash llvm.sh 22
+sudo apt install cmake python3 git
+export PATH=/usr/lib/llvm-22/bin:$PATH
+```
+
+Fedora 44's own packages are LLVM 22 (`sudo dnf install clang lld llvm cmake
+python3 git`); other systems and Windows are in
+[docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).
+
+1. Clone the `gba-port` branch:
+
+   ```
+   git clone -b gba-port https://github.com/nickdesaulniers/sm.git sm
    cd sm
    ```
 
-2. Copy your ROM into that directory (any name: it's found by its checksum),
-   or give its path, or a directory it's in, to `./build-gba.sh`.
-
+2. Copy your ROM into that directory, or pass its path (or a directory it's
+   in) to the script.
 3. Build:
 
    ```
@@ -66,37 +91,16 @@ sudo apt install clang lld llvm cmake python3 git
    ```
 
    The first build fetches LLVM's compiler-rt sources (about 30 MB) for the
-   division routines the ARM7TDMI lacks, then compiles the game and prepares
-   the ROM's data for the GBA: the graphics are converted as the game loads
-   them, and the sound samples are decoded ahead of time. It takes about a
-   minute. The script checks the ROM first, and says what is wrong if it
-   isn't the right one.
+   division routines the ARM7TDMI lacks. The cartridge is `sm.gba`, in that
+   directory.
 
-4. The cartridge is `sm.gba`, in that directory. Run it in
-   [mGBA](https://mgba.io) or on a flash cartridge. Saves go to the
-   cartridge's SRAM (in an emulator, a `.sav` file next to `sm.gba`).
+### Playing it
 
-Instead of building it all, you can download `sm-engine.gba`,
-`make_cartridge.py` and `squash_font.py` from a release into one folder and
-add your ROM's data to the engine, with Python 3 alone:
-
-```
-python3 make_cartridge.py sm-engine.gba sm.smc sm.gba
-```
-
-Prerequisites for other systems, flash cartridges, saves, checking the ROM
-and what to do when something goes wrong are in
-[docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).
-
-## Reading more
-
-- [Progress report](docs/HOW-IT-WAS-MADE.md): from a black screen to every
-  room of the game, the notable changes and the bugs found on the way.
-- [Issues to report upstream](docs/UPSTREAM-ISSUES.md): bugs found in the
-  decompilation while porting it, with their fixes.
-- [Porting a SNES game to the GBA](docs/PORTING-GUIDE.md): a guide for agents
-  (and people) attempting a similar port. It covers the approach, the
-  hardware mapping, the tools for checking the result, and the pitfalls.
+Run `sm.gba` in [mGBA](https://mgba.io) or another GBA emulator, or copy it
+to a flash cartridge. Saves go to the cartridge's SRAM (in an emulator, a
+`.sav` file next to `sm.gba`). [docs/BUILDING-GBA.md](docs/BUILDING-GBA.md)
+has the details: checking the ROM, flash cartridges and save types, building
+by hand, and what each error means.
 
 ## Controls
 
@@ -134,11 +138,11 @@ enough.
 On the title screen, the menus and the pause screen, each button is the SNES
 button of the same name (B goes back).
 
-The options menu's Controller Setting Mode shows these controls, with the
-GBA's buttons. They can't be changed there: only END and RESET do anything.
+The options menu's CONTROLS screen shows these controls, with the GBA's
+buttons. They can't be changed there: END goes back.
 
 <p align="center">
-  <img src="docs/images/controller-settings.png" width="240" alt="Controller Setting Mode, with the GBA's buttons">
+  <img src="docs/images/controls.png" width="240" alt="The CONTROLS screen, with the GBA's buttons">
 </p>
 
 ## How it differs from the SNES
@@ -160,106 +164,38 @@ GBA's buttons. They can't be changed there: only END and RESET do anything.
   game over and the escapes drop to about 40 fps for a second as their
   scenes load.
 
-## Developer tools
+## Reporting issues
 
-The cartridge can start Samus anywhere, with any loadout, to test a room, a
-fight or a weapon without playing up to it. It's the developers' own debug
-mode: the game keeps a switch (`enable_debug`) that makes the load-game map
-list every load station, the developers' spawn points among them. The
-cartridge's buttons turn it on, and add a loadout, the whole map and the
-bosses' doors.
+Found a bug, a glitch, a slowdown or a sound problem? Please open an issue
+on [the issue tracker](https://github.com/nickdesaulniers/sm/issues). It helps to include:
 
-**Turning it on.** On the title screen or the file select, hold L and R and
-press Start. A sound tells you, and it lasts until the console is reset
-(Start + Select + L + R in the menus resets it, too). Nothing in the demos or
-in play can turn it on.
+- The release, or the commit you built (`git rev-parse --short HEAD`).
+- Where you play it: the emulator and its version, or the flash cartridge.
+- Where it happened (area, room, boss) and what you were doing.
+- If you can, an mGBA save state from just before it, or your `.sav` file,
+  and a screenshot or a short video.
 
-**Spawning.** Pick a file and start it, as usual. A saved file goes to the map
-of Planet Zebes as ever; with the tools on, a new file skips its intro and goes
-there too (to play the intro instead, hold L from Start until the screen fades).
+Please don't attach ROMs or cartridges (`sm.gba`): they contain Nintendo's
+data. `sm-engine.gba` is fine.
 
-| Screen      | Buttons                                                                 |
-|-------------|-------------------------------------------------------------------------|
-| Planet Zebes | Up and Left, Down and Right or Select: another area. A or Start: that area |
-| Area map    | Select: the next station; after an area's last, its bosses; then the first again. D-pad: scroll the map. A or Start: spawn. B: back to the areas |
-|             | L: Samus as saved, or with ALL ITEMS                                    |
+Some bugs are the original game's, kept faithfully by the decompilation;
+those found while porting are listed in
+[docs/UPSTREAM-ISSUES.md](docs/UPSTREAM-ISSUES.md).
 
-The map shows every room of the area, as if its map station had been used
-(your file keeps what it had explored: the map is only dressed up while it's
-up), and every station, visited or not: the area's save stations and
-elevators, then the **debug stations**, numbered from 16, that no file ever
-had. The one picked is the one the blinking marker is on. Under the map, a
-line names it (or its room's number, in hex, for the unnamed), then a line
-for Select (next) and L (the loadout, as saved or ALL ITEMS), and one for the
-other buttons, each in a row of its own so they stay readable on the GBA's
-squashed screen. For a boss's door the marker stays at the station that the
-spawn loads, and the line names the boss.
+## Reading more
 
-<p align="center">
-  <img src="docs/images/dev-map.png" width="240" alt="The whole map of an area with a station picked, and the loadout under it">
-  <img src="docs/images/dev-crocomire.png" width="240" alt="Crocomire, spawned into with all items">
-  <img src="docs/images/dev-draygon.png" width="240" alt="Draygon's room, spawned into with all items">
-</p>
-
-**The debug stations.** The game's own, in the order the map steps through
-them (area, number: the room, by its pointer; it has each of the bosses' rooms
-next to one, but only the Golden Torizo's inside it):
-
-| Station | Room | Where |
-|---------|------|-------|
-| Crateria 16 | 91F8 | the landing site, at Samus's ship |
-| Crateria 17 | 94FD | |
-| Brinstar 16 | 9AD9 | |
-| Brinstar 17 | A56B | next to Kraid: a door of Kraid's room leads here |
-| Brinstar 18 | 9D19 | |
-| Norfair 16 | A7DE | |
-| Norfair 17 | A923 | next to Crocomire: a door leads into his room |
-| Norfair 18 | B37A | next to Ridley |
-| Norfair 19 | AA82 | next to Crocomire, by his room's other door |
-| Norfair 20 | B236 | |
-| Norfair 21 | B283 | the Golden Torizo's room, but the developers' spot is outside the room: the map spawns at 22's instead |
-| Norfair 22 | B283 | the Golden Torizo's room, at its left door |
-| Wrecked Ship 16 | CA08 | |
-| Wrecked Ship 17 | CC6F | next to Phantoon |
-| Maridia 16 | D1DD | |
-| Maridia 17 | D78F | next to Draygon |
-| Maridia 18 | D617 | next to Botwoon |
-| Maridia 19 | D48E | |
-| Tourian 16, 17 | DDF3 | next to Mother Brain |
-
-**The bosses.** After an area's last station, the map goes on to its bosses'
-doors (the game's own doors, from the side Samus comes in by): Bomb Torizo
-(Crateria), Spore Spawn and Kraid (Brinstar), Crocomire and Ridley (Norfair),
-Phantoon (Wrecked Ship), Botwoon and Draygon (Maridia) and Mother Brain
-(Tourian). The spawn loads the area's last station, and when Samus has her
-controls, goes through the door as if she had walked into it. (Crocomire's is
-the hatch in the ceiling of his room, as in the game. As there, beams don't
-hurt him: missiles in his mouth push him back.)
-
-**Loadout.** L toggles between AS SAVED (what your file has) and ALL ITEMS:
-1499 energy, 400 reserve, 230 missiles, 50 super missiles and 50 power bombs,
-every item, and the charge, ice, wave and plasma beams (the spazer collected,
-but plasma takes it off, as when the game gives you a beam or in its equipment
-screen: with both on, no shots showed in testing). ALL ITEMS makes every boss
-alive again, so that a file that has beaten them can fight them.
-
-A spawn with a loadout can't save: it would write the loadout over your file,
-so saving does nothing until you spawn again AS SAVED, or reset. Dying
-goes back to the map, to spawn again.
-
-**In the game.** Hold L, R and Select, and press: A to turn invincibility on
-or off, B to refill energy and ammunition, Left to freeze the enemies or let
-them go, Up to die (and so to go back to the map).
-
-The SNES debug pad's own shortcuts (Select held with L or R, then A, B or
-X: they would turn on an interrupt that menus have no handler for, or take
-Samus's missiles away) are off.
-
-These are the game's own debug features that the buttons reach (there's more
-in the code: a Draygon that a second controller moves, a scroll position
-saved and loaded, a demo recorder's pause). See the comments in
-[gba/dev_tools.c](gba/dev_tools.c) and the
-[porting guide](docs/PORTING-GUIDE.md).
+- [Building the cartridge](docs/BUILDING-GBA.md): every system, the ROM,
+  flash cartridges, saves, and what to do when something goes wrong.
+- [Developer tools](docs/DEVELOPER-TOOLS.md): start Samus at any station or
+  boss, with any loadout, to test a room or a fight without playing up to it.
+- [Progress report](docs/HOW-IT-WAS-MADE.md): from a black screen to the
+  whole game, the notable changes and the bugs found on the way, with
+  before-and-after pictures.
+- [Issues to report upstream](docs/UPSTREAM-ISSUES.md): bugs found in the
+  decompilation while porting it, with their fixes.
+- [Porting a SNES game to the GBA](docs/PORTING-GUIDE.md): a guide for agents
+  (and people) attempting a similar port. It covers the approach, the
+  hardware mapping, the tools for checking the result, and the pitfalls.
 
 ## The PC version
 
