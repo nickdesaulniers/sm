@@ -203,6 +203,14 @@ Map SNES OAM to GBA OAM every frame that OAM changes. SNES sprite priorities
 map to GBA priorities relative to the background layout. Keep a copy of
 each sprite tile row so that rows that wrap around still show correctly.
 
+The two machines stack sprites differently. The SNES draws one sprite over
+another by their places in OAM alone; the GBA by priority first, then by
+place. A boss whose sprites come after the player's in OAM but have a
+higher priority against the backgrounds (Ridley's body here) is drawn over
+the player on the GBA and under on the SNES. The port notes which sprites
+are Samus's as the game draws them, and gives the sprites after them that
+overlap her box her priority.
+
 ### Screen size
 
 The GBA's screen is 240x160 and the SNES's is 256x224. Crop 1:1 during
@@ -358,6 +366,17 @@ against ground truth headlessly. Build these tools early.
   baseline for it is made by it.
 - **Sanitizers on the PC build:** ASan and UBSan on the PC build and
   `hostrun` find the game's out-of-bounds indexing before it bites the GBA.
+- **The game's memory, watched:** `smrun`'s `MEMCHECK` (ranges from
+  `tools/memcheck_ranges.py`) logs every load and store the game's own code
+  makes outside its RAM, the cartridge, the stack and its own variables;
+  `WATCH=LO:HI` logs the writes to one range, for a victim you know;
+  `STACKCHECK` reports each stack's low-water mark. `STATE` and `STATE_OUT`
+  load and save mGBA save states, so a player's state can be replayed.
+- **A bot beside the original:** `hostrun` can also drive the PC build
+  itself, with a bot that walks every room by its doors, fights, pauses and
+  dies, comparing with the original game every frame. 2.5 million frames of
+  it found four more upstream bugs and none of the port's, and its crashes
+  under ASan found one that wrote far past the game's RAM.
 
 When the comparison tool and the port disagree, suspect both. The
 comparison script once silently compensated for the renderer's off-by-one
@@ -490,6 +509,18 @@ doesn't start) still gets its shots.
     what blinks, the minimap's marker first, and nothing else. For a change
     that speeds a load up, compare what it replaced on every call of a tour
     (the decompressed bytes, the fade's colors) rather than pictures.
+15. **The game's RAM has the port's state after it.** On the SNES an index
+    past the end of a bank wraps (the 65816's X is 16 bits) or reads open
+    bus. In the port, what's after `g_ram` is the port's own memory: a
+    block index of -1 read the copy of VRAM, so a garbage block spawned a
+    PLM and stalled a room; the X-ray scope's tables, with the beam's row
+    above the screen, were written 128 KB past their start, over the sound
+    driver's state. Keep such indices as wide as the ROM's registers
+    (`uint16`), and run `MEMCHECK` over a tour.
+16. **Restore from the source, not the hardware.** Colors the VBlank
+    handler puts back after a mid-frame patch were read from the GBA's
+    palette, which a slow frame could have left patched: the HUD then kept
+    a power bomb's yellow for good. Recompute them from the SNES's CGRAM.
 
 ## 8. Working practice
 

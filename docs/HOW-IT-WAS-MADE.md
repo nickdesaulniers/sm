@@ -6,9 +6,9 @@ scrolling worlds, and a whole second computer just for its music. The Game
 Boy Advance has 32 KB of fast RAM, a smaller screen, and a sound system that
 amounts to two 8-bit DACs and a timer.
 
-This is the first progress report, and it covers everything: two days in
-which the port went from a black screen to every room of the game, the
-bosses included, at or near 60 frames per second. That's nearly 60 commits on the
+This is the first progress report, and it covers everything: six days in
+which the port went from a black screen to the whole game, every room and
+every boss, at 60 frames per second. That's about 150 commits on the
 `gba-port` branch. Some of them are big features, some fix bugs that took
 an afternoon to find and a line to fix, and a few are the tools that made
 the rest checkable. One fixes the same bug twice, a day apart.
@@ -98,6 +98,10 @@ cuts words in half. Outside gameplay the port shows the whole SNES screen,
 squashed: 6 of every 8 lines, always the same two rows of each tile, and
 sprites scaled by 3/4.
 
+![Before and after: the title screen cropped, then the whole screen squashed](images/progress/squash-title.png)
+
+*The title screen, before (left) and after.*
+
 This commit also fixed a black pause screen. Its BG3 is a black fill behind
 everything, in tiles without the priority bit, but the GBA has no fifth
 background to split BG3 by priority, so the renderer had put all of BG3 in
@@ -142,12 +146,20 @@ or subtracts is folded into the palette. The SNES's two windows, which shape
 the X-ray scope's cone and power bombs' blasts, map onto the GBA's two, with
 their edges moving every line in the same DMA stream as the scrolling.
 
+![Before and after: the landing site with a flat sky, then with fog and rain](images/progress/color-math.png)
+
+*The landing on Zebes, before (left) and after.*
+
 Subtraction had to wait.
 
 ### eb37393, 1078097 - The hills that wouldn't let Samus climb
 
-With the picture and sound working, Samus landed on Zebes, walked right, and
-stopped at the foot of the first hill. She couldn't climb a slope.
+With the picture and sound working, Samus landed on Zebes, set off, and
+stopped on the first hill. She couldn't climb a slope.
+
+![Before and after: Samus stuck on the hill, then over it and onto the next](images/progress/slopes.png)
+
+*The same steps from the ship, before (left) and after.*
 
 Playing and guessing wasn't going to find this one, so the port gained a
 flight recorder. A trace build logs the joypad and a hash of the game's
@@ -178,6 +190,10 @@ every room, that the first background is the one worth splitting by
 priority. Now it counts each background's priority tiles as it converts
 their maps, and in a frame where the second shows more, it splits that one
 instead.
+
+![Before and after: Ridley's room as an empty blue field, then with its walls and blocks](images/progress/ridley-door.png)
+
+*Ridley's room after he leaves, before (left) and after.*
 
 ### 229d58e, b8cbbbc - Every room, one by one
 
@@ -226,6 +242,10 @@ the SNES's picture. The tour ran again after every fix:
   stepped down the screen in multiples of eight lines, so every sample
   landed on the same row of its tile and missed the thin lines of Maridia's
   shadow pattern entirely.
+
+![Before and after: a fog room all black, then the room with Samus](images/progress/fog-room.png)
+
+*A room with fog, before (left) and after.*
 
 After all that, 252 of the 254 rooms matched the SNES to within 5%, most of
 them pixel for pixel. The total difference was a ninth of what it was.
@@ -313,6 +333,10 @@ scrolling. As tiles are converted, row 0 is merged into row 1 and row 4 into
 row 3, keeping whichever pixel is brighter. Letters keep their strokes over
 their outlines and shadows, and nothing changes as you look at it.
 
+![Before and after: the file select reading NO UAIA, then NO DATA](images/progress/squash-text.png)
+
+*The file select, before (left) and after.*
+
 Sprites got the same care. Eight-line sprites (mostly text, like "©1994
 Nintendo") aren't scaled any more. Sprites flipped left to right had lost a
 column, because the GBA flips a scaled sprite about its middle and takes
@@ -342,6 +366,14 @@ Then the details:
   let you remap them, though the GBA's controls are fixed. It now draws the
   GBA's buttons, with round A and B, shoulder tabs and a d-pad, and only END
   and RESET do anything.
+
+![Before and after: the super missile box naming the X button, then the GBA buttons](images/progress/item-box.png)
+
+*The super missile pickup, before (left) and after.*
+
+![Before and after: CONTROLLER SETTING MODE with the SNES's buttons, then CONTROLS with the GBA's](images/progress/controls.png)
+
+*The options menu, before (left) and today.*
 
 ### be704b4 - The tour finds a crash
 
@@ -444,6 +476,232 @@ from 35.6 to 49.3. Across the whole tour, the rooms taking more than 60
 VBlanks for 60 frames went from 24 to 6, and the slowest room went from
 55.4 fps to 59.0. Not a single cycle of work was saved.
 
+### 04593b4, 7253795, e045cbb - The last slow rooms
+
+With presenting late in VBlank, the tour's slow rooms came down to a
+handful, and each had its own reason.
+
+A power bomb shapes its blast with two HDMA channels writing a window's
+edges on every line. The port replayed them a byte at a time from the
+cartridge, each byte through a function call, and in the Glass Tunnel,
+with Maridia's water and shadows on top, the blast's two seconds ran at 25
+and 29 fps. Now those channels read the lines from the same baked tables as
+the water's scrolling, in an ARM loop: 47-49 fps, and checked against the
+old code every frame of the scene.
+
+The Glass Tunnel also ran over every few frames when nothing was happening.
+Maridia's water table slides a line every eight frames or so, and baking its
+one new line walked all 224 entries from the table's start: 28,000 cycles,
+now 1,100. The shadows' search for the color to subtract did all its work
+in four of every sixteen frames; it's spread over fifteen now.
+
+Ridley's fights were last. Ceres's background is a gradient written to the
+fixed color on every line, so every line was a new state for the renderer
+to stop at: some 30,000 cycles a frame, for a gradient the GBA can't show
+anyway. Those channels now run on their own, after the others. Ceres Ridley
+went to 59.7 fps on average and Zebes's to 59.5, and the tour's 255 rooms
+all took 60 VBlanks for 60 frames, for the first time.
+
+### f1694a0, 30bff63 - White flashes at doors
+
+Presenting late had a cost, found by play testing: white flashes and
+scrambled tiles at doors. A slow frame with the screen off had set the
+GBA's forced blank, which shows white, not the SNES's black. And a late
+present with a room's worth of tiles to convert ran on into the picture,
+which showed the last frame's maps over the new tiles.
+
+The first fix only presented late when the work would fit in VBlank, and
+lost the doors their speed: 57 seconds of the tour ran slow, from 14. The
+second made running over safe instead. A present that runs into the
+picture takes the display over from the line it's at, and may do so on
+purpose as long as it ends within the HUD's lines, where the old frame and
+the new look the same.
+
+### bbb5df7, 0a6692d, and seven more - A day of speed
+
+With every room at 60, the next goal was headroom. About ten branches
+worked at once on different parts of the frame, each measured over the
+whole tour and each checked to change no picture:
+
+| Change | Cycles a frame saved, over the tour |
+|---|---|
+| Capture builds the line streams a run of lines at a time | 26,094 |
+| HDMA decoded only when its inputs change; scroll channels as patches | 11,900 |
+| The scroll stream fills runs of equal lines with one store multiple | 8,766 |
+| Game code compiled with `g_ram` as a constant, loops unrolled by 4 | 7,288 |
+| The mixer, echo and envelopes reworked | 7,200 |
+| Only changed palette blocks and sprites converted | 7.2% |
+| Echo skipped when it can't be heard | 6,175 |
+| Faster SNES register and DMA writes | 5,700 |
+| `memcpy` and `memset` in assembly; ARM entry points for Thumb callers | 5,205 |
+
+The tour's average frame went from about 196,000 cycles to 112,000, of the
+280,000 there are. The unrolling was measured at 2, 4 and 8: 4 kept 95% of
+8's gain for a fifth of its ROM. Doors got their own branch: the room's
+decompression in ARM from IWRAM, 4.7 times faster, and the fades from
+tables, for a median of 109 GBA frames, from 116.
+
+### d8137f8, da9bf1b, d170f2c - Text on the squashed screens, again
+
+![Before and after: the equipment screen, with cut-off labels under a stale CRATERIA heading, then SAMUS and whole labels](images/progress/pause-text.png)
+
+*The equipment screen, before (left) and after.*
+
+The squashed screens had kept the menus' text readable, but the pause
+screen's was in other palettes, and its ink lost to its background when
+two rows merged. The planet map's heading is letters made of two 8-line
+sprites, one above the other; squashed, they overlapped by two lines, and
+PLANET ZEBES read as ZEDE8.
+
+Then the font itself. Merging row 4 into row 3 closed a C's lower stroke
+into an O ("DATA OOPY"), turned an R into an A, and the HUD's 3 into a 2.
+So the fonts are redrawn when the cartridge is made from your ROM: of each
+tile's 8 rows, `tools/squash_font.py` drops the two that lose the least,
+the same two for every letter of a font, and puts the other six where the
+squash will show them. The squashed screens use a redrawn tile where the
+game's matches it exactly; gameplay is untouched.
+
+### 32ca124, fc53912 - Developer tools and a scenario tour
+
+Super Metroid still has its developers' debug mode, with a map that spawns
+Samus at any save station, the debug ones included. Nothing in the game
+turns it on; on the GBA, L, R and Start on the title screen do. The port
+adds a loadout picker, every boss's door, and in gameplay invincibility,
+refills, frozen enemies and a quick death.
+
+That made a second tour possible. The room tour visits every room but
+fights nothing. The scenario tour spawns Samus with a loadout and plays a
+script: each of the 24 beam combinations charged and uncharged, missiles,
+bombs, power bombs, the X-ray scope, the grapple, the screw attack, the
+speed booster, and every boss's fight, played to the boss's death and out
+of the room, with a picture every few frames. Each picture is compared with
+`snesref`'s, and each second is timed. It found most of what follows.
+
+### 597ed01, ea0916b, fef73b1 - Which half of BG2
+
+The GBA has four backgrounds and the SNES's Mode 1 needs five, so each
+frame one SNES layer, BG1 or BG2, is split in two by tile priority and the
+other isn't. The renderer chose by counting priority tiles. Three bosses
+proved the count wrong.
+
+![Before and after: Crocomire's legs alone, then his whole body](images/progress/crocomire.png)
+
+*Crocomire, before (left) and after.*
+
+Crocomire's head and torso are BG2's priority tiles, but BG1's floor and
+ceiling had more, so BG2 wasn't split, and his body went behind BG1's wall.
+
+![Before and after: Kraid's cave with his body missing, then Kraid filling the right half](images/progress/kraid.png)
+
+*Kraid, mid-fight, before (left) and after.*
+
+Kraid's whole body is BG2's priority tiles, and his cave's wall is BG1's.
+Whenever the screen's shaking showed four more of the wall's priority tiles
+than his, the split went to BG1, and Kraid vanished for a second or so at a
+time. A play tester found that one, and the boss scenarios, which took a
+picture every ten seconds, had missed it. They take one every few frames
+now.
+
+Mother Brain was hidden from the waist up, 128 of BG2's tiles to 268 of
+BG1's. The split now samples the screen where BG2's priority tiles lie over
+BG1's, every fourth frame, and looks at what you'd actually see.
+
+### be95371 - Power bombs in color, the X-ray scope at 60
+
+![Before and after: a power bomb's blast in grey, then yellow](images/progress/power-bomb.png)
+
+*A power bomb's blast, before (left) and after.*
+
+A power bomb's blast is yellow on the SNES, stepping through white to
+orange, and it was pale grey on the GBA. The SNES makes it with the fixed
+color, shown through a window in a solid black BG3, and the GBA can only
+brighten toward white. But with BG3 solid black, BG3 can *be* the fixed
+color: its palettes are patched to it and shown only where the SNES's
+window would show it. Every scenario picture through a blast now matches
+`snesref`'s, from 62.9% different at the worst.
+
+The X-ray scope's slowest second was 50.5 fps. Its setup read two tilemaps
+back from VRAM a byte at a time, and the game searched the X-ray table for
+each block, 272 times in one frame. Words, and a small cache of the
+search's answers, brought it to 59.7.
+
+### 102f836 - The lava nobody saw
+
+![Before and after: a Norfair room with no lava, then lava up to Samus's knees](images/progress/lava.png)
+
+*A room in Norfair, before (left) and after.*
+
+Norfair's lava and Lower Norfair's acid weren't drawn at all, anywhere.
+Two HDMA channels write BG3's vertical scroll, the lava's and then the
+HUD's, and the HUD's table ends at line 31. The renderer let the later
+channel's value hold to the bottom of the screen, so BG3 stayed at 0 and
+the lava never appeared.
+
+The tour never showed it because `snesref` draws from the same captured
+lines as the GBA, so both were wrong together. It only matters where the
+lava's surface is on screen, which the camera rarely shows when Samus
+isn't near it. The lava scenarios now raise the surface to her.
+
+### db48d13 - Maridia's sand
+
+![Before and after: Maridia's sand pale, then yellow](images/progress/maridia-sand.png)
+
+*Maridia, before (left) and after. The sand is the SNES's now; the wall above it is a little too purple, still.*
+
+Maridia's shadows subtract, which the GBA approximates by subtracting one
+color from the room in the palette and adding the shadow's difference back
+on top. The color is picked from samples of the screen. On sand dithered
+from two colors, the search picked a color between them that suited
+neither, and the sand came out pale. It now picks by squared error.
+
+### 1340e0c - The rainbow beam
+
+![Before and after: Mother Brain's beam as a grey wedge, then solid orange](images/progress/rainbow.png)
+
+*The rainbow beam, before (left) and after. It cycles through the rainbow.*
+
+Mother Brain's rainbow beam is drawn on the SNES by color math: a fixed
+color, cycling through the rainbow, added inside a window shaped like the
+beam. On the GBA it was a pale grey wedge. Now it's a solid layer of that
+color, shown through the window and added by the GBA's own blending.
+
+### 20a7b94 - Samus in front
+
+![Before and after, zoomed: Ridley's body over Samus, then Samus in front](images/progress/samus-front.png)
+
+*Ridley and Samus in Ceres, zoomed in, before (left) and after.*
+
+The SNES stacks sprites by their places in OAM; the GBA by their priority
+against the backgrounds first. Ridley's body comes after Samus in OAM but
+has the higher priority, so on the GBA he was drawn over her. The port now
+notes which sprites are Samus's as the game draws them, and gives the
+sprites after them that overlap her the same priority.
+
+### f4ed537, cf483c4, 712ad25 - Reading past the end
+
+Two of the strangest bugs had the same shape. The game's 128 KB of RAM is
+one array in the port, and what's after it is the port's own memory, where
+on the SNES an index wraps around in a 16-bit register.
+
+The room tour sometimes stalled in one room, but only when an
+unrelated change moved the build's layout. Samus, mid-door, was outside
+the room, so the game looked up her block at index -1, read the byte
+before the level data, and on the GBA got the port's copy of VRAM. A
+garbage block type spawned a garbage object. A new `smrun` option,
+`MEMCHECK`, logs every load and store the game's code makes outside its
+own memory, and found it at once. The read now gets what the SNES's 16-bit
+index gets.
+
+Then a bot. `hostrun` drove the PC build through 2.5 million frames, every
+room by its doors, bombs, missiles, the X-ray scope, pausing, deaths, the
+intro, Ceres and the bosses, comparing with the original game every frame.
+Nothing the port changed differed. It found four more bugs that upstream
+has too ([listed here](UPSTREAM-ISSUES.md)). One of them, the X-ray scope
+with its beam starting above the screen, wrote its tables up to 128 KB past
+where they belong. On the PC that crashed. On the GBA it overwrote the
+sound driver's state, which sits right after the game's RAM. The indices
+are 16 bits now, as the ROM's are, and every write stays in the game's RAM.
+
 ## Other changes
 
 - **23234ee** The build makes `sm-engine.gba` with none of the game's data,
@@ -468,15 +726,36 @@ VBlanks for 60 frames went from 24 to 6, and the slowest room went from
   room for 60 frames once the camera has stood still for 60. Coming into a
   room, the camera scrolls to Samus for seconds and with pauses, and timing
   that measured the scroll, not the room.
+- **70b7986** Ceres's escape message was under the HUD while Samus stood on
+  the floor of Ridley's room, and its timer's last digit was off the right
+  edge. Both are in view now.
+- **2904b92** Pausing and unpausing fade the room out and in at its own
+  size, rather than squashed, then popping back.
+- **1ad30cf** B on the file select hung the game: the port didn't resume
+  the reset code where the PC build does.
+- **9a59c33** Select only works with R held, and cycles what R readies:
+  missiles, super missiles, power bombs, the grapple beam, the X-ray scope.
+- **e4d7e77** Running through the landing site, every 10-15 frames one
+  frame cost a whole frame's cycles, as BG1's and BG2's split flipped and
+  both maps were converted again. A flip converts only the priority tiles'
+  chunks now, with a hand-written map converter in assembly.
+- **b6a3b9b** After a power bomb or a fade, the HUD could keep the blast's
+  yellow or the fade's grey for good: the colors put back after the HUD's
+  lines were read from the GBA's palette, which a slow frame had left
+  patched. They're computed from the SNES's palette now.
+- **b17b86e, 922c632** The options menu's controller screen is CONTROLS,
+  showing the GBA's buttons, with no remapping to reset.
+- **fb2ea2e, 61d0605** Making the cartridge from your ROM is friendlier:
+  any file name, a zip, or a directory searched by checksum, and an error
+  that says what's wrong.
 
 ## What's left
 
-This report covers the port's first two days. As of October 25, timed over
-the whole tour and settled in each room, every room runs at 60 fps: all 255
-take 60 VBlanks for 60 frames. Every boss's fight, played to the end, averages
-59.7 fps, and doors take a median of 107 GBA frames where the SNES takes
-105. Power bombs' blasts are yellow, and the X-ray scope runs at full speed.
-Some things are still slow, for a second or so at a time:
+As of October 25, timed over the whole tour and settled in each room, every
+room runs at 60 fps: all 255 take 60 VBlanks for 60 frames. Every boss's
+fight, played to the end, averages 59.7 fps, and doors take a median of 107
+GBA frames where the SNES takes 105. Some things are still slow, for a
+second or so at a time:
 
 - Kraid's worst second is 53 fps, Crocomire's 56, and one of the 22 seconds
   of Ridley's fight in Ceres runs at 55.
