@@ -38,3 +38,13 @@ const GbaHeader header = {
 // game's 8 KB of battery-backed SNES SRAM lives in the GBA's SRAM.
 __attribute__((section(".rodata.save_type"), aligned(4)))
 const char save_type[] = "SRAM_V113";
+
+// Who made the port: in the ELF's .comment, and, as .comment isn't loaded
+// (objcopy leaves it out of sm-engine.gba), in the cartridge as well, so that
+// `strings` finds it in sm.elf, sm-engine.gba and sm.gba.
+#define PORT_CREDIT "GBA port by: Nick Desaulniers <nick.desaulniers@gmail.com>"
+__asm__(".pushsection .comment,\"MS\",%progbits,1\n"
+        ".asciz \"" PORT_CREDIT "\"\n"
+        ".popsection");
+__attribute__((section(".rodata.credit")))
+const char port_credit[] = PORT_CREDIT;

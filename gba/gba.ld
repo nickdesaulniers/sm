@@ -37,6 +37,8 @@ SECTIONS {
     .rodata : {
         /* Read by mGBA and flash carts for the save type: nothing refers to it. */
         KEEP(*(.rodata.save_type))
+        /* The port's credit (header.c), for `strings`: nothing refers to it. */
+        KEEP(*(.rodata.credit))
         *(.rodata .rodata.*)
     } > rom
 
@@ -90,5 +92,5 @@ SECTIONS {
     __cart_data = LOADADDR(.rom_end) + SIZEOF(.rom_end);
     snes_rom = __cart_data + 256;
 
-    /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment) }
+    /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) }
 }
