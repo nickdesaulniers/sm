@@ -39,14 +39,16 @@ the ARM target: Apple's clang from Xcode won't do. No devkitARM or GCC.
 
 | System          | Install                                                          |
 |-----------------|------------------------------------------------------------------|
-| Debian, Ubuntu  | `sudo apt install clang lld llvm cmake python3 git`              |
+| Debian, Ubuntu  | LLVM 22 from [apt.llvm.org](https://apt.llvm.org) (`sudo bash llvm.sh 22`), then `sudo apt install cmake python3 git` and `export PATH=/usr/lib/llvm-22/bin:$PATH` |
 | Fedora          | `sudo dnf install clang lld llvm cmake python3 git`              |
 | Arch            | `sudo pacman -S clang lld llvm cmake python git`                 |
 | macOS (Homebrew)| `brew install llvm lld cmake python git`, then `export PATH="$(brew --prefix llvm)/bin:$PATH"` |
 | Windows         | Use WSL2 with Ubuntu and follow the Debian line, or use the release's engine (below) |
 
-(Fedora was tried here with clang 22.1.8. CI builds with the packages of
-Ubuntu 24.04. macOS and WSL are not tested.)
+(Fedora was tried here with clang 22.1.8; CI builds on Ubuntu 24.04 with
+apt.llvm.org's 22.1.8, and the two engines are the same bytes. An older clang
+may not fit: Ubuntu 24.04's own clang 18 overflows IWRAM. macOS and WSL are
+not tested.)
 
 Then, in a clone of the `gba-port` branch with the ROM in it (any name):
 
