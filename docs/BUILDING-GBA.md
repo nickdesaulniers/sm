@@ -3,9 +3,10 @@
 The repository has none of the game's data, so the cartridge, `sm.gba`, is
 made on your machine from your own Super Metroid ROM. There are two ways:
 
-- **Build everything** with `./build-gba.sh`: compiles the engine, then adds
-  the ROM's data. Needs a compiler (below).
-- **Use a release's engine** and add the data with Python 3 alone: no compiler.
+- **[From a release](#from-a-release):** download the engine and add the
+  ROM's data with Python 3 alone. No compiler.
+- **[From source](#from-source):** clone this repository and build
+  everything with `./build-gba.sh`. Needs LLVM 22.
 
 ## The ROM
 
@@ -31,7 +32,25 @@ say which it was (or, if none, which files were the right size but not it,
 and why). `./build-gba.sh` with no argument looks in the repository's
 directory.
 
-## Building everything
+## From a release
+
+No compiler needed, only Python 3.
+
+Download `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` from one
+release (the
+[latest](https://github.com/nickdesaulniers/sm/releases/latest), or
+[any](https://github.com/nickdesaulniers/sm/releases)) into one folder, put
+the ROM there, and run:
+
+```
+python3 make_cartridge.py sm-engine.gba . sm.gba
+```
+
+Python 3 (any recent version) is all it needs; it takes a second or so. Use all
+three files from the same release: a cartridge made with a script from another
+version doesn't start (see below).
+
+## From source
 
 You need clang and lld (LLVM 22 was used), llvm-objcopy, CMake 3.20 or newer,
 Python 3 and git, on a Unix-like system. The compiler must be LLVM's own with
@@ -39,22 +58,26 @@ the ARM target: Apple's clang from Xcode won't do. No devkitARM or GCC.
 
 | System          | Install                                                          |
 |-----------------|------------------------------------------------------------------|
-| Debian, Ubuntu  | LLVM 22 from [apt.llvm.org](https://apt.llvm.org) (`sudo bash llvm.sh 22`), then `sudo apt install cmake python3 git` and `export PATH=/usr/lib/llvm-22/bin:$PATH` |
+| Debian, Ubuntu  | LLVM 22 from [apt.llvm.org](https://apt.llvm.org) (`wget https://apt.llvm.org/llvm.sh && sudo bash llvm.sh 22`), then `sudo apt install cmake python3 git` and `export PATH=/usr/lib/llvm-22/bin:$PATH` |
 | Fedora          | `sudo dnf install clang lld llvm cmake python3 git`              |
 | Arch            | `sudo pacman -S clang lld llvm cmake python git`                 |
 | macOS (Homebrew)| `brew install llvm lld cmake python git`, then `export PATH="$(brew --prefix llvm)/bin:$PATH"` |
-| Windows         | Use WSL2 with Ubuntu and follow the Debian line, or use the release's engine (below) |
+| Windows         | Use WSL2 with Ubuntu and follow the Debian line, or use a release (above) |
 
 (Fedora was tried here with clang 22.1.8; CI builds on Ubuntu 24.04 with
 apt.llvm.org's 22.1.8, and the two engines are the same bytes. An older clang
 may not fit: Ubuntu 24.04's own clang 18 overflows IWRAM. macOS and WSL are
 not tested.)
 
-Then, in a clone of the `gba-port` branch with the ROM in it (any name):
+Then clone the `gba-port` branch, put the ROM in it (any name), and build:
 
 ```
+git clone -b gba-port https://github.com/nickdesaulniers/sm.git sm
+cd sm
 ./build-gba.sh
 ```
+
+(Or give the script the ROM's path, or a directory it's in.)
 
 It checks the tools and the ROM first and stops with a message if one is
 missing or wrong. The first build fetches the sources of LLVM's compiler-rt
@@ -87,19 +110,6 @@ Without `SM_ROM` and no ROM in the repository's directory, only
 
 The others (`SM_SCENARIOS`, `SM_ROOM_TOUR`, ...) are for testing; see the
 [porting guide](PORTING-GUIDE.md).
-
-## Using a release's engine
-
-Download `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` from one
-[release](https://github.com/nickdesaulniers/sm/releases) into one folder, put the ROM there, and run:
-
-```
-python3 make_cartridge.py sm-engine.gba . sm.gba
-```
-
-Python 3 (any recent version) is all it needs; it takes a second or so. Use all
-three files from the same release: a cartridge made with a script from another
-version doesn't start (see below).
 
 ## Running it
 

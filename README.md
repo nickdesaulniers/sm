@@ -34,73 +34,41 @@ own copy of the SNES ROM.
 
 ## Making the cartridge
 
-You need your own copy of the Super Metroid ROM: the Japan/USA release,
-"Super Metroid (Japan, USA) (En,Ja)", sha1
-`da957f0d63d14cb441d215462904c4fa8519c613`. Any file name works, and so does
-a zip with the ROM in it or a ROM with a copier header. The cartridge
-contains the ROM's data, so it can't be shared.
+You need your own copy of the Super Metroid ROM (the Japan/USA release). The
+cartridge contains the ROM's data, so it can't be shared.
 
-### From a release
+- **[From a release](docs/BUILDING-GBA.md#from-a-release):** download three
+  files from the
+  [latest release](https://github.com/nickdesaulniers/sm/releases/latest)
+  and run one Python script. No compiler needed.
+- **[From source](docs/BUILDING-GBA.md#from-source):** clone this repository
+  and run `./build-gba.sh`. Needs LLVM 22.
 
-No compiler needed, only Python 3.
+Then play `sm.gba` in [mGBA](https://mgba.io) or another GBA emulator, or on
+a flash cartridge. [docs/BUILDING-GBA.md](docs/BUILDING-GBA.md) has the
+steps, the ROM's checksum, saves, flash cartridges and what each error means.
 
-1. From the [latest release](https://github.com/nickdesaulniers/sm/releases/latest), download
-   `sm-engine.gba`, `make_cartridge.py` and `squash_font.py` into one folder.
-2. Put your ROM in that folder.
-3. Run:
+## How it differs from the SNES
 
-   ```
-   python3 make_cartridge.py sm-engine.gba . sm.gba
-   ```
-
-   It finds the ROM by its checksum, says what's wrong if it isn't the right
-   one, and writes the cartridge, `sm.gba`, in a second or so.
-
-Use all three files from the same release.
-
-### From source
-
-You need LLVM 22 (clang, lld and llvm-objcopy), CMake, Python 3 and git.
-There's no devkitARM or GCC. Older clangs may not fit the code in the GBA's
-fast RAM: Ubuntu 24.04's own clang 18 doesn't. On Debian or Ubuntu, get LLVM
-22 from [apt.llvm.org](https://apt.llvm.org):
-
-```
-wget https://apt.llvm.org/llvm.sh && sudo bash llvm.sh 22
-sudo apt install cmake python3 git
-export PATH=/usr/lib/llvm-22/bin:$PATH
-```
-
-Fedora 44's own packages are LLVM 22 (`sudo dnf install clang lld llvm cmake
-python3 git`); other systems and Windows are in
-[docs/BUILDING-GBA.md](docs/BUILDING-GBA.md).
-
-1. Clone the `gba-port` branch:
-
-   ```
-   git clone -b gba-port https://github.com/nickdesaulniers/sm.git sm
-   cd sm
-   ```
-
-2. Copy your ROM into that directory, or pass its path (or a directory it's
-   in) to the script.
-3. Build:
-
-   ```
-   ./build-gba.sh
-   ```
-
-   The first build fetches LLVM's compiler-rt sources (about 30 MB) for the
-   division routines the ARM7TDMI lacks. The cartridge is `sm.gba`, in that
-   directory.
-
-### Playing it
-
-Run `sm.gba` in [mGBA](https://mgba.io) or another GBA emulator, or copy it
-to a flash cartridge. Saves go to the cartridge's SRAM (in an emulator, a
-`.sav` file next to `sm.gba`). [docs/BUILDING-GBA.md](docs/BUILDING-GBA.md)
-has the details: checking the ROM, flash cartridges and save types, building
-by hand, and what each error means.
+- **The screen.** The GBA's screen is 240x160, and the SNES's is 256x224.
+  During gameplay the GBA shows a 1:1 crop that follows Samus vertically, with
+  the HUD at the top. The title screen, menus and pause screen show the whole
+  SNES screen, squashed to fit.
+- **Controls.** The GBA has no X or Y buttons, so gameplay uses the layout
+  of the GBA Metroids: A jumps, B shoots, L aims diagonally, R readies
+  missiles, and Samus always runs. See [Controls](#controls).
+- **Sound.** The SNES's sound driver runs on the GBA's CPU, with the SNES's
+  echo, and a mixer in place of the SNES's sound chip. It sounds right but
+  has the GBA's 8-bit hiss.
+- **Effects.** The SNES's color math and windows are mapped onto the GBA's
+  blending and windows: rain, fog, water, heat shimmer, shadows, the X-ray
+  scope's cone and power bombs. The GBA can't subtract colors, so darkened
+  rooms are approximated.
+- **Speed.** Timed in every room, all run at 60 fps. Every boss's fight
+  averages 59.7 fps, though Kraid's slowest second is 53. Doors take about
+  as long as on the SNES (a median of 107 frames, against 105). Pausing, a
+  game over and the escapes drop to about 40 fps for a second as their
+  scenes load.
 
 ## Controls
 
@@ -144,25 +112,6 @@ buttons. They can't be changed there: END goes back.
 <p align="center">
   <img src="docs/images/controls.png" width="240" alt="The CONTROLS screen, with the GBA's buttons">
 </p>
-
-## How it differs from the SNES
-
-- **The screen.** The GBA's screen is 240x160, and the SNES's is 256x224.
-  During gameplay the GBA shows a 1:1 crop that follows Samus vertically, with
-  the HUD at the top. The title screen, menus and pause screen show the whole
-  SNES screen, squashed to fit.
-- **Sound.** The SNES's sound driver runs on the GBA's CPU, with the SNES's
-  echo, and a mixer in place of the SNES's sound chip. It sounds right but
-  has the GBA's 8-bit hiss.
-- **Effects.** The SNES's color math and windows are mapped onto the GBA's
-  blending and windows: rain, fog, water, heat shimmer, shadows, the X-ray
-  scope's cone and power bombs. The GBA can't subtract colors, so darkened
-  rooms are approximated.
-- **Speed.** Timed in every room, all run at 60 fps. Every boss's fight
-  averages 59.7 fps, though Kraid's slowest second is 53. Doors take about
-  as long as on the SNES (a median of 107 frames, against 105). Pausing, a
-  game over and the escapes drop to about 40 fps for a second as their
-  scenes load.
 
 ## Reporting issues
 
