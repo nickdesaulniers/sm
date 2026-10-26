@@ -4,9 +4,14 @@ Problems in the decompilation itself (`src/`), found while porting it to
 the GBA, that affect the upstream PC build too or would affect any other
 port. Each has the fix this branch made, to offer upstream (issues 8 to 11,
 found by running the C beside the original, say where they have a fix checked
-in a copy instead). None has been reported yet.
+in a copy instead), linked to its commit.
+
+Issues 1 to 5 are reported upstream, each linked under its heading. 6 to 11
+aren't yet.
 
 ## 1. Overlapping `memcpy` when a room loads
+
+**Reported:** [snesrev/sm#51](https://github.com/snesrev/sm/issues/51)
 
 **Where:** `src/sm_82.c`, `LoadLevelDataAndOtherThings` and
 `LoadLevelScrollAndCre`.
@@ -25,12 +30,14 @@ PC build works. A plain front-to-back `memcpy` (as on the GBA) corrupts the
 data: on the landing site, Samus couldn't climb the hills, because their
 slopes' BTS came out wrong.
 
-**Fix:** `memmove` for these four calls (commit 1078097 on this branch).
+**Fix:** `memmove` for these four calls (commit [1078097](https://github.com/nickdesaulniers/sm/commit/1078097) on this branch).
 A Zebes playthrough on the PC build with an overlap-checking `memcpy`
 caught the overlaps (in `LoadLevelDataAndOtherThings`; the other function
 copies the same way) and found no other overlapping copies.
 
 ## 2. Functions used in only one file aren't `static`
+
+**Reported:** [snesrev/sm#52](https://github.com/snesrev/sm/issues/52)
 
 **Where:** throughout `src/`, with prototypes in `src/funcs.h`.
 
@@ -42,10 +49,12 @@ linkage: about 240 KB of code nothing calls. Being non-static also hides
 from the compiler that it sees every caller.
 
 **Fix:** make them `static`, and move their prototypes from `funcs.h` into
-their files (commit b74d1c0). The PC build (gcc, `-Werror`) still builds,
+their files (commit [b74d1c0](https://github.com/nickdesaulniers/sm/commit/b74d1c0)). The PC build (gcc, `-Werror`) still builds,
 and the C still matches the original frame by frame.
 
 ## 3. A leftover debugging `printf`
+
+**Reported:** [snesrev/sm#53](https://github.com/snesrev/sm/issues/53)
 
 **Where:** `src/sm_90.c`, `Samus_HandleAnimDelay`.
 
@@ -53,9 +62,11 @@ and the C still matches the original frame by frame.
 a delay marker, which happens every few frames during play, and prints to
 stdout.
 
-**Fix:** remove it (commit 5691898).
+**Fix:** remove it (commit [5691898](https://github.com/nickdesaulniers/sm/commit/5691898)).
 
 ## 4. The menu tilemap is declared a quarter of its size
+
+**Reported:** [snesrev/sm#54](https://github.com/snesrev/sm/issues/54)
 
 **Where:** `src/ida_types.h`, `Ram3000_Menu`; used in `src/sm_81.c`.
 
@@ -68,10 +79,14 @@ past that array's 1024 entries. It's all within `g_ram`, so nothing goes
 wrong, but UBSan reports the index out of bounds.
 
 **Fix:** declare it `uint8 menu_tilemap[2048]`, and fill it as itself in
-`FileSelectMenu_1_LoadFileSelectMenuBG2` (commit f6c58ee). The C still
+`FileSelectMenu_1_LoadFileSelectMenuBG2` (commit [f6c58ee](https://github.com/nickdesaulniers/sm/commit/f6c58ee)). The C still
 matches the original frame by frame.
 
 ## 5. Tables indexed by a block's BTS, past their end
+
+**Reported:** [snesrev/sm#55](https://github.com/snesrev/sm/issues/55)
+(the spike and grapple functions; `BlockInsideReact_SpecialAir`, found
+later, isn't in it yet)
 
 **Where:** `src/sm_94.c`: `BlockInsideReact_SpikeAir`,
 `BlockColl_Horiz_SpikeBlock` and `BlockColl_Vert_SpikeBlock`,
@@ -88,9 +103,9 @@ the next code's bytes for addresses. In C it's undefined; on the GBA, with
 Samus held inside a block in a Maridia room by a test that walks every room,
 it called a null pointer and reset (which pointer depended on the build).
 
-**Fix:** a BTS past the table does nothing (commit be704b4; and for
+**Fix:** a BTS past the table does nothing (commit [be704b4](https://github.com/nickdesaulniers/sm/commit/be704b4); and for
 `BlockInsideReact_SpecialAir`, whose BTS 80 to 127 read the data after its
-table, the commit that adds the developer tools). That one showed up
+table, [32ca124](https://github.com/nickdesaulniers/sm/commit/32ca124), the commit that adds the developer tools). That one showed up
 when adding a few statics moved the others: with Samus outside the room (the
 tour's door transitions run her handler with her at x = -185 for a moment;
 the developers' debug station Norfair 21 starts her out of bounds), her
@@ -115,7 +130,7 @@ jumped into the weeds. (The SNES's reset vector runs at once.)
 
 **Fix:** `RunOneFrameOfGameInner` returns after `ReadJoypadInputs` if
 `game_state` is 0xffff, and the frame ends as the other soft resets do
-(commit: the one that adds the developer tools).
+(commit [32ca124](https://github.com/nickdesaulniers/sm/commit/32ca124), the one that adds the developer tools).
 
 ## 7. A block index of -1 reads past `level_data` and `BTS`
 
@@ -137,8 +152,8 @@ VRAM), so the block's type and BTS were garbage: a BTS of 0x80 or more in
 the tour reset in room D2D9 (issue 5) and could leave a door transition on
 a black screen.
 
-**Fix:** `LevelDataAt` and `BtsAt` (`src/variables.h`) read as the SNES
-does, `$7E:0000` and the open bus's `$7F` (the instruction's bank byte, the
+**Fix:** `LevelDataAt` and `BtsAt` (`src/variables.h`, commit
+[f4ed537](https://github.com/nickdesaulniers/sm/commit/f4ed537)) read as the SNES does, `$7E:0000` and the open bus's `$7F` (the instruction's bank byte, the
 last thing on the bus, as emulators have it), and the reads go through
 them; in the room, they are the arrays. Found by smrun's MEMCHECK
 (`tools/memcheck_ranges.py`), which logs every load and store the game's
@@ -220,7 +235,7 @@ it as 16 bits, signed and unsigned.
 
 `main` crashes the same way.
 
-**Fix:** made here (`src/sm_91.c`): `uint16` for `p`, `t`, `v0`
+**Fix:** made here (`src/sm_91.c`, commit [712ad25](https://github.com/nickdesaulniers/sm/commit/712ad25)): `uint16` for `p`, `t`, `v0`
 (and `(uint16)(p - 2) >> 1` where it's an index) and for the fills' `pos`,
 with `(int16)(pos -= 2) >= 0` in the up fills, keep every write in `g_ram`,
 and the run goes on (an AddressSanitizer test of every angle, with the
