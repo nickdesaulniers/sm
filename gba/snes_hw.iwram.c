@@ -19,7 +19,7 @@ uint8_t g_oam[544] __attribute__((aligned(4)));
 uint8_t g_oam_used;
 // The blocks of sprites the last upload of all of OAM compared, with 1
 // added, or 0 if g_oam might differ from the game's anywhere (see FastDma).
-static uint8_t oam_prev_blocks;
+uint8_t oam_prev_blocks;
 uint16_t g_vram[kVramWords] __attribute__((aligned(4)));
 uint32_t g_vram_dirty[kVramChunks / 32];
 // The game wrote HDMAEN: HDMA's decoded channels are out of date.

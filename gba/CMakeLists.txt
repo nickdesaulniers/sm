@@ -170,6 +170,8 @@ target_link_options(sm_gba PRIVATE
     -Wl,--gc-sections
     # The game's calls to ClearUnusedOam go to rtl.c's, faster.
     -Wl,--wrap=ClearUnusedOam
+    # And the sprites of Samus's are noted, for render.iwram.c's order of sprites.
+    -Wl,--wrap=DrawSamusSpritemap
 )
 
 # The engine, sm-engine.gba, has none of the game's data: make_cartridge.py

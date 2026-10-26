@@ -26,6 +26,8 @@
 // In a frame that adds BG3 to BG2 but not BG1 (bg3_mid), BG1's layers and
 // sprites go a priority higher (0 and 1; sprites 0-3), for BG3 to go
 // between BG1 and BG2.
+// (The SNES orders sprites among themselves by their places in OAM only, the GBA by priority
+// first: see KeepSamusInFront.)
 //
 // GBA VRAM:
 //   0x0000-0x7FFF  BG1/BG2 tiles (the SNES's 1024 at BG1's base)
@@ -2449,6 +2451,80 @@ ROM_CODE static void UpdateOamSquashed(uint32_t blocks, bool unused_hide) {
   }
 }
 
+// The SNES draws sprites over each other by their places in OAM alone, and the GBA by priority
+// first (see kObjPriorities): so Ridley's body (priority 3, in later places than Samus's, of 2)
+// came out over her. The sprites after Samus's (|first| to |end|, from rtl.c) of a higher
+// priority than hers, that overlap their box, are put to hers. Returns whether any was.
+ROM_CODE static bool PutSamusInFront(uint32_t first, uint32_t end, uint32_t drawn,
+                                     uint32_t priorities, const uint8_t *shapes) {
+  const uint32_t *sprites = (const uint32_t *)g_oam;
+  int x0 = 512, x1 = -512, y0 = 256, y1 = -1;
+  uint32_t samus = 0;
+  for (uint32_t i = first; i < end; i++) {
+    uint32_t e = sprites[i], high = g_oam[512 + (i >> 2)] >> ((i & 3) * 2);
+    if ((e & 0xff00) == 0xf000)
+      continue;
+    int x = (e & 0xff) | (high & 1) << 8, y = e >> 8 & 0xff, shape = shapes[high >> 1 & 1];
+    x -= x >= 256 ? 512 : 0;
+    if (y >= kSnesLines || x + kObjWidth[shape] <= 0 || x >= 256)
+      continue;  // (not on the screen: the game draws her off it, as the room tour does)
+    x0 = x < x0 ? x : x0;
+    x1 = x + kObjWidth[shape] > x1 ? x + kObjWidth[shape] : x1;
+    y0 = y < y0 ? y : y0;
+    y1 = y + kObjHeight[shape] > y1 ? y + kObjHeight[shape] : y1;
+    samus = priorities >> (e >> 27 & 6) & 3;
+  }
+  bool kept = false;
+  for (uint32_t i = end; i < drawn && x1 > x0; i++) {
+    uint32_t e = sprites[i], high = g_oam[512 + (i >> 2)] >> ((i & 3) * 2);
+    uint32_t priority = priorities >> (e >> 27 & 6) & 3;
+    if ((e & 0xff00) == 0xf000 || priority >= samus)
+      continue;
+    int x = (e & 0xff) | (high & 1) << 8, y = e >> 8 & 0xff, shape = shapes[high >> 1 & 1];
+    x -= x >= 256 ? 512 : 0;
+    if (x < x1 && x + kObjWidth[shape] > x0 && y < y1 && y + kObjHeight[shape] > y0) {
+      GBA_OAM[i * 4 + 2] = (GBA_OAM[i * 4 + 2] & ~0xc00) | samus << 10;
+      kept = true;
+    }
+  }
+  return kept;
+}
+
+// Whether any of the sprites from |end| to |drawn| has the priority 3 (mostly, none has): then
+// KeepSamusInFront may have work.
+ROM_CODE static bool InFrontOfSamus(uint32_t end, uint32_t drawn) {
+  const uint32_t *sprites = (const uint32_t *)g_oam;
+  for (uint32_t i = end; i < drawn; i++) {
+    if ((sprites[i] >> 28 & 3) == 3 && (sprites[i] & 0xff00) != 0xf000)
+      return true;
+  }
+  return false;
+}
+
+// Whether the last call of KeepSamusInFront put any sprite to Samus's priority.
+static bool samus_kept EWRAM_BSS;
+
+// Called by UpdateOam after it converted the sprites, to put the ones that came out over Samus's
+// behind her (from rtl.c's note of her sprites). It is the one call in IWRAM's UpdateOam, to
+// keep it small: IWRAM is short, and this is in ROM. The sprites it put to Samus's priority
+// before, that UpdateOam may not have converted again, are put back first.
+ROM_CODE static void KeepSamusInFront(void) {
+  const uint8_t *shapes = kObjShapes[g_snes_hw.obsel >> 5];
+  uint32_t priorities = bg3_mid ? kObjPrioritiesMid : kObjPriorities;
+  const uint32_t *sprites = (const uint32_t *)g_oam;
+  uint32_t drawn = oam_prev_blocks ? (oam_prev_blocks - 1) * 4 : 128;
+  if (samus_kept) {
+    for (uint32_t i = 0; i < drawn; i++) {
+      GBA_OAM[i * 4 + 2] = (GBA_OAM[i * 4 + 2] & ~0xc00) |
+                           (priorities >> (sprites[i] >> 27 & 6) & 3) << 10;
+    }
+    samus_kept = false;
+  }
+  uint32_t first = g_samus_sprites[0], end = g_samus_sprites[1];
+  if (end > first && InFrontOfSamus(end, drawn))
+    samus_kept = PutSamusInFront(first, end, drawn, priorities, shapes);
+}
+
 static void UpdateOam(void) {
   SnesHw *h = &g_snes_hw;
   static int last_y_off = -1;
@@ -2506,6 +2582,7 @@ static void UpdateOam(void) {
                                     (priorities >> (e >> 27 & 6) & 3) << 10;
     }
   }
+  KeepSamusInFront();
   // The GBA takes writes to OAM in VBlank (or HBlank, with DISPCNT's bit 5)
   // only: if this ran past it, do all of them again next frame.
   if (g_vblank_count != vblanks || REG_VCOUNT < kGbaLines)

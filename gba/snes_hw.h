@@ -100,6 +100,12 @@ extern uint8_t g_oam[544] __attribute__((aligned(4)));
 // kOamUsedUnknown, if there is a frame that may have drawn any.
 enum { kOamUsedUnknown = 0xff };
 extern uint8_t g_oam_used;
+// The blocks of sprites the last upload of all of OAM compared, with 1 added (the ones the frames
+// drew: the others are hidden), or 0 if g_oam might differ from the game's anywhere.
+extern uint8_t oam_prev_blocks;
+// Samus's sprites in g_oam, the first and one past the last (see __wrap_DrawSamusSpritemap in
+// rtl.c): of the last frame to draw her, or none.
+extern uint8_t g_samus_sprites[2];
 extern uint16_t g_vram[kVramWords];
 extern uint32_t g_vram_dirty[kVramChunks / 32];
 // How many times a chunk was marked since render.c last cleared the

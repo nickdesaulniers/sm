@@ -130,6 +130,21 @@ GBA_IWRAM_CODE uint16 SnesModulus(uint16 a, uint8 b) {
   return a - (uint16)((uint64_t)a * reciprocals[b] >> 32) * b;
 }
 
+// The sprites that a frame draws Samus with, from the first of her spritemaps to the end of the
+// last (the linker calls this in place of DrawSamusSpritemap too): render.iwram.c puts the
+// others over them in the SNES's order. The frame's, as ClearUnusedOam ends it.
+uint8_t g_samus_sprites[2] EWRAM_BSS;
+static uint8_t samus_sprites[2] EWRAM_BSS;
+void __real_DrawSamusSpritemap(uint16 a, uint16 x_pos, uint16 y_pos);
+void __wrap_DrawSamusSpritemap(uint16 a, uint16 x_pos, uint16 y_pos) {
+  uint32_t first = oam_next_ptr >> 2;
+  __real_DrawSamusSpritemap(a, x_pos, y_pos);
+  uint32_t end = oam_next_ptr >> 2;
+  if (samus_sprites[1] <= samus_sprites[0])
+    samus_sprites[0] = first < 0x80 ? first : 0x80;
+  samus_sprites[1] = end < first ? 0x80 : end < 0x80 ? end : 0x80;
+}
+
 // ClearUnusedOam (src/sm_80.c) hides the sprites a frame didn't use, by their
 // Y: a byte of each four of the OAM's copy, in EWRAM, for up to 128 sprites,
 // and a frame calls it. Unrolled, for the cartridge's prefetch to keep ahead
@@ -139,6 +154,9 @@ GBA_IWRAM_CODE uint16 SnesModulus(uint16 a, uint8 b) {
 // to compare only those (see FastDma in snes_hw.iwram.c): the other states
 // draw by other means, as the cutscenes move the sprites they don't use.
 void __wrap_ClearUnusedOam(void) {
+  g_samus_sprites[0] = samus_sprites[0];
+  g_samus_sprites[1] = samus_sprites[1];
+  samus_sprites[0] = samus_sprites[1] = 0;
   uint32_t i = oam_next_ptr >> 2;
   static bool was_gameplay;
   bool gameplay = game_state == 8;
